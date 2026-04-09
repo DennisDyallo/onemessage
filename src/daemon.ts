@@ -344,7 +344,7 @@ export class UnifiedDaemon {
 
   private startPolling(): void {
     const config = loadConfig();
-    const defaultInterval = config.daemon?.pollIntervalMs ?? 300_000; // 5 min
+    const defaultInterval = config.daemon?.pollIntervalMs ?? 60_000; // 1 min
 
     // Signal
     const signalConfig = config.signal;
