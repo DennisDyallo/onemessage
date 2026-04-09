@@ -149,8 +149,18 @@ interface SignalJsonMessage {
   };
 }
 
-function parseSignalMessages(jsonLines: string): MessageFull[] {
+function parseSignalMessages(jsonLines: string, account?: string): MessageFull[] {
   const messages: MessageFull[] = [];
+  // Build group name lookup from cache (best-effort, may be empty on first run)
+  const groupNames = new Map<string, string>();
+  try {
+    if (account) {
+      const groups = fetchGroups(account);
+      for (const g of groups) {
+        groupNames.set(g.id, g.name);
+      }
+    }
+  } catch {}
 
   for (const line of jsonLines.split("\n")) {
     if (!line.trim()) continue;
@@ -172,13 +182,20 @@ function parseSignalMessages(jsonLines: string): MessageFull[] {
         (dataMsg?.attachments?.length ?? 0) > 0 ||
         (syncMsg?.attachments?.length ?? 0) > 0;
 
+      // Detect group messages
+      const groupId = dataMsg?.groupInfo?.groupId;
+      const groupName = groupId ? (groupNames.get(groupId) ?? groupId) : undefined;
+
       messages.push({
         id: String(timestamp),
         provider: "signal",
-        from: { name: sourceName, address: source },
+        from: groupName
+          ? { name: `${sourceName} [${groupName}]`, address: `group:${groupId}` }
+          : { name: sourceName, address: source },
         to: syncMsg?.destinationNumber
           ? [{ name: "", address: syncMsg.destinationNumber }]
           : [],
+        subject: groupName,
         preview: content.slice(0, 100),
         body: content,
         bodyFormat: "text",
@@ -203,7 +220,7 @@ export function fetchSignalInbox(account: string): void {
   const result = runSignalCli(["-a", account, "-o", "json", "receive", "-t", "5", "--send-read-receipts"]);
 
   if (result.stdout) {
-    const freshMessages = parseSignalMessages(result.stdout);
+    const freshMessages = parseSignalMessages(result.stdout, account);
     if (freshMessages.length > 0) {
       store.upsertFullMessages(freshMessages);
     }
