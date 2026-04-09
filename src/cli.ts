@@ -386,6 +386,24 @@ program
         }
       }
       console.log(`\n  Config: ${configPath}`);
+    } else if (providerName === "whatsapp") {
+      const { runWhatsAppAuth } = await import("./whatsapp-auth.ts");
+      await runWhatsAppAuth({ phone: opts.phone });
+    } else if (providerName === "signal" && !provider.isConfigured()) {
+      console.log("  Linking to Signal...\n");
+      const proc = Bun.spawnSync(["signal-cli", "link", "-n", "onemessage"], {
+        stdin: "inherit", stdout: "inherit", stderr: "inherit",
+      });
+      if (proc.exitCode === 0) {
+        console.log("\n  Signal linked successfully.\n");
+        console.log(`  Add your phone number to ${configPath}:\n`);
+        console.log(`    { "signal": { "phone": "+YOUR_NUMBER" } }\n`);
+      } else {
+        console.log(`\n  Signal link failed. You can also configure manually:\n`);
+        console.log(`    signal-cli link -n "onemessage"\n`);
+        console.log(`  Then add to ${configPath}:\n`);
+        console.log(`    { "signal": { "phone": "+YOUR_NUMBER" } }\n`);
+      }
     } else {
       console.log(`  ${providerName} is not configured.\n`);
       console.log(`  Create ${configPath} with:\n`);
@@ -424,39 +442,14 @@ program
           console.log(`    }\n`);
           console.log(`  Or: onemessage send sms "+1234567890" "hello" --device "Pixel 8"\n`);
           break;
-        case "signal": {
-          if (!provider.isConfigured()) {
-            console.log("  Linking to Signal...\n");
-            const proc = Bun.spawnSync(["signal-cli", "link", "-n", "onemessage"], {
-              stdin: "inherit",
-              stdout: "inherit",
-              stderr: "inherit",
-            });
-            if (proc.exitCode === 0) {
-              console.log("\n  ✓ Signal linked. Add your phone to config:\n");
-            }
-          }
+        case "signal":
           console.log(`  Requires signal-cli: brew install signal-cli\n`);
-          console.log(`  Option A — Link to existing Signal account:\n`);
-          console.log(`    signal-cli link -n "onemessage"`);
-          console.log(`    (scan QR code in Signal app → Linked Devices)\n`);
-          console.log(`  Option B — Register new number:\n`);
-          console.log(`    signal-cli -a +YOUR_NUMBER register`);
-          console.log(`    signal-cli -a +YOUR_NUMBER verify CODE\n`);
+          console.log(`  Run: onemessage auth signal  (interactive QR linking)\n`);
+          console.log(`  Or manually:\n`);
+          console.log(`    signal-cli link -n "onemessage"\n`);
           console.log(`  Then add to config:\n`);
-          console.log(`    {`);
-          console.log(`      "signal": {`);
-          console.log(`        "phone": "+46737124377"`);
-          console.log(`      }`);
-          console.log(`    }\n`);
-          console.log(`  Or: onemessage send signal "+recipient" "hello" --phone "+46737124377"\n`);
+          console.log(`    { "signal": { "phone": "+YOUR_NUMBER" } }\n`);
           break;
-        }
-        case "whatsapp": {
-          const { runWhatsAppAuth } = await import("./whatsapp-auth.ts");
-          await runWhatsAppAuth({ phone: opts.phone });
-          break;
-        }
         default:
           console.log(`  Provider "${providerName}" setup instructions not yet available.`);
       }

@@ -36,6 +36,88 @@ function runSignalCli(args: string[], timeoutMs = 30_000) {
 }
 
 // ---------------------------------------------------------------------------
+// Group resolution
+// ---------------------------------------------------------------------------
+
+interface SignalGroup {
+  id: string;
+  name: string;
+  isMember: boolean;
+}
+
+interface GroupCache {
+  groups: SignalGroup[];
+  account: string;
+  timestamp: number;
+}
+
+const GROUP_CACHE_TTL_MS = 5 * 60 * 1000; // 5 minutes
+let groupCache: GroupCache | null = null;
+
+function isBase64GroupId(value: string): boolean {
+  return value.length > 20 && /[=\/+]/.test(value);
+}
+
+function fetchGroups(account: string): SignalGroup[] {
+  // Return cached if fresh and same account
+  if (
+    groupCache &&
+    groupCache.account === account &&
+    Date.now() - groupCache.timestamp < GROUP_CACHE_TTL_MS
+  ) {
+    return groupCache.groups;
+  }
+
+  const result = runSignalCli(["-a", account, "-o", "json", "listGroups"]);
+  if (!result.ok) {
+    throw new Error(
+      `Failed to list Signal groups: ${result.stderr || result.stdout || `exit ${result.exitCode}`}`,
+    );
+  }
+
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(result.stdout);
+  } catch {
+    throw new Error(`Failed to parse Signal group list: ${result.stdout.slice(0, 200)}`);
+  }
+
+  if (!Array.isArray(parsed)) {
+    throw new Error("Expected JSON array from signal-cli listGroups");
+  }
+
+  const groups: SignalGroup[] = (parsed as any[])
+    .filter((g) => g && typeof g.id === "string" && typeof g.name === "string")
+    .map((g) => ({ id: g.id as string, name: g.name as string, isMember: !!g.isMember }));
+
+  groupCache = { groups, account, timestamp: Date.now() };
+  return groups;
+}
+
+function resolveGroupId(name: string, account: string): string {
+  const groups = fetchGroups(account);
+  const memberGroups = groups.filter((g) => g.isMember);
+  const needle = name.toLowerCase();
+  const matches = memberGroups.filter((g) => g.name.toLowerCase().includes(needle));
+
+  if (matches.length === 0) {
+    const available = memberGroups.map((g) => `  - ${g.name}`).join("\n");
+    throw new Error(
+      `No Signal group matching "${name}".\nAvailable groups:\n${available || "  (none)"}`,
+    );
+  }
+
+  if (matches.length > 1) {
+    const ambiguous = matches.map((g) => `  - ${g.name}`).join("\n");
+    throw new Error(
+      `Ambiguous group name "${name}" — ${matches.length} matches:\n${ambiguous}`,
+    );
+  }
+
+  return matches[0]!.id;
+}
+
+// ---------------------------------------------------------------------------
 // Message parsing
 // ---------------------------------------------------------------------------
 
@@ -144,7 +226,20 @@ const signalProvider: MessagingProvider = {
     }
 
     if (recipientId.startsWith("group:")) {
-      args.push("-g", recipientId.slice(6));
+      let groupId = recipientId.slice(6);
+      if (!isBase64GroupId(groupId)) {
+        try {
+          groupId = resolveGroupId(groupId, settings.account);
+        } catch (e) {
+          return {
+            ok: false,
+            provider: "signal",
+            recipientId,
+            error: e instanceof Error ? e.message : String(e),
+          };
+        }
+      }
+      args.push("-g", groupId);
     } else {
       args.push(recipientId);
     }

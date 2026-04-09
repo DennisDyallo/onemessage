@@ -32,6 +32,7 @@ type DaemonRequest =
   | { type: "send"; jid: string; text: string }
   | { type: "status" }
   | { type: "resolve-group"; name: string }
+  | { type: "list-groups" }
   | { type: "ping" };
 
 type DaemonResponse =
@@ -46,7 +47,10 @@ class WhatsAppDaemon {
   private sock!: WASocket;
   private connected = false;
   private lidToPhoneMap = new Map<string, string>();
-  private groupCache = new Map<string, { id: string; subject: string }>();
+  private groupCache = new Map<string, {
+    id: string; subject: string;
+    isCommunity?: boolean; linkedParent?: string;
+  }>();
   private outgoingQueue: Array<{ jid: string; text: string }> = [];
   private flushing = false;
 
@@ -275,7 +279,11 @@ class WhatsAppDaemon {
       this.groupCache.clear();
       for (const [jid, metadata] of Object.entries(groups)) {
         if (metadata.subject) {
-          this.groupCache.set(jid, { id: jid, subject: metadata.subject });
+          this.groupCache.set(jid, {
+            id: jid, subject: metadata.subject,
+            isCommunity: (metadata as any).isCommunity || false,
+            linkedParent: (metadata as any).linkedParent || undefined,
+          });
         }
       }
       process.stderr.write(
@@ -393,30 +401,94 @@ class WhatsAppDaemon {
         }
       }
 
+      case "list-groups": {
+        const groups = Array.from(this.groupCache.values())
+          .sort((a, b) => a.subject.localeCompare(b.subject));
+        return { ok: true, data: groups };
+      }
+
       case "resolve-group": {
         if (!req.name) {
           return { ok: false, error: "name required" };
         }
-        const needle = req.name.toLowerCase();
-        const matches: Array<{ id: string; subject: string }> = [];
-        for (const group of this.groupCache.values()) {
-          if (group.subject.toLowerCase().includes(needle)) {
-            matches.push(group);
+
+        // Support "Community/Channel" syntax for community sub-groups
+        const slashIdx = req.name.indexOf("/");
+        const communityName = (slashIdx >= 0 ? req.name.slice(0, slashIdx) : req.name).trim().toLowerCase();
+        const channelName = slashIdx >= 0 ? req.name.slice(slashIdx + 1).trim().toLowerCase() : undefined;
+
+        if (channelName) {
+          // Looking for a specific channel within a community
+          const communityMatches = Array.from(this.groupCache.values())
+            .filter((g) => g.isCommunity && g.subject.toLowerCase().includes(communityName));
+          if (communityMatches.length === 0) {
+            return { ok: false, error: `no community matching "${req.name.slice(0, slashIdx)}"` };
           }
+          const parent = communityMatches.find((c) => c.subject.toLowerCase() === communityName) ?? communityMatches[0]!;
+          // Find the channel under this community
+          const channels = Array.from(this.groupCache.values())
+            .filter((g) => g.linkedParent === parent.id && g.subject.toLowerCase().includes(channelName));
+          if (channels.length === 0) {
+            const allChannels = Array.from(this.groupCache.values())
+              .filter((g) => g.linkedParent === parent.id)
+              .map((g) => g.subject);
+            return { ok: false, error: `no channel "${req.name.slice(slashIdx + 1).trim()}" in ${parent.subject}. Available: ${allChannels.join(", ")}` };
+          }
+          if (channels.length > 1) {
+            return { ok: false, error: `ambiguous: ${channels.map((c) => `${c.subject} (${c.id})`).join(", ")}` };
+          }
+          return { ok: true, data: channels[0] };
         }
+
+        // Simple name lookup
+        const needle = communityName;
+        const matches = Array.from(this.groupCache.values())
+          .filter((g) => g.subject.toLowerCase().includes(needle));
+
         if (matches.length === 0) {
+          return { ok: false, error: `no group matching "${req.name}"` };
+        }
+
+        if (matches.length === 1) {
+          return { ok: true, data: matches[0] };
+        }
+
+        // Multiple matches — check if they're all from the same community
+        const communityHits = matches.filter((g) => g.isCommunity);
+
+        // If exactly one community matches and the rest are its children,
+        // resolve to the default channel (child with same name as parent)
+        if (communityHits.length === 1) {
+          const cParent = communityHits[0]!;
+          const children = matches.filter((g) => g.linkedParent === cParent.id);
+          const defaultChannel = children.find(
+            (c) => c.subject.toLowerCase() === cParent.subject.toLowerCase(),
+          );
+          if (defaultChannel) {
+            return { ok: true, data: defaultChannel };
+          }
+          // No default channel — list available channels
+          const allChannels = Array.from(this.groupCache.values())
+            .filter((g) => g.linkedParent === cParent.id);
           return {
             ok: false,
-            error: `no group matching "${req.name}"`,
+            error: `"${req.name}" is a community. Use "group:${cParent.subject}/<channel>". Channels: ${allChannels.map((c) => c.subject).join(", ")}`,
           };
         }
-        if (matches.length > 1) {
-          return {
-            ok: false,
-            error: `ambiguous: ${matches.length} groups match "${req.name}": ${matches.map((g) => `${g.subject} (${g.id})`).join(", ")}`,
-          };
-        }
-        return { ok: true, data: matches[0] };
+
+        // Truly ambiguous — show context for each match
+        const labels = matches.map((g) => {
+          if (g.isCommunity) return `${g.subject} [community] (${g.id})`;
+          if (g.linkedParent) {
+            const parent = this.groupCache.get(g.linkedParent);
+            return `${g.subject} [in ${parent?.subject ?? "unknown"}] (${g.id})`;
+          }
+          return `${g.subject} (${g.id})`;
+        });
+        return {
+          ok: false,
+          error: `ambiguous: ${labels.join(", ")}`,
+        };
       }
 
       default:
