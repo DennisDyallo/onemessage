@@ -23,7 +23,7 @@ import * as store from "./store.ts";
 import type { MessageFull } from "./types.ts";
 import { WA_DIR, AUTH_DIR, createBaileysSocket } from "./whatsapp-shared.ts";
 import { DAEMON_PID, DAEMON_SOCK } from "./daemon-shared.ts";
-import { fetchSignalInbox } from "./providers/signal.ts";
+import { fetchSignalInbox, fetchSignalInboxAsync } from "./providers/signal.ts";
 import {
   fetchEmailInbox,
   resolveSettings as resolveEmailSettings,
@@ -353,9 +353,9 @@ export class UnifiedDaemon {
         config.daemon?.providers?.signal?.pollIntervalMs ?? defaultInterval;
       const enabled = config.daemon?.providers?.signal?.enabled !== false;
       if (enabled) {
-        this.schedulePoll("signal", interval, () => {
-          fetchSignalInbox(signalConfig.phone);
-        });
+        this.schedulePoll("signal", interval, () =>
+          fetchSignalInboxAsync(signalConfig.phone),
+        );
       }
     }
 
@@ -659,7 +659,7 @@ export class UnifiedDaemon {
               if (!phone)
                 return { ok: false, error: "signal not configured" };
               await this.pollProvider("signal", () =>
-                fetchSignalInbox(phone),
+                fetchSignalInboxAsync(phone),
               );
               return { ok: true };
             }
@@ -694,7 +694,7 @@ export class UnifiedDaemon {
         if (config.signal?.phone) {
           const phone = config.signal.phone;
           promises.push(
-            this.pollProvider("signal", () => fetchSignalInbox(phone)),
+            this.pollProvider("signal", () => fetchSignalInboxAsync(phone)),
           );
         }
         const emailSettings = resolveEmailSettings();

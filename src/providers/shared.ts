@@ -91,6 +91,55 @@ export function runCli(
   };
 }
 
+/**
+ * Async version of runCli — uses Bun.spawn instead of Bun.spawnSync so the
+ * event loop is not blocked while waiting for the subprocess to finish.
+ */
+export async function runCliAsync(
+  cmd: string,
+  args: string[],
+  opts?: RunCliOptions,
+): Promise<CliResult> {
+  const proc = Bun.spawn([cmd, ...args], {
+    stdout: "pipe",
+    stderr: "pipe",
+  });
+
+  // Apply timeout manually
+  const timeoutMs = opts?.timeoutMs ?? 30_000;
+  const timer = setTimeout(() => proc.kill(), timeoutMs);
+
+  const [stdoutBuf, stderrBuf] = await Promise.all([
+    new Response(proc.stdout).arrayBuffer(),
+    new Response(proc.stderr).arrayBuffer(),
+  ]);
+  const exitCode = await proc.exited;
+  clearTimeout(timer);
+
+  const stdoutStr = new TextDecoder().decode(stdoutBuf).trim();
+  let stderr = new TextDecoder().decode(stderrBuf);
+
+  if (opts?.stderrFilters && opts.stderrFilters.length > 0) {
+    stderr = stderr
+      .split("\n")
+      .filter((line) => {
+        if (!line.trim()) return false;
+        return !opts.stderrFilters!.some((fn) => fn(line));
+      })
+      .join("\n")
+      .trim();
+  } else {
+    stderr = stderr.trim();
+  }
+
+  return {
+    ok: exitCode === 0,
+    stdout: stdoutStr,
+    stderr,
+    exitCode,
+  };
+}
+
 // ---------------------------------------------------------------------------
 // Cache-only read fallback
 // ---------------------------------------------------------------------------

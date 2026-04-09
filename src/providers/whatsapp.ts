@@ -80,8 +80,10 @@ const whatsappProvider: MessagingProvider = {
     if (!store.isFresh("whatsapp", 60_000) || opts?.providerFlags?.fresh) {
       try {
         await ensureDaemon();
-      } catch {}
-      store.recordFetch("whatsapp");
+        store.recordFetch("whatsapp");
+      } catch (err) {
+        console.warn(`[whatsapp] daemon failed to start: ${err instanceof Error ? err.message : err}`);
+      }
     }
 
     return store.getCachedInbox("whatsapp", {

@@ -1,7 +1,7 @@
 import { registerProvider } from "../registry.ts";
 import { loadConfig } from "../config.ts";
 import * as store from "../store.ts";
-import { cliExists, runCli, readFromCacheOrFail, cacheSentMessage } from "./shared.ts";
+import { cliExists, runCli, runCliAsync, readFromCacheOrFail, cacheSentMessage } from "./shared.ts";
 import type { MessagingProvider, MessageFull } from "../types.ts";
 
 // ---------------------------------------------------------------------------
@@ -218,6 +218,28 @@ function parseSignalMessages(jsonLines: string, account?: string): MessageFull[]
 
 export function fetchSignalInbox(account: string): void {
   const result = runSignalCli(["-a", account, "-o", "json", "receive", "-t", "5", "--send-read-receipts"]);
+
+  if (result.stdout) {
+    const freshMessages = parseSignalMessages(result.stdout, account);
+    if (freshMessages.length > 0) {
+      store.upsertFullMessages(freshMessages);
+    }
+  } else if (!result.ok && result.stderr) {
+    process.stderr.write(`[signal] ${result.stderr}\n`);
+  }
+
+  store.recordFetch("signal", account);
+}
+
+/**
+ * Async version of fetchSignalInbox — does not block the event loop.
+ * Used by the daemon so polling Signal doesn't stall other providers.
+ */
+export async function fetchSignalInboxAsync(account: string): Promise<void> {
+  const result = await runCliAsync("signal-cli", ["-a", account, "-o", "json", "receive", "-t", "5", "--send-read-receipts"], {
+    stderrFilters: SIGNAL_STDERR_FILTERS,
+    timeoutMs: 30_000,
+  });
 
   if (result.stdout) {
     const freshMessages = parseSignalMessages(result.stdout, account);
