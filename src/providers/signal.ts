@@ -2,7 +2,7 @@ import { registerProvider } from "../registry.ts";
 import { loadConfig } from "../config.ts";
 import * as store from "../store.ts";
 import { cliExists, runCli, readFromCacheOrFail, cacheSentMessage } from "./shared.ts";
-import type { MessagingProvider, MessageEnvelope, MessageFull } from "../types.ts";
+import type { MessagingProvider, MessageFull } from "../types.ts";
 
 // ---------------------------------------------------------------------------
 // Config
@@ -175,7 +175,15 @@ const signalProvider: MessagingProvider = {
       return [];
     }
 
-    // Always drain the queue — it's destructive, so we must capture everything
+    if (store.isFresh("signal", 30_000, settings.account) && !opts?.providerFlags?.fresh) {
+      return store.getCachedInbox("signal", {
+        limit: opts?.limit,
+        unread: opts?.unread,
+        since: opts?.since,
+        from: opts?.from,
+      });
+    }
+
     const result = runSignalCli(["-a", settings.account, "-o", "json", "receive", "-t", "5", "--send-read-receipts"]);
 
     if (result.stdout) {
@@ -189,7 +197,6 @@ const signalProvider: MessagingProvider = {
 
     store.recordFetch("signal", settings.account);
 
-    // Return from cache (includes newly drained + all historical messages)
     return store.getCachedInbox("signal", {
       limit: opts?.limit,
       unread: opts?.unread,

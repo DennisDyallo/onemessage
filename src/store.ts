@@ -2,7 +2,7 @@ import { Database } from "bun:sqlite";
 import { mkdirSync } from "fs";
 import { join } from "path";
 import { getConfigDir } from "./config.ts";
-import type { MessageEnvelope, MessageFull, Contact } from "./types.ts";
+import type { MessageEnvelope, MessageFull } from "./types.ts";
 
 // ---------------------------------------------------------------------------
 // Database singleton
@@ -52,6 +52,14 @@ function getDb(): Database {
   db.run("CREATE INDEX IF NOT EXISTS idx_messages_date ON messages(date DESC)");
   db.run("CREATE INDEX IF NOT EXISTS idx_messages_provider_date ON messages(provider, date DESC)");
 
+  // thread_id column for SMS conversation threading (nullable for non-SMS providers)
+  try {
+    db.run("ALTER TABLE messages ADD COLUMN thread_id TEXT");
+  } catch {
+    // Column already exists — ignore
+  }
+  db.run("CREATE INDEX IF NOT EXISTS idx_messages_thread ON messages(provider, thread_id, date ASC)");
+
   return db;
 }
 
@@ -89,39 +97,17 @@ export function upsertMessages(msgs: MessageEnvelope[], direction: "in" | "out" 
   tx();
 }
 
-export function upsertFullMessage(msg: MessageFull, direction: "in" | "out" = "in"): void {
-  const d = getDb();
-  const now = new Date().toISOString();
-  d.prepare(`
-    INSERT OR REPLACE INTO messages
-      (id, provider, direction, from_json, to_json, subject, preview, body, body_format, date, unread, has_attachments, attachments_json, cached_at)
-    VALUES
-      ($id, $provider, $direction, $from_json, $to_json, $subject, $preview, $body, $body_format, $date, $unread, $has_attachments, $attachments_json, $cached_at)
-  `).run({
-    $id: msg.id,
-    $provider: msg.provider,
-    $direction: direction,
-    $from_json: msg.from ? JSON.stringify(msg.from) : null,
-    $to_json: JSON.stringify(msg.to),
-    $subject: msg.subject ?? null,
-    $preview: msg.preview,
-    $body: msg.body,
-    $body_format: msg.bodyFormat,
-    $date: msg.date,
-    $unread: msg.unread ? 1 : 0,
-    $has_attachments: msg.hasAttachments ? 1 : 0,
-    $attachments_json: JSON.stringify(msg.attachments.map(({ data, ...rest }) => rest)),
-    $cached_at: now,
-  });
-}
-
-export function upsertFullMessages(msgs: MessageFull[], direction: "in" | "out" = "in"): void {
+export function upsertFullMessages(
+  msgs: MessageFull[],
+  direction: "in" | "out" = "in",
+  threadId?: string,
+): void {
   const d = getDb();
   const stmt = d.prepare(`
     INSERT OR REPLACE INTO messages
-      (id, provider, direction, from_json, to_json, subject, preview, body, body_format, date, unread, has_attachments, attachments_json, cached_at)
+      (id, provider, direction, from_json, to_json, subject, preview, body, body_format, date, unread, has_attachments, attachments_json, cached_at, thread_id)
     VALUES
-      ($id, $provider, $direction, $from_json, $to_json, $subject, $preview, $body, $body_format, $date, $unread, $has_attachments, $attachments_json, $cached_at)
+      ($id, $provider, $direction, $from_json, $to_json, $subject, $preview, $body, $body_format, $date, $unread, $has_attachments, $attachments_json, $cached_at, $thread_id)
   `);
 
   const now = new Date().toISOString();
@@ -142,10 +128,15 @@ export function upsertFullMessages(msgs: MessageFull[], direction: "in" | "out" 
         $has_attachments: msg.hasAttachments ? 1 : 0,
         $attachments_json: JSON.stringify(msg.attachments.map(({ data, ...rest }) => rest)),
         $cached_at: now,
+        $thread_id: threadId ?? null,
       });
     }
   });
   tx();
+}
+
+export function upsertFullMessage(msg: MessageFull, direction: "in" | "out" = "in"): void {
+  upsertFullMessages([msg], direction);
 }
 
 // ---------------------------------------------------------------------------
@@ -183,6 +174,10 @@ export function getCachedInbox(
   const conditions = ["provider = ?"];
   const params: any[] = [provider];
 
+  // Exclude thread sub-messages from inbox listing — those are individual
+  // messages within a conversation, stored via upsertFullMessages() with a threadId
+  conditions.push("thread_id IS NULL");
+
   if (opts?.unread) {
     conditions.push("unread = 1");
   }
@@ -207,6 +202,21 @@ export function getCachedMessage(provider: string, messageId: string): MessageFu
   const row = d.prepare("SELECT * FROM messages WHERE provider = ? AND id = ?").get(provider, messageId);
   if (!row) return null;
   return rowToFull(row);
+}
+
+export function getThreadMessages(
+  provider: string,
+  threadId: string,
+  opts?: { limit?: number },
+): MessageFull[] {
+  const d = getDb();
+  const limit = opts?.limit ?? 100;
+  const rows = d
+    .prepare(
+      "SELECT * FROM messages WHERE provider = ? AND thread_id = ? ORDER BY date ASC LIMIT ?"
+    )
+    .all(provider, threadId, limit);
+  return rows.map(rowToFull);
 }
 
 export function searchCached(

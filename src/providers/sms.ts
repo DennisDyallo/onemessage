@@ -47,6 +47,45 @@ interface SmsConversation {
   thread_id: number;
 }
 
+interface SmsThreadMessage {
+  body: string;
+  timestamp: string;
+  direction: "in" | "out";
+  read: boolean;
+  sub_id: number;
+}
+
+interface SmsThreadHistory {
+  thread_id: number;
+  contact: string;
+  messages: SmsThreadMessage[];
+}
+
+/** Build a MessageFull for an SMS message given contact info and message data. */
+function toSmsMessage(opts: {
+  id: string;
+  contact: string;
+  body: string;
+  timestamp: string;
+  direction: "in" | "out";
+  read: boolean;
+}): MessageFull {
+  const { id, contact, body, timestamp, direction, read } = opts;
+  return {
+    id,
+    provider: "sms",
+    from: direction === "in" ? { name: contact, address: contact } : null,
+    to: direction === "out" ? [{ name: contact, address: contact }] : [],
+    preview: body.slice(0, 100),
+    body,
+    bodyFormat: "text",
+    attachments: [],
+    date: timestamp,
+    unread: !read,
+    hasAttachments: false,
+  };
+}
+
 function fetchSmsConversations(opts?: { unread?: boolean; fresh?: boolean; from?: string }): MessageFull[] {
   const args = ["kdeconnect-read-sms", "--json"];
   if (opts?.unread) args.push("--unread");
@@ -70,23 +109,94 @@ function fetchSmsConversations(opts?: { unread?: boolean; fresh?: boolean; from?
 
   try {
     const convs: SmsConversation[] = JSON.parse(stdout);
-    return convs.map((c) => ({
+    return convs.map((c) => toSmsMessage({
       id: String(c.thread_id),
-      provider: "sms",
-      from: c.direction === "in" ? { name: c.contact, address: c.contact } : null,
-      to: c.direction === "out" ? [{ name: c.contact, address: c.contact }] : [],
-      preview: c.preview.slice(0, 100),
+      contact: c.contact,
       body: c.preview,
-      bodyFormat: "text" as const,
-      attachments: [],
-      date: c.timestamp,
-      unread: !c.read,
-      hasAttachments: false,
+      timestamp: c.timestamp,
+      direction: c.direction,
+      read: c.read,
     }));
   } catch {
     process.stderr.write("[sms] Failed to parse kdeconnect-read-sms output\n");
     return [];
   }
+}
+
+/**
+ * Fetch full conversation history for a thread via requestConversation DBus method.
+ * Returns all messages in chronological order (oldest first).
+ */
+function fetchThreadHistory(threadId: number): MessageFull[] {
+  const args = ["kdeconnect-read-sms", "--json", "--conversation", String(threadId)];
+
+  const result = Bun.spawnSync(args, {
+    stdout: "pipe",
+    stderr: "pipe",
+    timeout: 20_000, // longer timeout for async signal wait
+  });
+
+  if (result.exitCode !== 0) {
+    const err = result.stderr.toString().trim();
+    if (err) process.stderr.write(`[sms] ${err}\n`);
+    return [];
+  }
+
+  const stdout = result.stdout.toString().trim();
+  if (!stdout || stdout === "{}") return [];
+
+  try {
+    const history: SmsThreadHistory = JSON.parse(stdout);
+    if (!history.messages || history.messages.length === 0) return [];
+
+    return history.messages.map((m) => toSmsMessage({
+      id: `${history.thread_id}:${m.sub_id}`,
+      contact: history.contact,
+      body: m.body,
+      timestamp: m.timestamp,
+      direction: m.direction,
+      read: m.read,
+    }));
+  } catch {
+    process.stderr.write("[sms] Failed to parse thread history output\n");
+    return [];
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Thread rendering
+// ---------------------------------------------------------------------------
+
+/**
+ * Combine an array of individual thread messages into a single MessageFull
+ * with the conversation body rendered as a readable transcript.
+ */
+function threadToFullMessage(messages: MessageFull[], threadId: string): MessageFull {
+  // Determine the contact from the first incoming message, or first message at all
+  const firstIncoming = messages.find((m) => m.from !== null);
+  const contact = firstIncoming?.from ?? messages[0]?.to?.[0] ?? { name: "unknown", address: "unknown" };
+
+  const body = messages
+    .map((m) => {
+      const dir = m.from ? "<" : ">";
+      const date = new Date(m.date).toLocaleString();
+      return `[${date}] ${dir} ${m.body}`;
+    })
+    .join("\n");
+
+  return {
+    id: threadId,
+    provider: "sms",
+    from: contact,
+    to: [],
+    preview: `Thread with ${contact.name || contact.address} (${messages.length} messages)`,
+    body,
+    bodyFormat: "text",
+    attachments: [],
+    date: messages[messages.length - 1]?.date ?? new Date().toISOString(),
+    unread: messages.some((m) => m.unread),
+    hasAttachments: false,
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -170,6 +280,29 @@ const smsProvider: MessagingProvider = {
   },
 
   async read(messageId, opts) {
+    // If messageId contains ":", it's a specific message within a thread (threadId:subId)
+    // If it's a plain number, it's a thread_id — fetch full thread history
+    if (!messageId.includes(":") && cliExists("kdeconnect-read-sms")) {
+      const threadId = parseInt(messageId, 10);
+      if (!isNaN(threadId)) {
+        // Check cache first (unless fresh requested)
+        if (!opts?.fresh) {
+          const cached = store.getThreadMessages("sms", messageId);
+          if (cached.length > 0) {
+            // Return the full thread as a single "message" with concatenated body
+            return threadToFullMessage(cached, messageId);
+          }
+        }
+
+        // Fetch from phone
+        const messages = fetchThreadHistory(threadId);
+        if (messages.length > 0) {
+          store.upsertFullMessages(messages, "in", messageId);
+          return threadToFullMessage(messages, messageId);
+        }
+      }
+    }
+
     return readFromCacheOrFail("sms", messageId);
   },
 };

@@ -148,7 +148,7 @@ async function fetchMailboxMessages(
         { uid: true, envelope: true, flags: true, bodyStructure: true },
         { uid: true },
       )) {
-        messages.push(toEnvelope(msg.uid, msg.envelope, msg.flags, msg.bodyStructure));
+        messages.push(toEnvelope(msg.uid, msg.envelope, msg.flags ?? new Set(), msg.bodyStructure));
       }
       return messages;
     } finally {
@@ -176,7 +176,7 @@ async function fetchFullMessage(
     const lock = await client.getMailboxLock(folder);
     try {
       const raw = await client.fetchOne(uid, { source: true, uid: true, envelope: true, flags: true, bodyStructure: true }, { uid: true });
-      if (!raw || raw === false || !raw.source) return null;
+      if (!raw || !raw.source) return null;
 
       const parsed: ParsedMail = await simpleParser(raw.source);
       const env = raw.envelope;
@@ -187,12 +187,13 @@ async function fetchFullMessage(
       else if (parsed.text) { body = parsed.text; }
       else if (parsed.html) { body = typeof parsed.html === "string" ? parsed.html : ""; bodyFormat = "html"; }
 
+      const flags = raw.flags ?? new Set<string>();
       return {
         id: String(raw.uid), provider: "email",
-        from: env.from?.[0] ? { name: env.from[0].name || "", address: env.from[0].address || "" } : null,
-        to: (env.to || []).map((a: any) => ({ name: a.name || "", address: a.address || "" })),
-        subject: env.subject || "", preview: env.subject || "",
-        date: env.date?.toISOString() || "", unread: !raw.flags.has("\\Seen"),
+        from: env?.from?.[0] ? { name: env.from[0].name || "", address: env.from[0].address || "" } : null,
+        to: (env?.to || []).map((a: any) => ({ name: a.name || "", address: a.address || "" })),
+        subject: env?.subject || "", preview: env?.subject || "",
+        date: env?.date?.toISOString() || "", unread: !flags.has("\\Seen"),
         hasAttachments: (parsed.attachments || []).length > 0, body, bodyFormat,
         attachments: (parsed.attachments || []).map((att) => ({
           filename: att.filename || "unnamed", contentType: att.contentType || "application/octet-stream",
