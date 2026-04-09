@@ -6,7 +6,7 @@ import "./providers/index.ts";
 
 import { getProviderOrExit, getAllProviders } from "./registry.ts";
 import { loadConfig, getConfigPath } from "./config.ts";
-import { getCachedMessage } from "./store.ts";
+import { getCachedMessage, getContacts } from "./store.ts";
 import type { MessageEnvelope, MessageFull } from "./types.ts";
 
 // ---------------------------------------------------------------------------
@@ -496,6 +496,44 @@ program
     console.log();
   });
 
+// ---- contacts -------------------------------------------------------------
+
+program
+  .command("contacts [provider]")
+  .description("List known contacts (from contact sync)")
+  .option("-n, --limit <n>", "Max contacts to show", "50")
+  .option("--search <name>", "Filter contacts by name")
+  .option("--json", "Output JSON", false)
+  .action((providerName, opts) => {
+    const provider = providerName ?? "whatsapp";
+    const limit = parseInt(opts.limit, 10) || 50;
+
+    const contacts = getContacts(provider, {
+      limit,
+      search: opts.search,
+    });
+
+    if (opts.json) {
+      process.stdout.write(JSON.stringify(contacts, null, 2) + "\n");
+      return;
+    }
+
+    if (contacts.length === 0) {
+      console.log("  (no contacts found)");
+      return;
+    }
+
+    console.log();
+    for (const c of contacts) {
+      const count = String(c.messageCount).padStart(4);
+      const name = pad(c.name, 24);
+      const addr = c.address.match(/^\d+$/) ? `+${c.address}` : c.address;
+      const lastDate = c.lastSeen ? c.lastSeen.slice(0, 10) : "";
+      console.log(`  ${count}  ${name}  ${pad(addr, 16)}  last: ${lastDate}`);
+    }
+    console.log();
+  });
+
 // ---- daemon ---------------------------------------------------------------
 
 const daemonCmd = program
@@ -543,56 +581,57 @@ daemonCmd
 
 daemonCmd
   .command("restart")
-  .description("Restart the daemon (stop + start in background)")
+  .description("Restart the daemon (launchctl if managed, otherwise stop + start)")
   .action(async () => {
-    const { DAEMON_PID, DAEMON_SOCK, isDaemonRunning } = await import("./daemon-shared.ts");
-    const { existsSync, readFileSync, unlinkSync } = await import("fs");
+    const PLIST = `${process.env.HOME}/Library/LaunchAgents/com.onemessage.daemon.plist`;
+    const { existsSync } = await import("fs");
+    const { DAEMON_SOCK, isDaemonRunning } = await import("./daemon-shared.ts");
 
-    // Stop existing daemon
-    if (existsSync(DAEMON_PID)) {
-      const pidStr = readFileSync(DAEMON_PID, "utf-8").trim();
-      const pid = parseInt(pidStr, 10);
-      if (!isNaN(pid)) {
-        try {
-          process.kill(pid, 0);
-          process.kill(pid, "SIGTERM");
-          console.log(`  Sent SIGTERM to daemon (pid=${pid}).`);
-        } catch {
-          // already dead
+    if (existsSync(PLIST)) {
+      // Managed by launchd — unload/load so launchd owns the restart (no competing spawns)
+      Bun.spawnSync(["launchctl", "unload", PLIST], { stdio: ["ignore", "inherit", "inherit"] });
+      await new Promise((r) => setTimeout(r, 2000));
+      Bun.spawnSync(["launchctl", "load", PLIST], { stdio: ["ignore", "inherit", "inherit"] });
+      // Wait for socket
+      const maxWait = 10_000;
+      let waited = 0;
+      while (waited < maxWait) {
+        if (existsSync(DAEMON_SOCK) && isDaemonRunning()) {
+          console.log("  Daemon restarted (via launchctl).");
+          return;
         }
+        await new Promise((r) => setTimeout(r, 200));
+        waited += 200;
       }
+      console.error("  Daemon failed to start within 10 seconds.");
+      return;
     }
 
-    // Wait for it to stop (max 5s)
+    // Not managed by launchd — stop + spawn manually
+    const { DAEMON_PID } = await import("./daemon-shared.ts");
+    const { readFileSync, unlinkSync } = await import("fs");
+    if (existsSync(DAEMON_PID)) {
+      const pid = parseInt(readFileSync(DAEMON_PID, "utf-8").trim(), 10);
+      if (!isNaN(pid)) {
+        try { process.kill(pid, "SIGTERM"); console.log(`  Sent SIGTERM to daemon (pid=${pid}).`); } catch {}
+      }
+    }
     const deadline = Date.now() + 5000;
     while (isDaemonRunning() && Date.now() < deadline) {
       await new Promise((r) => setTimeout(r, 200));
     }
-
-    // Clean up stale socket
     try { if (existsSync(DAEMON_SOCK)) unlinkSync(DAEMON_SOCK); } catch {}
-
-    // Start new daemon in background
     const { join, dirname } = await import("path");
     const PROJECT_ROOT = join(dirname(new URL(import.meta.url).pathname), "..");
     const proc = Bun.spawn(["bun", "run", "src/daemon.ts"], {
-      cwd: PROJECT_ROOT,
-      stdio: ["ignore", "ignore", "ignore"],
-      detached: true,
+      cwd: PROJECT_ROOT, stdio: ["ignore", "ignore", "ignore"], detached: true,
     });
     proc.unref();
-
-    // Wait for socket
-    const maxWait = 10_000;
-    const interval = 200;
-    let waited = 0;
-    while (waited < maxWait) {
-      if (existsSync(DAEMON_SOCK) && isDaemonRunning()) {
-        console.log("  Daemon restarted.");
-        return;
-      }
-      await new Promise((r) => setTimeout(r, interval));
-      waited += interval;
+    let waited2 = 0;
+    while (waited2 < 10_000) {
+      if (existsSync(DAEMON_SOCK) && isDaemonRunning()) { console.log("  Daemon restarted."); return; }
+      await new Promise((r) => setTimeout(r, 200));
+      waited2 += 200;
     }
     console.error("  Daemon failed to start within 10 seconds.");
   });

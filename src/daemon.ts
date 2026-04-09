@@ -213,7 +213,7 @@ export class UnifiedDaemon {
       async ({
         messages,
         chats: _chats,
-        contacts: _contacts,
+        contacts: syncContacts,
         isLatest: _isLatest,
       }) => {
         let stored = 0;
@@ -225,6 +225,25 @@ export class UnifiedDaemon {
           process.stderr.write(
             `[daemon] history sync: stored ${stored}/${messages.length} messages\n`,
           );
+        }
+
+        // Store contacts from history sync
+        if (syncContacts && syncContacts.length > 0) {
+          const toStore = syncContacts
+            .filter((c) => c.name || c.notify)
+            .map((c) => ({
+              address: (c.id.split("@")[0] || c.id).split(":")[0] || c.id,
+              name: c.name || c.notify || "",
+            }))
+            .filter((c) => c.name);
+
+          if (toStore.length > 0) {
+            store.upsertContacts("whatsapp", toStore);
+            const backfilled = store.backfillMessageNames("whatsapp");
+            process.stderr.write(
+              `[daemon] history contacts: stored ${toStore.length} contacts, backfilled ${backfilled} messages\n`,
+            );
+          }
         }
       },
     );
@@ -270,6 +289,27 @@ export class UnifiedDaemon {
       if (enriched > 0) {
         process.stderr.write(
           `[daemon] enriched ${enriched} WhatsApp contacts from chat list\n`,
+        );
+      }
+    });
+
+    // ---- Contact sync (name resolution) ----
+
+    // contacts.upsert fires with contact info (incrementally and on sync)
+    this.sock.ev.on("contacts.upsert", (contacts) => {
+      const toStore = contacts
+        .filter((c) => c.name || c.notify)
+        .map((c) => ({
+          address: (c.id.split("@")[0] || c.id).split(":")[0] || c.id,
+          name: c.name || c.notify || "",
+        }))
+        .filter((c) => c.name);
+
+      if (toStore.length > 0) {
+        store.upsertContacts("whatsapp", toStore);
+        store.backfillMessageNames("whatsapp");
+        process.stderr.write(
+          `[daemon] contacts.upsert: updated ${toStore.length} contacts\n`,
         );
       }
     });

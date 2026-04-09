@@ -60,6 +60,16 @@ function getDb(): Database {
   }
   db.run("CREATE INDEX IF NOT EXISTS idx_messages_thread ON messages(provider, thread_id, date ASC)");
 
+  db.run(`
+    CREATE TABLE IF NOT EXISTS contacts (
+      provider    TEXT NOT NULL,
+      address     TEXT NOT NULL,
+      name        TEXT NOT NULL,
+      updated_at  TEXT NOT NULL,
+      PRIMARY KEY (provider, address)
+    )
+  `);
+
   return db;
 }
 
@@ -269,4 +279,94 @@ export function recordFetch(provider: string, account = "", folder = ""): void {
     INSERT OR REPLACE INTO fetch_log (provider, account, folder, fetched_at)
     VALUES (?, ?, ?, ?)
   `).run(provider, account, folder, new Date().toISOString());
+}
+
+// ---------------------------------------------------------------------------
+// Contacts
+// ---------------------------------------------------------------------------
+
+export function upsertContacts(
+  provider: string,
+  contacts: Array<{ address: string; name: string }>,
+): void {
+  const d = getDb();
+  const stmt = d.prepare(`
+    INSERT OR REPLACE INTO contacts (provider, address, name, updated_at)
+    VALUES ($provider, $address, $name, $updated_at)
+  `);
+  const now = new Date().toISOString();
+  const tx = d.transaction(() => {
+    for (const c of contacts) {
+      stmt.run({
+        $provider: provider,
+        $address: c.address,
+        $name: c.name,
+        $updated_at: now,
+      });
+    }
+  });
+  tx();
+}
+
+export function backfillMessageNames(provider: string): number {
+  const d = getDb();
+  const stmt = d.prepare(`
+    UPDATE messages
+    SET from_json = json_set(from_json, '$.name', (
+      SELECT c.name FROM contacts c
+      WHERE c.provider = messages.provider
+        AND c.address = json_extract(messages.from_json, '$.address')
+    ))
+    WHERE provider = $provider
+      AND from_json IS NOT NULL
+      AND (
+        json_extract(from_json, '$.name') IS NULL
+        OR json_extract(from_json, '$.name') = json_extract(from_json, '$.address')
+      )
+      AND json_extract(from_json, '$.address') IN (
+        SELECT c.address FROM contacts c WHERE c.provider = $provider2
+      )
+  `);
+  const result = stmt.run({ $provider: provider, $provider2: provider });
+  return result.changes;
+}
+
+export function getContacts(
+  provider: string,
+  opts?: { limit?: number; search?: string },
+): Array<{ address: string; name: string; messageCount: number; lastSeen: string }> {
+  const d = getDb();
+  const conditions = ["c.provider = ?"];
+  const params: any[] = [provider];
+
+  if (opts?.search) {
+    conditions.push("c.name LIKE ?");
+    params.push(`%${opts.search}%`);
+  }
+
+  const limit = opts?.limit ?? 50;
+  params.push(limit);
+
+  const sql = `
+    SELECT
+      c.address,
+      c.name,
+      COALESCE(m.cnt, 0) as messageCount,
+      COALESCE(m.last_seen, c.updated_at) as lastSeen
+    FROM contacts c
+    LEFT JOIN (
+      SELECT
+        json_extract(from_json, '$.address') as address,
+        COUNT(*) as cnt,
+        MAX(date) as last_seen
+      FROM messages
+      WHERE provider = '${provider}' AND direction = 'in'
+      GROUP BY address
+    ) m ON m.address = c.address
+    WHERE ${conditions.join(" AND ")}
+    ORDER BY m.cnt DESC NULLS LAST, c.name ASC
+    LIMIT ?
+  `;
+
+  return d.prepare(sql).all(...params) as any[];
 }

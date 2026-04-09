@@ -45,22 +45,57 @@ console.log('TOTAL'.padEnd(17), total.n + ' messages');
     bun -e "
 const { Database } = require('bun:sqlite');
 const db = new Database('$DB');
-const rows = db.query(\"
-  SELECT
-    json_extract(from_json, '$.name') as name,
-    json_extract(from_json, '$.address') as address,
-    COUNT(*) as messages,
-    MAX(date) as last_seen
-  FROM messages
-  WHERE provider = '$PROVIDER' AND direction = 'in'
-  GROUP BY address
-  ORDER BY messages DESC
-  LIMIT 50
-\").all();
-rows.forEach(r => {
-  const label = (r.name && r.name !== r.address) ? r.name : r.address;
-  console.log(String(r.messages).padStart(4), label?.padEnd(35), r.last_seen?.slice(0,10));
-});
+
+// Prefer contacts table if it exists and has data
+let hasContactsTable = false;
+try {
+  const check = db.query(\"SELECT COUNT(*) as n FROM contacts WHERE provider = '$PROVIDER'\").get();
+  hasContactsTable = check.n > 0;
+} catch {}
+
+if (hasContactsTable) {
+  const rows = db.query(\"
+    SELECT
+      c.name,
+      c.address,
+      COALESCE(m.cnt, 0) as messages,
+      COALESCE(m.last_seen, c.updated_at) as last_seen
+    FROM contacts c
+    LEFT JOIN (
+      SELECT
+        json_extract(from_json, '$.address') as address,
+        COUNT(*) as cnt,
+        MAX(date) as last_seen
+      FROM messages
+      WHERE provider = '$PROVIDER' AND direction = 'in'
+      GROUP BY address
+    ) m ON m.address = c.address
+    WHERE c.provider = '$PROVIDER'
+    ORDER BY messages DESC
+    LIMIT 50
+  \").all();
+  rows.forEach(r => {
+    console.log(String(r.messages).padStart(4), r.name?.padEnd(35), r.last_seen?.slice(0,10));
+  });
+} else {
+  // Fallback: query messages directly
+  const rows = db.query(\"
+    SELECT
+      json_extract(from_json, '$.name') as name,
+      json_extract(from_json, '$.address') as address,
+      COUNT(*) as messages,
+      MAX(date) as last_seen
+    FROM messages
+    WHERE provider = '$PROVIDER' AND direction = 'in'
+    GROUP BY address
+    ORDER BY messages DESC
+    LIMIT 50
+  \").all();
+  rows.forEach(r => {
+    const label = (r.name && r.name !== r.address) ? r.name : r.address;
+    console.log(String(r.messages).padStart(4), label?.padEnd(35), r.last_seen?.slice(0,10));
+  });
+}
 " 2>/dev/null
     ;;
 
