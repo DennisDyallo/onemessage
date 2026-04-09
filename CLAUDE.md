@@ -1,32 +1,76 @@
-# onemessage
+# CLAUDE.md
 
-Unified messaging CLI — send/reply/inbox/read/search across email, Signal, and SMS from one tool.
+This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
+
+## Build & Dev Commands
+
+```bash
+bun run check          # Type-check (tsc --noEmit) — no test suite yet
+bun run start          # Run CLI directly (same as: bun src/cli.ts)
+bun link               # Make `onemessage` available globally
+onemessage status      # Verify providers are configured
+onemessage daemon status  # Check if background daemon is running
+```
 
 ## Tech Stack
-- Runtime: bun (TypeScript)
-- CLI entry: `src/cli.ts`
-- Config: `~/.config/onemessage/config.json`
-- Cache: `~/.config/onemessage/messages.db` (SQLite via bun:sqlite)
+
+- Runtime: Bun (TypeScript, no transpile step)
+- CLI framework: Commander
+- Database: SQLite via `bun:sqlite` (WAL mode)
+- WhatsApp: @whiskeysockets/baileys (direct protocol, no external binary)
+- Email: nodemailer (SMTP) + imapflow (IMAP), designed for Proton Mail Bridge
+- Signal: shells out to `signal-cli` (external binary)
+- SMS: shells out to `kdeconnect-cli` (external binary)
 
 ## Architecture
-- Verb-first CLI: `onemessage <command> <provider> [options]`
-- Provider pattern: each provider implements `MessagingProvider` interface (`src/types.ts`)
-- Providers self-register via `registerProvider()` at import time
-- Shared utilities in `src/providers/shared.ts` (cliExists, runCli, cacheSentMessage)
-- SQLite message cache with freshness gating (`src/store.ts`)
+
+### CLI dispatch
+
+Verb-first CLI (`onemessage <command> <provider> [options]`). Entry point is `src/cli.ts`. All commands go through the provider registry — providers self-register at import time via `registerProvider()` in `src/registry.ts`.
+
+### Provider pattern
+
+Each provider implements `MessagingProvider` (defined in `src/types.ts`): `send`, `inbox`, `read`, and optionally `search`. Providers live in `src/providers/<name>.ts` and are barrel-imported via `src/providers/index.ts`.
+
+Two provider styles exist:
+- **Shell providers** (Signal, SMS): use `runCli`/`runCliAsync` from `src/providers/shared.ts` to invoke external CLIs, parse their JSON/text output
+- **Library providers** (Email, WhatsApp): use npm packages directly
+
+### Dual daemon architecture
+
+WhatsApp requires a persistent WebSocket connection, so the project has a **unified daemon** (`src/daemon.ts`) that:
+1. Maintains the WhatsApp Baileys connection (real-time message reception)
+2. Polls Signal and Email on configurable intervals
+3. Exposes a Unix domain socket IPC server at `~/.config/onemessage/daemon.sock`
+
+The WhatsApp CLI provider (`src/providers/whatsapp.ts`) is a thin IPC client — it calls `ensureDaemon()` from `src/daemon-shared.ts` to auto-start the daemon, then sends requests over the Unix socket. The daemon does all actual WhatsApp work.
+
+Baileys socket creation is shared between auth and daemon via `src/whatsapp-shared.ts`.
+
+### Cache layer
+
+`src/store.ts` provides a SQLite message cache. Key concepts:
+- **Freshness gating**: `isFresh(provider, maxAgeMs)` checks `fetch_log` table — providers skip re-fetch if data is recent enough. `--fresh` flag bypasses this.
+- **Two upsert paths**: `upsertMessages` (envelope-only, from inbox listings) and `upsertFullMessages` (with body, from receive/read operations)
+- **Thread support**: SMS conversations use `thread_id` column; thread messages are excluded from inbox listings
+
+### Config
+
+Single JSON file at `~/.config/onemessage/config.json`. Schema in `src/config.ts`. Each provider has its own config interface. The daemon config (`daemon.providers.*`) controls per-provider polling intervals and enable/disable.
 
 ## Adding a New Provider
+
 1. Create `src/providers/<name>.ts` implementing `MessagingProvider`
-2. Import shared utilities from `./shared.ts`
+2. Import shared utilities from `./shared.ts` (`runCli`, `cacheSentMessage`, etc.)
 3. Call `registerProvider()` at module scope
 4. Add import to `src/providers/index.ts`
 5. Add config interface to `src/config.ts`
-6. Add auth instructions to `src/cli.ts` auth command
+6. Add auth instructions to the `auth` command switch in `src/cli.ts`
+
+## Async vs Sync CLI calls
+
+`src/providers/shared.ts` has both `runCli` (sync, `Bun.spawnSync`) and `runCliAsync` (async, `Bun.spawn`). Use sync in CLI context (user waits for result), async in daemon context (must not block the event loop during polling).
 
 ## Maintenance
 
-### signal-cli requires regular updates
-Signal's servers reject clients older than ~3 months. If `signal-cli` is not updated, `inbox signal` and `send signal` will fail with authentication errors. Update periodically:
-```bash
-brew upgrade signal-cli
-```
+signal-cli must be updated every ~3 months or Signal's servers reject it: `brew upgrade signal-cli`
