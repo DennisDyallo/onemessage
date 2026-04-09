@@ -71,6 +71,22 @@ Single JSON file at `~/.config/onemessage/config.json`. Schema in `src/config.ts
 
 `src/providers/shared.ts` has both `runCli` (sync, `Bun.spawnSync`) and `runCliAsync` (async, `Bun.spawn`). Use sync in CLI context (user waits for result), async in daemon context (must not block the event loop during polling).
 
+## Database Queries
+
+Use `scripts/db-query.sh` for consistent SQLite inspection — never write ad hoc bun/SQL one-liners when these cover it:
+
+```bash
+./scripts/db-query.sh stats                        # message counts by provider
+./scripts/db-query.sh contacts [provider]          # all contacts ranked by message count
+./scripts/db-query.sh thread <+number> [provider]  # full conversation thread
+./scripts/db-query.sh between <+number> [provider] # count + date range with a contact
+./scripts/db-query.sh search <query> [provider]    # full-text search across all messages
+./scripts/db-query.sh recent [provider] [limit]    # most recent messages (default 20)
+./scripts/db-query.sh unnamed [provider]           # contacts stored as raw phone numbers
+```
+
+DB path: `~/.config/onemessage/messages.db`
+
 ## Maintenance
 
 signal-cli must be updated every ~3 months or Signal's servers reject it: `brew upgrade signal-cli`

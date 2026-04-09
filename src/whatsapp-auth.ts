@@ -15,7 +15,7 @@ import qrcode from "qrcode-terminal";
 import { DisconnectReason } from "@whiskeysockets/baileys";
 
 import { getConfigDir } from "./config.ts";
-import { createBaileysSocket } from "./whatsapp-shared.ts";
+import { createBaileysSocket, parseAndStoreWAMessage } from "./whatsapp-shared.ts";
 
 // ---------------------------------------------------------------------------
 // Public API
@@ -70,7 +70,64 @@ async function connectSocket(
   }
 
   return new Promise<void>((resolve, reject) => {
+    const lidCache = new Map<string, string>();
+    let totalStored = 0;
+    let batchCount = 0;
+    let historySyncDone = false;
+
+    // Timers for history sync wait logic
+    let maxTimer: ReturnType<typeof setTimeout> | null = null;
+    let idleTimer: ReturnType<typeof setTimeout> | null = null;
+
+    function finishHistorySync() {
+      if (historySyncDone) return;
+      historySyncDone = true;
+      if (maxTimer) clearTimeout(maxTimer);
+      if (idleTimer) clearTimeout(idleTimer);
+
+      if (totalStored > 0) {
+        console.log(
+          `\nHistory sync complete. Stored ${totalStored} messages from your chats.`,
+        );
+      } else {
+        console.log("\nHistory sync complete. No new messages to store.");
+      }
+
+      // Brief delay to let final creds flush to disk
+      setTimeout(() => resolve(), 500);
+    }
+
+    function resetIdleTimer() {
+      if (idleTimer) clearTimeout(idleTimer);
+      idleTimer = setTimeout(finishHistorySync, 5_000);
+    }
+
     sock.ev.on("creds.update", saveCreds);
+
+    // ---- History sync handler (captures batches during auth) ----
+    sock.ev.on(
+      "messaging-history.set",
+      async ({ messages }) => {
+        if (historySyncDone) return;
+
+        batchCount++;
+        let stored = 0;
+        for (const msg of messages) {
+          const ok = await parseAndStoreWAMessage(msg, sock, lidCache);
+          if (ok) stored++;
+        }
+        totalStored += stored;
+
+        if (messages.length > 0) {
+          console.log(
+            `  [batch ${batchCount}] stored ${stored}/${messages.length} messages`,
+          );
+        }
+
+        // Reset idle timer — wait for more batches
+        resetIdleTimer();
+      },
+    );
 
     sock.ev.on("connection.update", (update) => {
       const { connection, lastDisconnect, qr } = update;
@@ -85,8 +142,13 @@ async function connectSocket(
 
       if (connection === "open") {
         console.log("\nConnected! WhatsApp credentials saved.");
-        // Brief delay to let final creds flush to disk
-        setTimeout(() => resolve(), 500);
+        console.log(
+          "Syncing message history... (this may take up to 30 seconds)",
+        );
+
+        // Start the 30s max wait and initial 5s idle timer
+        maxTimer = setTimeout(finishHistorySync, 30_000);
+        resetIdleTimer();
       }
 
       if (connection === "close") {

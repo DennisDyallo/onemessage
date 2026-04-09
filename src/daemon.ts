@@ -15,13 +15,13 @@ import { existsSync, mkdirSync, writeFileSync, unlinkSync } from "fs";
 import {
   DisconnectReason,
   type WASocket,
-  normalizeMessageContent,
+  type WAMessage,
 } from "@whiskeysockets/baileys";
 
 import { loadConfig } from "./config.ts";
 import * as store from "./store.ts";
 import type { MessageFull } from "./types.ts";
-import { WA_DIR, AUTH_DIR, createBaileysSocket } from "./whatsapp-shared.ts";
+import { WA_DIR, AUTH_DIR, createBaileysSocket, parseAndStoreWAMessage } from "./whatsapp-shared.ts";
 import { DAEMON_PID, DAEMON_SOCK } from "./daemon-shared.ts";
 import { fetchSignalInbox, fetchSignalInboxAsync } from "./providers/signal.ts";
 import {
@@ -56,6 +56,8 @@ export class UnifiedDaemon {
   // WhatsApp (real-time)
   private sock: WASocket | null = null;
   private connected = false;
+  private reconnecting = false;
+  private groupsSynced = false;
   private lidToPhoneMap = new Map<string, string>();
   private groupCache = new Map<
     string,
@@ -161,10 +163,13 @@ export class UnifiedDaemon {
           return;
         }
 
+        if (this.reconnecting) return;
+        this.reconnecting = true;
         process.stderr.write(
           `[daemon] WhatsApp connection closed (reason=${reason}), reconnecting in 5s...\n`,
         );
         setTimeout(() => {
+          this.reconnecting = false;
           this.connectWhatsApp().catch((err) => {
             process.stderr.write(
               `[daemon] WhatsApp reconnect failed: ${err}\n`,
@@ -187,112 +192,95 @@ export class UnifiedDaemon {
         // Flush queued messages
         this.flushOutgoingQueue().catch(() => {});
 
-        // Sync group metadata
-        this.syncGroupMetadata().catch(() => {});
+        // Sync group metadata only once per daemon lifetime to avoid rate-limits
+        if (!this.groupsSynced) {
+          this.groupsSynced = true;
+          this.syncGroupMetadata().catch(() => {});
+        }
       }
     });
 
     // ---- Message reception ----
     this.sock.ev.on("messages.upsert", async ({ messages }) => {
       for (const msg of messages) {
-        try {
-          if (!msg.message) continue;
-          const normalized = normalizeMessageContent(msg.message);
-          if (!normalized) continue;
+        await this.parseAndStoreMessage(msg);
+      }
+    });
 
-          const rawJid = msg.key.remoteJid;
-          if (!rawJid || rawJid === "status@broadcast") continue;
-
-          const chatJid = await this.translateJid(rawJid);
-          const fromMe = msg.key.fromMe ?? false;
-
-          const content =
-            normalized.conversation ||
-            normalized.extendedTextMessage?.text ||
-            normalized.imageMessage?.caption ||
-            normalized.videoMessage?.caption ||
-            "";
-
-          if (!content) continue;
-
-          // Determine sender info
-          let senderJid = chatJid;
-          if (msg.key.participant) {
-            senderJid = await this.translateJid(msg.key.participant);
-          }
-          const senderName =
-            msg.pushName || senderJid.split("@")[0] || senderJid;
-          const senderAddress = senderJid.split("@")[0] || senderJid;
-
-          // Determine direction and build contacts
-          const direction: "in" | "out" = fromMe ? "out" : "in";
-          const fromContact = {
-            name: senderName,
-            address: senderAddress,
-          };
-
-          // For outgoing messages, the "to" is the chat; for incoming, "to" is self
-          const toContact = fromMe
-            ? {
-                name: chatJid.split("@")[0] || chatJid,
-                address: chatJid.split("@")[0] || chatJid,
-              }
-            : { name: "me", address: "me" };
-
-          const timestamp =
-            typeof msg.messageTimestamp === "number"
-              ? msg.messageTimestamp
-              : Number(msg.messageTimestamp);
-
-          const full: MessageFull = {
-            id: msg.key.id || `wa-${Date.now()}`,
-            provider: "whatsapp",
-            from: fromContact,
-            to: [toContact],
-            subject: undefined,
-            preview: content.slice(0, 200),
-            body: content,
-            bodyFormat: "text",
-            date: new Date(timestamp * 1000).toISOString(),
-            unread: !fromMe,
-            hasAttachments: false,
-            attachments: [],
-          };
-
-          store.upsertFullMessages([full], direction);
-        } catch (err) {
+    // ---- History sync (batches of historical messages on connect) ----
+    this.sock.ev.on(
+      "messaging-history.set",
+      async ({
+        messages,
+        chats: _chats,
+        contacts: _contacts,
+        isLatest: _isLatest,
+      }) => {
+        let stored = 0;
+        for (const msg of messages) {
+          const ok = await this.parseAndStoreMessage(msg);
+          if (ok) stored++;
+        }
+        if (messages.length > 0) {
           process.stderr.write(
-            `[daemon] error processing WhatsApp message: ${err}\n`,
+            `[daemon] history sync: stored ${stored}/${messages.length} messages\n`,
           );
         }
+      },
+    );
+
+    // ---- Chat list (contact name enrichment) ----
+    this.sock.ev.on("chats.upsert", (chats) => {
+      let enriched = 0;
+      for (const chat of chats) {
+        if (!chat.name || !chat.id) continue;
+        // Skip status broadcast and groups (groups already handled via groupCache)
+        if (chat.id === "status@broadcast") continue;
+
+        const ts = chat.conversationTimestamp;
+        const timestamp = ts
+          ? typeof ts === "number"
+            ? ts
+            : Number(ts)
+          : Math.floor(Date.now() / 1000);
+
+        // Only enrich chats with recent-ish activity (within last year)
+        const oneYearAgo = Math.floor(Date.now() / 1000) - 365 * 24 * 60 * 60;
+        if (timestamp < oneYearAgo) continue;
+
+        const address = chat.id.split("@")[0] || chat.id;
+        const envelope: MessageFull = {
+          id: `chat-meta-${chat.id}`,
+          provider: "whatsapp",
+          from: { name: chat.name, address },
+          to: [{ name: "me", address: "me" }],
+          subject: undefined,
+          preview: `Chat with ${chat.name}`,
+          body: `Chat with ${chat.name}`,
+          bodyFormat: "text",
+          date: new Date(timestamp * 1000).toISOString(),
+          unread: false,
+          hasAttachments: false,
+          attachments: [],
+        };
+
+        store.upsertFullMessages([envelope], "in");
+        enriched++;
+      }
+      if (enriched > 0) {
+        process.stderr.write(
+          `[daemon] enriched ${enriched} WhatsApp contacts from chat list\n`,
+        );
       }
     });
   }
 
   // -----------------------------------------------------------------------
-  // JID translation (LID -> phone)
+  // Message parsing helper (shared by messages.upsert and history sync)
   // -----------------------------------------------------------------------
 
-  private async translateJid(jid: string): Promise<string> {
-    if (!jid.endsWith("@lid")) return jid;
-    const lidUser = (jid.split("@")[0] || jid).split(":")[0] || jid;
-
-    const cached = this.lidToPhoneMap.get(lidUser);
-    if (cached) return cached;
-
-    try {
-      const pn =
-        await this.sock?.signalRepository?.lidMapping?.getPNForLID(jid);
-      if (pn) {
-        const phoneJid = `${(pn.split("@")[0] || pn).split(":")[0] || pn}@s.whatsapp.net`;
-        this.lidToPhoneMap.set(lidUser, phoneJid);
-        return phoneJid;
-      }
-    } catch {
-      // ignore resolution failure
-    }
-
-    return jid;
+  private async parseAndStoreMessage(msg: WAMessage): Promise<boolean> {
+    return parseAndStoreWAMessage(msg, this.sock ?? undefined, this.lidToPhoneMap);
   }
 
   // -----------------------------------------------------------------------

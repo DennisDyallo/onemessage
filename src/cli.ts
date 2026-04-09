@@ -542,6 +542,62 @@ daemonCmd
   });
 
 daemonCmd
+  .command("restart")
+  .description("Restart the daemon (stop + start in background)")
+  .action(async () => {
+    const { DAEMON_PID, DAEMON_SOCK, isDaemonRunning } = await import("./daemon-shared.ts");
+    const { existsSync, readFileSync, unlinkSync } = await import("fs");
+
+    // Stop existing daemon
+    if (existsSync(DAEMON_PID)) {
+      const pidStr = readFileSync(DAEMON_PID, "utf-8").trim();
+      const pid = parseInt(pidStr, 10);
+      if (!isNaN(pid)) {
+        try {
+          process.kill(pid, 0);
+          process.kill(pid, "SIGTERM");
+          console.log(`  Sent SIGTERM to daemon (pid=${pid}).`);
+        } catch {
+          // already dead
+        }
+      }
+    }
+
+    // Wait for it to stop (max 5s)
+    const deadline = Date.now() + 5000;
+    while (isDaemonRunning() && Date.now() < deadline) {
+      await new Promise((r) => setTimeout(r, 200));
+    }
+
+    // Clean up stale socket
+    try { if (existsSync(DAEMON_SOCK)) unlinkSync(DAEMON_SOCK); } catch {}
+
+    // Start new daemon in background
+    const { join, dirname } = await import("path");
+    const PROJECT_ROOT = join(dirname(new URL(import.meta.url).pathname), "..");
+    const proc = Bun.spawn(["bun", "run", "src/daemon.ts"], {
+      cwd: PROJECT_ROOT,
+      stdio: ["ignore", "ignore", "ignore"],
+      detached: true,
+    });
+    proc.unref();
+
+    // Wait for socket
+    const maxWait = 10_000;
+    const interval = 200;
+    let waited = 0;
+    while (waited < maxWait) {
+      if (existsSync(DAEMON_SOCK) && isDaemonRunning()) {
+        console.log("  Daemon restarted.");
+        return;
+      }
+      await new Promise((r) => setTimeout(r, interval));
+      waited += interval;
+    }
+    console.error("  Daemon failed to start within 10 seconds.");
+  });
+
+daemonCmd
   .command("status")
   .description("Show daemon status")
   .option("--json", "Output JSON", false)
