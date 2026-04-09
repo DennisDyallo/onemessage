@@ -496,4 +496,99 @@ program
     console.log();
   });
 
+// ---- daemon ---------------------------------------------------------------
+
+const daemonCmd = program
+  .command("daemon")
+  .description("Manage the onemessage background daemon");
+
+daemonCmd
+  .command("start")
+  .description("Start the unified daemon in foreground")
+  .action(async () => {
+    const { UnifiedDaemon } = await import("./daemon.ts");
+    const daemon = new UnifiedDaemon();
+    await daemon.start();
+  });
+
+daemonCmd
+  .command("stop")
+  .description("Stop the running daemon")
+  .action(async () => {
+    const { DAEMON_PID } = await import("./daemon-shared.ts");
+    const { existsSync, readFileSync, unlinkSync } = await import("fs");
+
+    if (!existsSync(DAEMON_PID)) {
+      console.log("  Daemon is not running (no PID file).");
+      return;
+    }
+
+    const pidStr = readFileSync(DAEMON_PID, "utf-8").trim();
+    const pid = parseInt(pidStr, 10);
+    if (isNaN(pid)) {
+      console.error("  Invalid PID file. Removing.");
+      unlinkSync(DAEMON_PID);
+      return;
+    }
+
+    try {
+      process.kill(pid, 0); // check if alive
+      process.kill(pid, "SIGTERM");
+      console.log(`  Sent SIGTERM to daemon (pid=${pid}).`);
+    } catch {
+      console.log("  Daemon is not running. Cleaning up stale PID file.");
+      try { unlinkSync(DAEMON_PID); } catch {}
+    }
+  });
+
+daemonCmd
+  .command("status")
+  .description("Show daemon status")
+  .option("--json", "Output JSON", false)
+  .action(async (opts) => {
+    const { isDaemonRunning, daemonRequest } = await import("./daemon-shared.ts");
+
+    if (!isDaemonRunning()) {
+      if (opts.json) {
+        process.stdout.write(JSON.stringify({ running: false }) + "\n");
+      } else {
+        console.log("  Daemon is not running.");
+      }
+      return;
+    }
+
+    try {
+      const res = await daemonRequest({ type: "status" });
+      if (opts.json) {
+        process.stdout.write(JSON.stringify(res.data, null, 2) + "\n");
+        return;
+      }
+
+      const d = res.data as any;
+      console.log();
+      console.log(`  Daemon running (pid=${d.pid}, uptime=${d.uptime}s)`);
+      console.log();
+
+      // WhatsApp
+      const wa = d.whatsapp;
+      const waIcon = wa.connected ? "+" : "-";
+      console.log(`  ${waIcon} whatsapp: ${wa.connected ? "connected" : "disconnected"} (${wa.groups} groups, ${wa.queuedMessages} queued)`);
+
+      // Polling providers
+      const polling = d.polling as Record<string, { lastPoll: string | null; enabled: boolean }>;
+      for (const [name, info] of Object.entries(polling)) {
+        const icon = info.enabled ? "+" : "-";
+        const last = info.lastPoll ? `last: ${info.lastPoll}` : "never polled";
+        console.log(`  ${icon} ${name}: ${info.enabled ? "enabled" : "disabled"} (${last})`);
+      }
+      console.log();
+    } catch (err: any) {
+      if (opts.json) {
+        process.stdout.write(JSON.stringify({ running: true, error: err.message }) + "\n");
+      } else {
+        console.error(`  Daemon is running but not responding: ${err.message}`);
+      }
+    }
+  });
+
 program.parse();

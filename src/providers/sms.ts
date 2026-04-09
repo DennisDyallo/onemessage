@@ -200,6 +200,18 @@ function threadToFullMessage(messages: MessageFull[], threadId: string): Message
 }
 
 // ---------------------------------------------------------------------------
+// Fetch-and-cache (callable by daemon)
+// ---------------------------------------------------------------------------
+
+export function fetchSmsInbox(opts?: { unread?: boolean; fresh?: boolean; from?: string }): void {
+  const messages = fetchSmsConversations(opts);
+  if (messages.length > 0) {
+    store.upsertFullMessages(messages);
+  }
+  store.recordFetch("sms");
+}
+
+// ---------------------------------------------------------------------------
 // Provider
 // ---------------------------------------------------------------------------
 
@@ -259,16 +271,11 @@ const smsProvider: MessagingProvider = {
     const needsFetch = opts?.fresh || !store.isFresh("sms", FRESHNESS_MS);
 
     if (needsFetch) {
-      const messages = fetchSmsConversations({
+      fetchSmsInbox({
         unread: opts?.unread,
         fresh: opts?.fresh,
         from: opts?.from,
       });
-
-      if (messages.length > 0) {
-        store.upsertFullMessages(messages);
-      }
-      store.recordFetch("sms");
     }
 
     return store.getCachedInbox("sms", {

@@ -196,6 +196,25 @@ function parseSignalMessages(jsonLines: string): MessageFull[] {
 }
 
 // ---------------------------------------------------------------------------
+// Fetch-and-cache (callable by daemon)
+// ---------------------------------------------------------------------------
+
+export function fetchSignalInbox(account: string): void {
+  const result = runSignalCli(["-a", account, "-o", "json", "receive", "-t", "5", "--send-read-receipts"]);
+
+  if (result.stdout) {
+    const freshMessages = parseSignalMessages(result.stdout);
+    if (freshMessages.length > 0) {
+      store.upsertFullMessages(freshMessages);
+    }
+  } else if (!result.ok && result.stderr) {
+    process.stderr.write(`[signal] ${result.stderr}\n`);
+  }
+
+  store.recordFetch("signal", account);
+}
+
+// ---------------------------------------------------------------------------
 // Provider
 // ---------------------------------------------------------------------------
 
@@ -279,18 +298,7 @@ const signalProvider: MessagingProvider = {
       });
     }
 
-    const result = runSignalCli(["-a", settings.account, "-o", "json", "receive", "-t", "5", "--send-read-receipts"]);
-
-    if (result.stdout) {
-      const freshMessages = parseSignalMessages(result.stdout);
-      if (freshMessages.length > 0) {
-        store.upsertFullMessages(freshMessages);
-      }
-    } else if (!result.ok && result.stderr) {
-      process.stderr.write(`[signal] ${result.stderr}\n`);
-    }
-
-    store.recordFetch("signal", settings.account);
+    fetchSignalInbox(settings.account);
 
     return store.getCachedInbox("signal", {
       limit: opts?.limit,

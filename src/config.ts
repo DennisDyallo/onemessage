@@ -13,6 +13,16 @@ export interface OneMessageConfig {
   signal?: SignalProviderConfig;
   sms?: SmsProviderConfig;
   whatsapp?: WhatsAppProviderConfig;
+  daemon?: DaemonConfig;
+}
+
+export interface DaemonConfig {
+  pollIntervalMs?: number;
+  providers?: {
+    signal?: { enabled?: boolean; pollIntervalMs?: number };
+    email?: { enabled?: boolean; pollIntervalMs?: number };
+    sms?: { enabled?: boolean; pollIntervalMs?: number };
+  };
 }
 
 export interface EmailProviderConfig {

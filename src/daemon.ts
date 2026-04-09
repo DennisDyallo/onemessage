@@ -1,0 +1,803 @@
+/**
+ * Unified onemessage daemon — holds a persistent WhatsApp (Baileys) connection
+ * and polls Signal, Email, and SMS on configurable intervals.
+ *
+ * Usage: bun run src/daemon.ts
+ *
+ * Runtime paths (under ~/.config/onemessage/):
+ *   daemon.pid  — PID file
+ *   daemon.sock — Unix domain socket for IPC
+ *   whatsapp/auth/ — Baileys multi-file auth state
+ */
+
+import { existsSync, mkdirSync, writeFileSync, unlinkSync } from "fs";
+
+import {
+  DisconnectReason,
+  type WASocket,
+  normalizeMessageContent,
+} from "@whiskeysockets/baileys";
+
+import { loadConfig } from "./config.ts";
+import * as store from "./store.ts";
+import type { MessageFull } from "./types.ts";
+import { WA_DIR, AUTH_DIR, createBaileysSocket } from "./whatsapp-shared.ts";
+import { DAEMON_PID, DAEMON_SOCK } from "./daemon-shared.ts";
+import { fetchSignalInbox } from "./providers/signal.ts";
+import {
+  fetchEmailInbox,
+  resolveSettings as resolveEmailSettings,
+} from "./providers/email.ts";
+import { fetchSmsInbox } from "./providers/sms.ts";
+import { cliExists } from "./providers/shared.ts";
+
+// ---------------------------------------------------------------------------
+// IPC types
+// ---------------------------------------------------------------------------
+
+type DaemonRequest =
+  | { type: "send"; jid: string; text: string }
+  | { type: "status" }
+  | { type: "resolve-group"; name: string }
+  | { type: "list-groups" }
+  | { type: "ping" }
+  | { type: "fetch"; provider?: string }
+  | { type: "providers" };
+
+type DaemonResponse =
+  | { ok: true; data?: unknown }
+  | { ok: false; error: string };
+
+// ---------------------------------------------------------------------------
+// UnifiedDaemon
+// ---------------------------------------------------------------------------
+
+export class UnifiedDaemon {
+  // WhatsApp (real-time)
+  private sock: WASocket | null = null;
+  private connected = false;
+  private lidToPhoneMap = new Map<string, string>();
+  private groupCache = new Map<
+    string,
+    {
+      id: string;
+      subject: string;
+      isCommunity?: boolean;
+      linkedParent?: string;
+    }
+  >();
+  private outgoingQueue: Array<{ jid: string; text: string }> = [];
+  private flushing = false;
+
+  // Polling
+  private pollTimers = new Map<string, ReturnType<typeof setInterval>>();
+  private polling = new Map<string, boolean>();
+  private lastPoll = new Map<string, number>();
+
+  // IPC
+  private unixServer: ReturnType<typeof Bun.listen> | null = null;
+
+  // Lifecycle
+  private startTime = Date.now();
+
+  // -----------------------------------------------------------------------
+  // Start
+  // -----------------------------------------------------------------------
+
+  async start(): Promise<void> {
+    const configDir = DAEMON_PID.replace(/\/[^/]+$/, "");
+    mkdirSync(configDir, { recursive: true });
+
+    // Write PID file
+    writeFileSync(DAEMON_PID, String(process.pid), "utf-8");
+
+    // Clean up stale socket
+    if (existsSync(DAEMON_SOCK)) {
+      try {
+        unlinkSync(DAEMON_SOCK);
+      } catch {
+        // ignore
+      }
+    }
+
+    // Connect to WhatsApp (if auth exists)
+    if (existsSync(AUTH_DIR)) {
+      await this.connectWhatsApp();
+    } else {
+      process.stderr.write(
+        "[daemon] WhatsApp auth not found — skipping WhatsApp connection\n",
+      );
+    }
+
+    // Start polling providers
+    this.startPolling();
+
+    // Start IPC server
+    this.startIpcServer();
+
+    // Graceful shutdown
+    process.on("SIGTERM", () => this.cleanup());
+    process.on("SIGINT", () => this.cleanup());
+
+    process.stderr.write(
+      `[daemon] started pid=${process.pid} sock=${DAEMON_SOCK}\n`,
+    );
+  }
+
+  // -----------------------------------------------------------------------
+  // WhatsApp connection (adapted from whatsapp-daemon.ts)
+  // -----------------------------------------------------------------------
+
+  private async connectWhatsApp(): Promise<void> {
+    mkdirSync(AUTH_DIR, { recursive: true });
+
+    const { sock, saveCreds } = await createBaileysSocket(AUTH_DIR);
+    this.sock = sock;
+
+    this.sock.ev.on("creds.update", saveCreds);
+
+    this.sock.ev.on("connection.update", (update) => {
+      const { connection, lastDisconnect, qr } = update;
+
+      if (qr) {
+        process.stderr.write(
+          "[daemon] WhatsApp QR received — auth required before starting daemon. Exiting.\n",
+        );
+        this.cleanup();
+        return;
+      }
+
+      if (connection === "close") {
+        this.connected = false;
+        const reason = (
+          lastDisconnect?.error as { output?: { statusCode?: number } }
+        )?.output?.statusCode;
+        const loggedOut = reason === DisconnectReason.loggedOut;
+
+        if (loggedOut) {
+          process.stderr.write(
+            "[daemon] WhatsApp logged out (401). Disabling WhatsApp.\n",
+          );
+          return;
+        }
+
+        process.stderr.write(
+          `[daemon] WhatsApp connection closed (reason=${reason}), reconnecting in 5s...\n`,
+        );
+        setTimeout(() => {
+          this.connectWhatsApp().catch((err) => {
+            process.stderr.write(
+              `[daemon] WhatsApp reconnect failed: ${err}\n`,
+            );
+          });
+        }, 5000);
+      } else if (connection === "open") {
+        this.connected = true;
+        process.stderr.write("[daemon] WhatsApp connected\n");
+
+        // Build self LID-to-phone mapping
+        if (this.sock?.user) {
+          const phoneUser = this.sock.user.id.split(":")[0];
+          const lidUser = this.sock.user.lid?.split(":")[0];
+          if (lidUser && phoneUser) {
+            this.lidToPhoneMap.set(lidUser, `${phoneUser}@s.whatsapp.net`);
+          }
+        }
+
+        // Flush queued messages
+        this.flushOutgoingQueue().catch(() => {});
+
+        // Sync group metadata
+        this.syncGroupMetadata().catch(() => {});
+      }
+    });
+
+    // ---- Message reception ----
+    this.sock.ev.on("messages.upsert", async ({ messages }) => {
+      for (const msg of messages) {
+        try {
+          if (!msg.message) continue;
+          const normalized = normalizeMessageContent(msg.message);
+          if (!normalized) continue;
+
+          const rawJid = msg.key.remoteJid;
+          if (!rawJid || rawJid === "status@broadcast") continue;
+
+          const chatJid = await this.translateJid(rawJid);
+          const fromMe = msg.key.fromMe ?? false;
+
+          const content =
+            normalized.conversation ||
+            normalized.extendedTextMessage?.text ||
+            normalized.imageMessage?.caption ||
+            normalized.videoMessage?.caption ||
+            "";
+
+          if (!content) continue;
+
+          // Determine sender info
+          let senderJid = chatJid;
+          if (msg.key.participant) {
+            senderJid = await this.translateJid(msg.key.participant);
+          }
+          const senderName =
+            msg.pushName || senderJid.split("@")[0] || senderJid;
+          const senderAddress = senderJid.split("@")[0] || senderJid;
+
+          // Determine direction and build contacts
+          const direction: "in" | "out" = fromMe ? "out" : "in";
+          const fromContact = {
+            name: senderName,
+            address: senderAddress,
+          };
+
+          // For outgoing messages, the "to" is the chat; for incoming, "to" is self
+          const toContact = fromMe
+            ? {
+                name: chatJid.split("@")[0] || chatJid,
+                address: chatJid.split("@")[0] || chatJid,
+              }
+            : { name: "me", address: "me" };
+
+          const timestamp =
+            typeof msg.messageTimestamp === "number"
+              ? msg.messageTimestamp
+              : Number(msg.messageTimestamp);
+
+          const full: MessageFull = {
+            id: msg.key.id || `wa-${Date.now()}`,
+            provider: "whatsapp",
+            from: fromContact,
+            to: [toContact],
+            subject: undefined,
+            preview: content.slice(0, 200),
+            body: content,
+            bodyFormat: "text",
+            date: new Date(timestamp * 1000).toISOString(),
+            unread: !fromMe,
+            hasAttachments: false,
+            attachments: [],
+          };
+
+          store.upsertFullMessages([full], direction);
+        } catch (err) {
+          process.stderr.write(
+            `[daemon] error processing WhatsApp message: ${err}\n`,
+          );
+        }
+      }
+    });
+  }
+
+  // -----------------------------------------------------------------------
+  // JID translation (LID -> phone)
+  // -----------------------------------------------------------------------
+
+  private async translateJid(jid: string): Promise<string> {
+    if (!jid.endsWith("@lid")) return jid;
+    const lidUser = (jid.split("@")[0] || jid).split(":")[0] || jid;
+
+    const cached = this.lidToPhoneMap.get(lidUser);
+    if (cached) return cached;
+
+    try {
+      const pn =
+        await this.sock?.signalRepository?.lidMapping?.getPNForLID(jid);
+      if (pn) {
+        const phoneJid = `${(pn.split("@")[0] || pn).split(":")[0] || pn}@s.whatsapp.net`;
+        this.lidToPhoneMap.set(lidUser, phoneJid);
+        return phoneJid;
+      }
+    } catch {
+      // ignore resolution failure
+    }
+
+    return jid;
+  }
+
+  // -----------------------------------------------------------------------
+  // Group metadata
+  // -----------------------------------------------------------------------
+
+  private async syncGroupMetadata(): Promise<void> {
+    try {
+      const groups = await this.sock!.groupFetchAllParticipating();
+      this.groupCache.clear();
+      for (const [jid, metadata] of Object.entries(groups)) {
+        if (metadata.subject) {
+          this.groupCache.set(jid, {
+            id: jid,
+            subject: metadata.subject,
+            isCommunity: (metadata as any).isCommunity || false,
+            linkedParent: (metadata as any).linkedParent || undefined,
+          });
+        }
+      }
+      process.stderr.write(
+        `[daemon] synced ${this.groupCache.size} WhatsApp groups\n`,
+      );
+    } catch (err) {
+      process.stderr.write(`[daemon] WhatsApp group sync failed: ${err}\n`);
+    }
+  }
+
+  // -----------------------------------------------------------------------
+  // Outgoing queue
+  // -----------------------------------------------------------------------
+
+  private async flushOutgoingQueue(): Promise<void> {
+    if (this.flushing || this.outgoingQueue.length === 0) return;
+    this.flushing = true;
+    try {
+      while (this.outgoingQueue.length > 0) {
+        const item = this.outgoingQueue.shift()!;
+        await this.sock!.sendMessage(item.jid, { text: item.text });
+      }
+    } finally {
+      this.flushing = false;
+    }
+  }
+
+  // -----------------------------------------------------------------------
+  // Polling (Signal, Email, SMS)
+  // -----------------------------------------------------------------------
+
+  private startPolling(): void {
+    const config = loadConfig();
+    const defaultInterval = config.daemon?.pollIntervalMs ?? 300_000; // 5 min
+
+    // Signal
+    const signalConfig = config.signal;
+    if (signalConfig?.phone) {
+      const interval =
+        config.daemon?.providers?.signal?.pollIntervalMs ?? defaultInterval;
+      const enabled = config.daemon?.providers?.signal?.enabled !== false;
+      if (enabled) {
+        this.schedulePoll("signal", interval, () => {
+          fetchSignalInbox(signalConfig.phone);
+        });
+      }
+    }
+
+    // Email
+    const emailSettings = resolveEmailSettings();
+    if (emailSettings) {
+      const interval =
+        config.daemon?.providers?.email?.pollIntervalMs ?? defaultInterval;
+      const enabled = config.daemon?.providers?.email?.enabled !== false;
+      if (enabled) {
+        this.schedulePoll("email", interval, async () => {
+          await fetchEmailInbox(
+            emailSettings,
+            emailSettings.accounts,
+            "INBOX",
+          );
+        });
+      }
+    }
+
+    // SMS
+    if (cliExists("kdeconnect-read-sms")) {
+      const interval =
+        config.daemon?.providers?.sms?.pollIntervalMs ?? defaultInterval;
+      const enabled = config.daemon?.providers?.sms?.enabled !== false;
+      if (enabled) {
+        this.schedulePoll("sms", interval, () => {
+          fetchSmsInbox();
+        });
+      }
+    }
+  }
+
+  private schedulePoll(
+    name: string,
+    intervalMs: number,
+    fn: () => void | Promise<void>,
+  ): void {
+    // Poll immediately, then on interval
+    this.pollProvider(name, fn);
+    this.pollTimers.set(
+      name,
+      setInterval(() => this.pollProvider(name, fn), intervalMs),
+    );
+    process.stderr.write(
+      `[daemon] polling ${name} every ${Math.round(intervalMs / 1000)}s\n`,
+    );
+  }
+
+  private async pollProvider(
+    name: string,
+    fn: () => void | Promise<void>,
+  ): Promise<void> {
+    if (this.polling.get(name)) return; // skip if still running
+    this.polling.set(name, true);
+    try {
+      await fn();
+      this.lastPoll.set(name, Date.now());
+      process.stderr.write(`[daemon] ${name} polled successfully\n`);
+    } catch (err) {
+      process.stderr.write(`[daemon] ${name} poll failed: ${err}\n`);
+    } finally {
+      this.polling.set(name, false);
+    }
+  }
+
+  // -----------------------------------------------------------------------
+  // IPC server (Unix domain socket)
+  // -----------------------------------------------------------------------
+
+  private startIpcServer(): void {
+    const self = this;
+
+    this.unixServer = Bun.listen({
+      unix: DAEMON_SOCK,
+      socket: {
+        data(socket, data) {
+          const raw =
+            typeof data === "string"
+              ? data
+              : Buffer.from(data).toString("utf-8");
+
+          // Handle the first newline-delimited request, respond, then close
+          const lines = raw.split("\n").filter((l) => l.trim());
+          const firstLine = lines[0];
+          if (!firstLine) return;
+
+          self
+            .handleRequest(firstLine)
+            .then((resp) => {
+              socket.write(JSON.stringify(resp));
+              socket.end();
+            })
+            .catch((err) => {
+              const errResp: DaemonResponse = {
+                ok: false,
+                error: String(err),
+              };
+              socket.write(JSON.stringify(errResp));
+              socket.end();
+            });
+        },
+        open() {},
+        close() {},
+        error(_socket, err) {
+          process.stderr.write(`[daemon] socket error: ${err}\n`);
+        },
+      },
+    });
+  }
+
+  private async handleRequest(raw: string): Promise<DaemonResponse> {
+    let req: DaemonRequest;
+    try {
+      req = JSON.parse(raw);
+    } catch {
+      return { ok: false, error: "invalid JSON" };
+    }
+
+    switch (req.type) {
+      case "ping":
+        return { ok: true };
+
+      case "status": {
+        const pollingStatus: Record<
+          string,
+          { lastPoll: string | null; enabled: boolean }
+        > = {};
+        for (const name of ["signal", "email", "sms"]) {
+          const lastMs = this.lastPoll.get(name);
+          pollingStatus[name] = {
+            lastPoll: lastMs ? new Date(lastMs).toISOString() : null,
+            enabled: this.pollTimers.has(name),
+          };
+        }
+
+        return {
+          ok: true,
+          data: {
+            pid: process.pid,
+            uptime: Math.floor((Date.now() - this.startTime) / 1000),
+            whatsapp: {
+              connected: this.connected,
+              groups: this.groupCache.size,
+              queuedMessages: this.outgoingQueue.length,
+            },
+            polling: pollingStatus,
+          },
+        };
+      }
+
+      case "send": {
+        if (!req.jid || !req.text) {
+          return { ok: false, error: "jid and text required" };
+        }
+        if (!this.connected) {
+          this.outgoingQueue.push({ jid: req.jid, text: req.text });
+          return {
+            ok: true,
+            data: { queued: true, queueSize: this.outgoingQueue.length },
+          };
+        }
+        try {
+          await this.sock!.sendMessage(req.jid, { text: req.text });
+          return { ok: true };
+        } catch (err) {
+          this.outgoingQueue.push({ jid: req.jid, text: req.text });
+          return { ok: false, error: `send failed, queued: ${err}` };
+        }
+      }
+
+      case "list-groups": {
+        const groups = Array.from(this.groupCache.values()).sort((a, b) =>
+          a.subject.localeCompare(b.subject),
+        );
+        return { ok: true, data: groups };
+      }
+
+      case "resolve-group": {
+        if (!req.name) {
+          return { ok: false, error: "name required" };
+        }
+
+        // Support "Community/Channel" syntax for community sub-groups
+        const slashIdx = req.name.indexOf("/");
+        const communityName = (
+          slashIdx >= 0 ? req.name.slice(0, slashIdx) : req.name
+        )
+          .trim()
+          .toLowerCase();
+        const channelName =
+          slashIdx >= 0
+            ? req.name.slice(slashIdx + 1).trim().toLowerCase()
+            : undefined;
+
+        if (channelName) {
+          // Looking for a specific channel within a community
+          const communityMatches = Array.from(this.groupCache.values()).filter(
+            (g) =>
+              g.isCommunity &&
+              g.subject.toLowerCase().includes(communityName),
+          );
+          if (communityMatches.length === 0) {
+            return {
+              ok: false,
+              error: `no community matching "${req.name.slice(0, slashIdx)}"`,
+            };
+          }
+          const parent =
+            communityMatches.find(
+              (c) => c.subject.toLowerCase() === communityName,
+            ) ?? communityMatches[0]!;
+          // Find the channel under this community
+          const channels = Array.from(this.groupCache.values()).filter(
+            (g) =>
+              g.linkedParent === parent.id &&
+              g.subject.toLowerCase().includes(channelName),
+          );
+          if (channels.length === 0) {
+            const allChannels = Array.from(this.groupCache.values())
+              .filter((g) => g.linkedParent === parent.id)
+              .map((g) => g.subject);
+            return {
+              ok: false,
+              error: `no channel "${req.name.slice(slashIdx + 1).trim()}" in ${parent.subject}. Available: ${allChannels.join(", ")}`,
+            };
+          }
+          if (channels.length > 1) {
+            return {
+              ok: false,
+              error: `ambiguous: ${channels.map((c) => `${c.subject} (${c.id})`).join(", ")}`,
+            };
+          }
+          return { ok: true, data: channels[0] };
+        }
+
+        // Simple name lookup
+        const needle = communityName;
+        const matches = Array.from(this.groupCache.values()).filter((g) =>
+          g.subject.toLowerCase().includes(needle),
+        );
+
+        if (matches.length === 0) {
+          return { ok: false, error: `no group matching "${req.name}"` };
+        }
+
+        if (matches.length === 1) {
+          return { ok: true, data: matches[0] };
+        }
+
+        // Multiple matches — check if they're all from the same community
+        const communityHits = matches.filter((g) => g.isCommunity);
+
+        // If exactly one community matches and the rest are its children,
+        // resolve to the default channel (child with same name as parent)
+        if (communityHits.length === 1) {
+          const cParent = communityHits[0]!;
+          const children = matches.filter(
+            (g) => g.linkedParent === cParent.id,
+          );
+          const defaultChannel = children.find(
+            (c) => c.subject.toLowerCase() === cParent.subject.toLowerCase(),
+          );
+          if (defaultChannel) {
+            return { ok: true, data: defaultChannel };
+          }
+          // No default channel — list available channels
+          const allChannels = Array.from(this.groupCache.values()).filter(
+            (g) => g.linkedParent === cParent.id,
+          );
+          return {
+            ok: false,
+            error: `"${req.name}" is a community. Use "group:${cParent.subject}/<channel>". Channels: ${allChannels.map((c) => c.subject).join(", ")}`,
+          };
+        }
+
+        // Truly ambiguous — show context for each match
+        const labels = matches.map((g) => {
+          if (g.isCommunity) return `${g.subject} [community] (${g.id})`;
+          if (g.linkedParent) {
+            const parent = this.groupCache.get(g.linkedParent);
+            return `${g.subject} [in ${parent?.subject ?? "unknown"}] (${g.id})`;
+          }
+          return `${g.subject} (${g.id})`;
+        });
+        return {
+          ok: false,
+          error: `ambiguous: ${labels.join(", ")}`,
+        };
+      }
+
+      case "fetch": {
+        const provider = req.provider;
+        const config = loadConfig();
+
+        if (provider) {
+          // Trigger a single provider
+          switch (provider) {
+            case "signal": {
+              const phone = config.signal?.phone;
+              if (!phone)
+                return { ok: false, error: "signal not configured" };
+              await this.pollProvider("signal", () =>
+                fetchSignalInbox(phone),
+              );
+              return { ok: true };
+            }
+            case "email": {
+              const settings = resolveEmailSettings();
+              if (!settings)
+                return { ok: false, error: "email not configured" };
+              await this.pollProvider("email", () =>
+                fetchEmailInbox(settings, settings.accounts, "INBOX"),
+              );
+              return { ok: true };
+            }
+            case "sms": {
+              if (!cliExists("kdeconnect-read-sms"))
+                return {
+                  ok: false,
+                  error: "kdeconnect-read-sms not found",
+                };
+              await this.pollProvider("sms", () => fetchSmsInbox());
+              return { ok: true };
+            }
+            default:
+              return {
+                ok: false,
+                error: `unknown provider: ${provider}`,
+              };
+          }
+        }
+
+        // Poll all configured providers
+        const promises: Promise<void>[] = [];
+        if (config.signal?.phone) {
+          const phone = config.signal.phone;
+          promises.push(
+            this.pollProvider("signal", () => fetchSignalInbox(phone)),
+          );
+        }
+        const emailSettings = resolveEmailSettings();
+        if (emailSettings) {
+          promises.push(
+            this.pollProvider("email", () =>
+              fetchEmailInbox(emailSettings, emailSettings.accounts, "INBOX"),
+            ),
+          );
+        }
+        if (cliExists("kdeconnect-read-sms")) {
+          promises.push(
+            this.pollProvider("sms", () => fetchSmsInbox()),
+          );
+        }
+        await Promise.allSettled(promises);
+        return { ok: true };
+      }
+
+      case "providers": {
+        const config = loadConfig();
+        const providers: Record<
+          string,
+          { enabled: boolean; polling: boolean; lastPoll: string | null }
+        > = {};
+
+        // WhatsApp
+        providers.whatsapp = {
+          enabled: this.connected || this.sock !== null,
+          polling: false, // real-time, not polled
+          lastPoll: null,
+        };
+
+        // Polled providers
+        for (const name of ["signal", "email", "sms"]) {
+          const lastMs = this.lastPoll.get(name);
+          providers[name] = {
+            enabled: this.pollTimers.has(name),
+            polling: this.polling.get(name) ?? false,
+            lastPoll: lastMs ? new Date(lastMs).toISOString() : null,
+          };
+        }
+
+        return { ok: true, data: providers };
+      }
+
+      default:
+        return {
+          ok: false,
+          error: `unknown request type: ${(req as { type: string }).type}`,
+        };
+    }
+  }
+
+  // -----------------------------------------------------------------------
+  // Cleanup
+  // -----------------------------------------------------------------------
+
+  private cleanup(): void {
+    // Close Baileys connection
+    try {
+      this.sock?.end(undefined);
+    } catch {
+      // ignore
+    }
+
+    // Close Unix socket server
+    try {
+      this.unixServer?.stop();
+    } catch {
+      // ignore
+    }
+
+    // Clear poll timers
+    for (const timer of this.pollTimers.values()) {
+      clearInterval(timer);
+    }
+    this.pollTimers.clear();
+
+    // Delete PID file
+    try {
+      if (existsSync(DAEMON_PID)) unlinkSync(DAEMON_PID);
+    } catch {
+      // ignore
+    }
+
+    // Delete socket file
+    try {
+      if (existsSync(DAEMON_SOCK)) unlinkSync(DAEMON_SOCK);
+    } catch {
+      // ignore
+    }
+
+    process.exit(0);
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Entry point
+// ---------------------------------------------------------------------------
+
+const daemon = new UnifiedDaemon();
+daemon.start().catch((err) => {
+  process.stderr.write(`[daemon] fatal: ${err}\n`);
+  process.exit(1);
+});

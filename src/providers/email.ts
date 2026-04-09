@@ -24,7 +24,7 @@ const FRESHNESS_MS = 5 * 60_000; // 5 minutes
 // Resolved email settings (config + CLI overrides merged)
 // ---------------------------------------------------------------------------
 
-interface ResolvedEmail {
+export interface ResolvedEmail {
   password: string;
   accounts: string[];
   defaultAccount: string;
@@ -35,7 +35,7 @@ interface ResolvedEmail {
   security: string;
 }
 
-function resolveSettings(cliOverrides?: Record<string, unknown>): ResolvedEmail | null {
+export function resolveSettings(cliOverrides?: Record<string, unknown>): ResolvedEmail | null {
   const config = loadConfig();
   const email = config.email;
 
@@ -206,6 +206,27 @@ async function fetchFullMessage(
 }
 
 // ---------------------------------------------------------------------------
+// Fetch-and-cache (callable by daemon)
+// ---------------------------------------------------------------------------
+
+export async function fetchEmailInbox(
+  s: ResolvedEmail,
+  accounts: string[],
+  folder: string,
+  criteria?: any,
+  limit?: number,
+): Promise<void> {
+  const fetched: MessageEnvelope[] = [];
+  for (const account of accounts) {
+    fetched.push(...await fetchMailboxMessages(s, account, folder, criteria ?? {}, limit ?? 50));
+  }
+  if (fetched.length > 0) {
+    store.upsertMessages(fetched);
+  }
+  store.recordFetch("email", accounts.join(","), folder);
+}
+
+// ---------------------------------------------------------------------------
 // Provider
 // ---------------------------------------------------------------------------
 
@@ -289,15 +310,7 @@ const emailProvider: MessagingProvider = {
       }
       if (opts?.from) criteria.from = opts.from;
 
-      const fetched: MessageEnvelope[] = [];
-      for (const account of accounts) {
-        fetched.push(...await fetchMailboxMessages(s, account, folder, criteria, limit));
-      }
-
-      if (fetched.length > 0) {
-        store.upsertMessages(fetched);
-      }
-      store.recordFetch("email", accounts.join(","), folder);
+      await fetchEmailInbox(s, accounts, folder, criteria, limit);
     }
 
     return store.getCachedInbox("email", {

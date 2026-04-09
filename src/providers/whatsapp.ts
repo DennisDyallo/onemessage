@@ -1,90 +1,11 @@
 import { registerProvider } from "../registry.ts";
-import { getConfigDir } from "../config.ts";
 import * as store from "../store.ts";
 import { readFromCacheOrFail, cacheSentMessage } from "./shared.ts";
 import type { MessagingProvider } from "../types.ts";
-import { join, dirname } from "path";
-import { existsSync, readFileSync } from "fs";
-import { connect } from "net";
-import { SOCK_PATH as SOCKET_PATH, PID_PATH, AUTH_DIR } from "../whatsapp-shared.ts";
-
-/** Project root — used to launch the daemon with the correct cwd. */
-const PROJECT_ROOT = join(dirname(new URL(import.meta.url).pathname), "..", "..");
-
-// ---------------------------------------------------------------------------
-// Daemon management
-// ---------------------------------------------------------------------------
-
-function isDaemonRunning(): boolean {
-  if (!existsSync(PID_PATH)) return false;
-  try {
-    const pid = parseInt(readFileSync(PID_PATH, "utf-8").trim(), 10);
-    if (isNaN(pid)) return false;
-    process.kill(pid, 0);
-    return true;
-  } catch {
-    return false;
-  }
-}
-
-async function ensureDaemon(): Promise<void> {
-  if (isDaemonRunning() && existsSync(SOCKET_PATH)) return;
-
-  const proc = Bun.spawn(["bun", "run", "src/whatsapp-daemon.ts"], {
-    cwd: PROJECT_ROOT,
-    stdio: ["ignore", "ignore", "ignore"],
-    detached: true,
-  });
-  proc.unref();
-
-  // Wait for socket to appear (poll every 200ms, max 10s)
-  const maxWait = 10_000;
-  const interval = 200;
-  let waited = 0;
-  while (waited < maxWait) {
-    if (existsSync(SOCKET_PATH) && isDaemonRunning()) return;
-    await new Promise((r) => setTimeout(r, interval));
-    waited += interval;
-  }
-
-  throw new Error("WhatsApp daemon failed to start within 10 seconds");
-}
-
-// ---------------------------------------------------------------------------
-// IPC
-// ---------------------------------------------------------------------------
-
-function daemonRequest(req: object): Promise<any> {
-  return new Promise((resolve, reject) => {
-    const timeout = setTimeout(() => {
-      socket.destroy();
-      reject(new Error("WhatsApp daemon request timed out (30s)"));
-    }, 30_000);
-
-    const socket = connect(SOCKET_PATH, () => {
-      socket.write(JSON.stringify(req) + "\n");
-    });
-
-    let data = "";
-    socket.on("data", (chunk) => {
-      data += chunk.toString();
-    });
-
-    socket.on("end", () => {
-      clearTimeout(timeout);
-      try {
-        resolve(JSON.parse(data));
-      } catch {
-        reject(new Error(`Invalid JSON from daemon: ${data.slice(0, 200)}`));
-      }
-    });
-
-    socket.on("error", (err) => {
-      clearTimeout(timeout);
-      reject(err);
-    });
-  });
-}
+import { existsSync } from "fs";
+import { join } from "path";
+import { AUTH_DIR } from "../whatsapp-shared.ts";
+import { isDaemonRunning, ensureDaemon, daemonRequest } from "../daemon-shared.ts";
 
 // ---------------------------------------------------------------------------
 // Recipient resolution
