@@ -80,10 +80,30 @@ function getDb(): Database {
 export function upsertMessages(msgs: MessageEnvelope[], direction: "in" | "out" = "in"): void {
   const d = getDb();
   const stmt = d.prepare(`
-    INSERT OR REPLACE INTO messages
+    INSERT INTO messages
       (id, provider, direction, from_json, to_json, subject, preview, date, unread, has_attachments, cached_at)
     VALUES
       ($id, $provider, $direction, $from_json, $to_json, $subject, $preview, $date, $unread, $has_attachments, $cached_at)
+    ON CONFLICT(provider, id) DO UPDATE SET
+      direction       = excluded.direction,
+      to_json         = excluded.to_json,
+      subject         = excluded.subject,
+      preview         = excluded.preview,
+      date            = excluded.date,
+      unread          = excluded.unread,
+      has_attachments = excluded.has_attachments,
+      cached_at       = excluded.cached_at,
+      from_json       = CASE
+        WHEN json_extract(excluded.from_json, '$.name') IS NOT NULL
+          AND json_extract(excluded.from_json, '$.name') != ''
+          AND json_extract(excluded.from_json, '$.name') != json_extract(excluded.from_json, '$.address')
+        THEN excluded.from_json
+        WHEN json_extract(messages.from_json, '$.name') IS NOT NULL
+          AND json_extract(messages.from_json, '$.name') != ''
+          AND json_extract(messages.from_json, '$.name') != json_extract(messages.from_json, '$.address')
+        THEN messages.from_json
+        ELSE excluded.from_json
+      END
   `);
 
   const now = new Date().toISOString();
@@ -114,10 +134,34 @@ export function upsertFullMessages(
 ): void {
   const d = getDb();
   const stmt = d.prepare(`
-    INSERT OR REPLACE INTO messages
+    INSERT INTO messages
       (id, provider, direction, from_json, to_json, subject, preview, body, body_format, date, unread, has_attachments, attachments_json, cached_at, thread_id)
     VALUES
       ($id, $provider, $direction, $from_json, $to_json, $subject, $preview, $body, $body_format, $date, $unread, $has_attachments, $attachments_json, $cached_at, $thread_id)
+    ON CONFLICT(provider, id) DO UPDATE SET
+      direction        = excluded.direction,
+      to_json          = excluded.to_json,
+      subject          = excluded.subject,
+      preview          = excluded.preview,
+      body             = COALESCE(excluded.body, messages.body),
+      body_format      = excluded.body_format,
+      date             = excluded.date,
+      unread           = excluded.unread,
+      has_attachments  = excluded.has_attachments,
+      attachments_json = excluded.attachments_json,
+      cached_at        = excluded.cached_at,
+      thread_id        = COALESCE(excluded.thread_id, messages.thread_id),
+      from_json        = CASE
+        WHEN json_extract(excluded.from_json, '$.name') IS NOT NULL
+          AND json_extract(excluded.from_json, '$.name') != ''
+          AND json_extract(excluded.from_json, '$.name') != json_extract(excluded.from_json, '$.address')
+        THEN excluded.from_json
+        WHEN json_extract(messages.from_json, '$.name') IS NOT NULL
+          AND json_extract(messages.from_json, '$.name') != ''
+          AND json_extract(messages.from_json, '$.name') != json_extract(messages.from_json, '$.address')
+        THEN messages.from_json
+        ELSE excluded.from_json
+      END
   `);
 
   const now = new Date().toISOString();
@@ -324,10 +368,10 @@ export function backfillMessageNames(provider: string): number {
         OR json_extract(from_json, '$.name') = json_extract(from_json, '$.address')
       )
       AND json_extract(from_json, '$.address') IN (
-        SELECT c.address FROM contacts c WHERE c.provider = $provider2
+        SELECT c.address FROM contacts c WHERE c.provider = $provider
       )
   `);
-  const result = stmt.run({ $provider: provider, $provider2: provider });
+  const result = stmt.run({ $provider: provider });
   return result.changes;
 }
 
@@ -345,8 +389,8 @@ export function getContacts(
   }
 
   const limit = opts?.limit ?? 50;
-  params.push(limit);
 
+  // Add provider param for the subquery, then limit at the end
   const sql = `
     SELECT
       c.address,
@@ -360,7 +404,7 @@ export function getContacts(
         COUNT(*) as cnt,
         MAX(date) as last_seen
       FROM messages
-      WHERE provider = '${provider}' AND direction = 'in'
+      WHERE provider = ? AND direction = 'in'
       GROUP BY address
     ) m ON m.address = c.address
     WHERE ${conditions.join(" AND ")}
@@ -368,5 +412,5 @@ export function getContacts(
     LIMIT ?
   `;
 
-  return d.prepare(sql).all(...params) as any[];
+  return d.prepare(sql).all(provider, ...params, limit) as any[];
 }
