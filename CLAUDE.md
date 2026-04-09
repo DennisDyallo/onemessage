@@ -85,6 +85,11 @@ Use `scripts/db-query.sh` for consistent SQLite inspection — never write ad ho
 ./scripts/db-query.sh unnamed [provider]           # contacts stored as raw phone numbers
 ```
 
+```bash
+bun scripts/backfill-contacts.ts [provider]        # extract pushNames from messages → contacts table
+                                                   # run after re-auth or history sync to repopulate names
+```
+
 DB path: `~/.config/onemessage/messages.db`
 
 ## Maintenance
