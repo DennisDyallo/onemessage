@@ -367,7 +367,8 @@ addProviderFlags(
 program
   .command("auth <provider>")
   .description("Configure or authenticate a provider")
-  .action(async (providerName) => {
+  .option("--phone <number>", "Phone number for WhatsApp pairing code auth")
+  .action(async (providerName, opts) => {
     const provider = getProviderOrExit(providerName);
     const configPath = getConfigPath();
     const config = loadConfig();
@@ -423,7 +424,18 @@ program
           console.log(`    }\n`);
           console.log(`  Or: onemessage send sms "+1234567890" "hello" --device "Pixel 8"\n`);
           break;
-        case "signal":
+        case "signal": {
+          if (!provider.isConfigured()) {
+            console.log("  Linking to Signal...\n");
+            const proc = Bun.spawnSync(["signal-cli", "link", "-n", "onemessage"], {
+              stdin: "inherit",
+              stdout: "inherit",
+              stderr: "inherit",
+            });
+            if (proc.exitCode === 0) {
+              console.log("\n  ✓ Signal linked. Add your phone to config:\n");
+            }
+          }
           console.log(`  Requires signal-cli: brew install signal-cli\n`);
           console.log(`  Option A — Link to existing Signal account:\n`);
           console.log(`    signal-cli link -n "onemessage"`);
@@ -439,6 +451,12 @@ program
           console.log(`    }\n`);
           console.log(`  Or: onemessage send signal "+recipient" "hello" --phone "+46737124377"\n`);
           break;
+        }
+        case "whatsapp": {
+          const { runWhatsAppAuth } = await import("./whatsapp-auth.ts");
+          await runWhatsAppAuth({ phone: opts.phone });
+          break;
+        }
         default:
           console.log(`  Provider "${providerName}" setup instructions not yet available.`);
       }

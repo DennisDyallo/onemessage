@@ -41,6 +41,8 @@ export interface SmsProviderConfig {
 
 export interface WhatsAppProviderConfig {
   authDir?: string;
+  phone?: string;
+  idleTimeoutMin?: number;
 }
 
 // ---------------------------------------------------------------------------

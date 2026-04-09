@@ -10,5 +10,5 @@
 import "./email.ts";
 import "./sms.ts";
 import "./signal.ts";
+import "./whatsapp.ts";
 // import "./telegram.ts";   // coming soon
-// import "./whatsapp.ts";   // coming soon
