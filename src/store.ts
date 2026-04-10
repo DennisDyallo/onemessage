@@ -241,8 +241,8 @@ export function getCachedInbox(
     params.push(opts.since);
   }
   if (opts?.from) {
-    conditions.push("json_extract(from_json, '$.address') LIKE ?");
-    params.push(`%${opts.from}%`);
+    conditions.push("(json_extract(from_json, '$.address') LIKE ? OR json_extract(from_json, '$.name') LIKE ?)");
+    params.push(`%${opts.from}%`, `%${opts.from}%`);
   }
 
   const limit = opts?.limit ?? 10;
