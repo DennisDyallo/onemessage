@@ -58,6 +58,71 @@ Baileys socket creation is shared between auth and daemon via `src/whatsapp-shar
 
 Single JSON file at `~/.config/onemessage/config.json`. Schema in `src/config.ts`. Each provider has its own config interface. The daemon config (`daemon.providers.*`) controls per-provider polling intervals and enable/disable.
 
+## Design Philosophy
+
+onemessage is a **multi-provider SDK**, not a personal script. Every design decision must work for a user on any provider, not just the one that prompted the feature. Before proposing any new feature or config field, ask: *"Would this work identically if the user switched providers?"*
+
+### Commands are provider-agnostic
+
+CLI commands implement *capabilities*, not provider-specific behaviours. A command never hard-codes a provider name in its implementation — the provider is always a config or runtime decision.
+
+```
+// WRONG — onemessage me is now secretly a telegram command
+const provider = getProviderOrExit("telegram-bot");
+const chatId = config.telegramBot?.myChatId;
+
+// RIGHT — me resolves its own provider from config
+const { provider, recipientId } = config.me;
+const p = getProviderOrExit(provider);
+await p.send(recipientId, body);
+```
+
+### Provider config holds only provider-local state
+
+A provider's config interface (`EmailProviderConfig`, `TelegramBotProviderConfig`, etc.) must contain only credentials and settings that are meaningless outside that provider: auth tokens, server addresses, account identifiers. Cross-application concepts belong one level up in `OneMessageConfig`.
+
+**Signal:** If a config field would make sense on two different providers, it does not belong inside either provider's interface.
+
+```
+// WRONG — myChatId is a cross-cutting concept dressed as provider config
+interface TelegramBotProviderConfig {
+  botToken: string;
+  myChatId?: string;  // ← this is really "self-messaging target", not telegram state
+}
+
+// RIGHT — self-messaging target is a top-level config concept
+interface MeConfig {
+  provider: string;     // any registered provider
+  recipientId: string;  // address on that provider
+}
+interface OneMessageConfig {
+  me?: MeConfig;
+  telegramBot?: TelegramBotProviderConfig;
+}
+```
+
+### Provider names are a reserved namespace
+
+Provider names in the CLI and config are a public contract. Use the most general name for the most complete implementation. Qualify the name when an implementation covers only a subset of the platform.
+
+```
+// WRONG — "telegram" implies full Telegram (send as yourself, full inbox)
+// but the Bot API only sends as a bot and can't initiate conversations
+name: "telegram"
+
+// RIGHT — qualifier signals the scope; "telegram" stays free for a future
+// MTProto user-auth provider that sends as the user's personal account
+name: "telegram-bot"
+```
+
+### New features: the multi-user test
+
+Before adding any feature, run it through this filter:
+
+1. **Would a user on Signal/Email/WhatsApp want this too?** → implement at the command level, config key above providers
+2. **Is this specific to one provider's API?** → implement inside that provider, surfaced via `providerFlags` if the CLI needs to expose it
+3. **Does this name reserve a namespace?** → choose the name that leaves room for the complete implementation later
+
 ## Adding a New Provider
 
 1. Create `src/providers/<name>.ts` implementing `MessagingProvider`
