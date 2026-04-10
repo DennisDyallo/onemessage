@@ -31,6 +31,7 @@ export interface DaemonConfig {
     signal?: { enabled?: boolean; pollIntervalMs?: number; mode?: "daemon" | "poll" };
     email?: { enabled?: boolean; pollIntervalMs?: number };
     sms?: { enabled?: boolean; pollIntervalMs?: number };
+    "telegram-bot"?: { enabled?: boolean; pollIntervalMs?: number };
   };
 }
 

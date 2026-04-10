@@ -29,6 +29,7 @@ import {
   resolveSettings as resolveEmailSettings,
 } from "./providers/email.ts";
 import { fetchSmsInbox } from "./providers/sms.ts";
+import { fetchTelegramBotUpdates } from "./providers/telegram-bot.ts";
 import { cliExists } from "./providers/shared.ts";
 
 // ---------------------------------------------------------------------------
@@ -428,6 +429,19 @@ export class UnifiedDaemon {
             "INBOX",
           );
         });
+      }
+    }
+
+    // Telegram bot
+    const telegramBotConfig = config.telegramBot;
+    if (telegramBotConfig?.botToken) {
+      const interval =
+        config.daemon?.providers?.["telegram-bot"]?.pollIntervalMs ?? defaultInterval;
+      const enabled = config.daemon?.providers?.["telegram-bot"]?.enabled !== false;
+      if (enabled) {
+        this.schedulePoll("telegram-bot", interval, () =>
+          fetchTelegramBotUpdates(telegramBotConfig.botToken),
+        );
       }
     }
 
