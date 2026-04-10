@@ -254,6 +254,152 @@ export async function fetchSignalInboxAsync(account: string): Promise<void> {
 }
 
 // ---------------------------------------------------------------------------
+// Real-time daemon mode (signal-cli daemon --json)
+// ---------------------------------------------------------------------------
+
+export interface SignalDaemonHandle {
+  /** Kill the subprocess and stop receiving messages */
+  stop(): void;
+  /** True while the subprocess is running */
+  readonly running: boolean;
+}
+
+/**
+ * Start a persistent signal-cli subprocess in daemon mode.
+ * It streams JSON lines to stdout as messages arrive in real-time.
+ * Returns a handle to stop the subprocess.
+ *
+ * Options:
+ *   account      — the phone number to use
+ *   onMessage    — called for each batch of parsed messages
+ *   onError      — called when the subprocess exits or errors
+ *   restartDelayMs — delay before restarting after crash (default 5000)
+ */
+export function startSignalDaemon(opts: {
+  account: string;
+  onMessage: (messages: MessageFull[]) => void;
+  onError?: (error: string) => void;
+  restartDelayMs?: number;
+}): SignalDaemonHandle {
+  const restartDelay = opts.restartDelayMs ?? 5_000;
+  let proc: ReturnType<typeof Bun.spawn> | null = null;
+  let stopped = false;
+  let restartTimer: ReturnType<typeof setTimeout> | null = null;
+
+  function spawn() {
+    if (stopped) return;
+
+    process.stderr.write(`[signal-daemon] starting signal-cli daemon for ${opts.account}\n`);
+
+    proc = Bun.spawn(
+      ["signal-cli", "-a", opts.account, "-o", "json", "daemon", "--send-read-receipts"],
+      {
+        stdout: "pipe",
+        stderr: "pipe",
+      },
+    );
+
+    // Stream stdout line-by-line
+    (async () => {
+      const stdout = proc?.stdout;
+      if (!stdout || typeof stdout === "number") return;
+      const reader = stdout.getReader();
+      const decoder = new TextDecoder();
+      let buffer = "";
+
+      try {
+        while (true) {
+          const { value, done } = await reader.read();
+          if (done) break;
+          buffer += decoder.decode(value, { stream: true });
+
+          // Process complete lines
+          let newlineIdx: number;
+          while ((newlineIdx = buffer.indexOf("\n")) !== -1) {
+            const line = buffer.slice(0, newlineIdx).trim();
+            buffer = buffer.slice(newlineIdx + 1);
+
+            if (!line) continue;
+            const messages = parseSignalMessages(line, opts.account);
+            if (messages.length > 0) {
+              opts.onMessage(messages);
+            }
+          }
+        }
+      } catch (err) {
+        if (!stopped) {
+          process.stderr.write(`[signal-daemon] stdout read error: ${err}\n`);
+        }
+      }
+    })();
+
+    // Drain stderr (filter noise)
+    (async () => {
+      const stderr = proc?.stderr;
+      if (!stderr || typeof stderr === "number") return;
+      const reader = stderr.getReader();
+      const decoder = new TextDecoder();
+      let buffer = "";
+
+      try {
+        while (true) {
+          const { value, done } = await reader.read();
+          if (done) break;
+          buffer += decoder.decode(value, { stream: true });
+
+          let newlineIdx: number;
+          while ((newlineIdx = buffer.indexOf("\n")) !== -1) {
+            const line = buffer.slice(0, newlineIdx).trim();
+            buffer = buffer.slice(newlineIdx + 1);
+            if (!line) continue;
+            // Filter out INFO/WARNING noise
+            if (SIGNAL_STDERR_FILTERS.some((fn) => fn(line))) continue;
+            process.stderr.write(`[signal-daemon] ${line}\n`);
+          }
+        }
+      } catch {
+        // ignore
+      }
+    })();
+
+    // Handle process exit
+    proc.exited.then((exitCode) => {
+      proc = null;
+      if (stopped) return;
+
+      const msg = `signal-cli daemon exited with code ${exitCode}`;
+      process.stderr.write(`[signal-daemon] ${msg}, restarting in ${restartDelay}ms\n`);
+      opts.onError?.(msg);
+
+      restartTimer = setTimeout(() => {
+        restartTimer = null;
+        spawn();
+      }, restartDelay);
+    });
+  }
+
+  spawn();
+
+  return {
+    stop() {
+      stopped = true;
+      if (restartTimer) {
+        clearTimeout(restartTimer);
+        restartTimer = null;
+      }
+      if (proc) {
+        proc.kill();
+        proc = null;
+      }
+      process.stderr.write("[signal-daemon] stopped\n");
+    },
+    get running() {
+      return proc !== null;
+    },
+  };
+}
+
+// ---------------------------------------------------------------------------
 // Provider
 // ---------------------------------------------------------------------------
 

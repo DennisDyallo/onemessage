@@ -19,7 +19,7 @@ export interface OneMessageConfig {
 export interface DaemonConfig {
   pollIntervalMs?: number;
   providers?: {
-    signal?: { enabled?: boolean; pollIntervalMs?: number };
+    signal?: { enabled?: boolean; pollIntervalMs?: number; mode?: "daemon" | "poll" };
     email?: { enabled?: boolean; pollIntervalMs?: number };
     sms?: { enabled?: boolean; pollIntervalMs?: number };
   };

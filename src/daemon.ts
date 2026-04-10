@@ -23,7 +23,7 @@ import * as store from "./store.ts";
 import type { MessageFull } from "./types.ts";
 import { WA_DIR, AUTH_DIR, createBaileysSocket, parseAndStoreWAMessage } from "./whatsapp-shared.ts";
 import { DAEMON_PID, DAEMON_SOCK } from "./daemon-shared.ts";
-import { fetchSignalInbox, fetchSignalInboxAsync } from "./providers/signal.ts";
+import { fetchSignalInbox, fetchSignalInboxAsync, startSignalDaemon, type SignalDaemonHandle } from "./providers/signal.ts";
 import {
   fetchEmailInbox,
   resolveSettings as resolveEmailSettings,
@@ -70,6 +70,9 @@ export class UnifiedDaemon {
   >();
   private outgoingQueue: Array<{ jid: string; text: string }> = [];
   private flushing = false;
+
+  // Signal daemon mode
+  private signalDaemon: SignalDaemonHandle | null = null;
 
   // Polling
   private pollTimers = new Map<string, ReturnType<typeof setInterval>>();
@@ -377,13 +380,37 @@ export class UnifiedDaemon {
     // Signal
     const signalConfig = config.signal;
     if (signalConfig?.phone) {
-      const interval =
-        config.daemon?.providers?.signal?.pollIntervalMs ?? defaultInterval;
       const enabled = config.daemon?.providers?.signal?.enabled !== false;
+      const signalMode = config.daemon?.providers?.signal?.mode ?? "poll";
+
       if (enabled) {
-        this.schedulePoll("signal", interval, () =>
-          fetchSignalInboxAsync(signalConfig.phone),
-        );
+        if (signalMode === "daemon") {
+          this.signalDaemon = startSignalDaemon({
+            account: signalConfig.phone,
+            onMessage: (messages) => {
+              store.upsertFullMessages(messages);
+              store.recordFetch("signal", signalConfig.phone);
+              this.lastPoll.set("signal", Date.now());
+              process.stderr.write(
+                `[daemon] signal daemon received ${messages.length} message(s)\n`,
+              );
+            },
+            onError: (error) => {
+              process.stderr.write(`[daemon] signal daemon error: ${error}\n`);
+            },
+          });
+          // Do an initial poll to backfill any messages that arrived while daemon was down
+          this.pollProvider("signal", () =>
+            fetchSignalInboxAsync(signalConfig.phone),
+          );
+          process.stderr.write("[daemon] signal using real-time daemon mode\n");
+        } else {
+          const interval =
+            config.daemon?.providers?.signal?.pollIntervalMs ?? defaultInterval;
+          this.schedulePoll("signal", interval, () =>
+            fetchSignalInboxAsync(signalConfig.phone),
+          );
+        }
       }
     }
 
@@ -510,13 +537,14 @@ export class UnifiedDaemon {
       case "status": {
         const pollingStatus: Record<
           string,
-          { lastPoll: string | null; enabled: boolean }
+          { lastPoll: string | null; enabled: boolean; mode?: string }
         > = {};
         for (const name of ["signal", "email", "sms"]) {
           const lastMs = this.lastPoll.get(name);
           pollingStatus[name] = {
             lastPoll: lastMs ? new Date(lastMs).toISOString() : null,
-            enabled: this.pollTimers.has(name),
+            enabled: this.pollTimers.has(name) || (name === "signal" && this.signalDaemon !== null),
+            ...(name === "signal" && this.signalDaemon ? { mode: "daemon" } : {}),
           };
         }
 
@@ -760,7 +788,7 @@ export class UnifiedDaemon {
         for (const name of ["signal", "email", "sms"]) {
           const lastMs = this.lastPoll.get(name);
           providers[name] = {
-            enabled: this.pollTimers.has(name),
+            enabled: this.pollTimers.has(name) || (name === "signal" && this.signalDaemon !== null),
             polling: this.polling.get(name) ?? false,
             lastPoll: lastMs ? new Date(lastMs).toISOString() : null,
           };
@@ -782,6 +810,13 @@ export class UnifiedDaemon {
   // -----------------------------------------------------------------------
 
   private cleanup(): void {
+    // Stop Signal daemon subprocess
+    try {
+      this.signalDaemon?.stop();
+    } catch {
+      // ignore
+    }
+
     // Close Baileys connection
     try {
       this.sock?.end(undefined);
