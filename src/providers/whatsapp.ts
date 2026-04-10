@@ -49,6 +49,11 @@ const whatsappProvider: MessagingProvider = {
     return existsSync(join(AUTH_DIR, "creds.json"));
   },
 
+  async authenticate(opts) {
+    const { runWhatsAppAuth } = await import("../whatsapp-auth.ts");
+    await runWhatsAppAuth({ phone: opts?.phone });
+  },
+
   async send(recipientId, body, opts) {
     await ensureDaemon();
     const jid = await recipientToJid(recipientId);

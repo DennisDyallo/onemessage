@@ -87,28 +87,25 @@ function toSmsMessage(opts: {
 }
 
 function fetchSmsConversations(opts?: { unread?: boolean; fresh?: boolean; from?: string }): MessageFull[] {
-  const args = ["kdeconnect-read-sms", "--json"];
+  const args: string[] = ["--json"];
   if (opts?.unread) args.push("--unread");
   if (opts?.fresh) args.push("--refresh");
   if (opts?.from) args.push("--thread", opts.from);
 
-  const result = Bun.spawnSync(args, {
-    stdout: "pipe",
-    stderr: "pipe",
-    timeout: 15_000,
+  const result = runCli("kdeconnect-read-sms", args, {
+    stderrFilters: KDE_STDERR_FILTERS,
+    timeoutMs: 15_000,
   });
 
-  if (result.exitCode !== 0) {
-    const err = result.stderr.toString().trim();
-    if (err) process.stderr.write(`[sms] ${err}\n`);
+  if (!result.ok) {
+    if (result.stderr) process.stderr.write(`[sms] ${result.stderr}\n`);
     return [];
   }
 
-  const stdout = result.stdout.toString().trim();
-  if (!stdout || stdout === "[]") return [];
+  if (!result.stdout || result.stdout === "[]") return [];
 
   try {
-    const convs: SmsConversation[] = JSON.parse(stdout);
+    const convs: SmsConversation[] = JSON.parse(result.stdout);
     return convs.map((c) => toSmsMessage({
       id: String(c.thread_id),
       contact: c.contact,
@@ -128,25 +125,20 @@ function fetchSmsConversations(opts?: { unread?: boolean; fresh?: boolean; from?
  * Returns all messages in chronological order (oldest first).
  */
 function fetchThreadHistory(threadId: number): MessageFull[] {
-  const args = ["kdeconnect-read-sms", "--json", "--conversation", String(threadId)];
-
-  const result = Bun.spawnSync(args, {
-    stdout: "pipe",
-    stderr: "pipe",
-    timeout: 20_000, // longer timeout for async signal wait
+  const result = runCli("kdeconnect-read-sms", ["--json", "--conversation", String(threadId)], {
+    stderrFilters: KDE_STDERR_FILTERS,
+    timeoutMs: 20_000,
   });
 
-  if (result.exitCode !== 0) {
-    const err = result.stderr.toString().trim();
-    if (err) process.stderr.write(`[sms] ${err}\n`);
+  if (!result.ok) {
+    if (result.stderr) process.stderr.write(`[sms] ${result.stderr}\n`);
     return [];
   }
 
-  const stdout = result.stdout.toString().trim();
-  if (!stdout || stdout === "{}") return [];
+  if (!result.stdout || result.stdout === "{}") return [];
 
   try {
-    const history: SmsThreadHistory = JSON.parse(stdout);
+    const history: SmsThreadHistory = JSON.parse(result.stdout);
     if (!history.messages || history.messages.length === 0) return [];
 
     return history.messages.map((m) => toSmsMessage({

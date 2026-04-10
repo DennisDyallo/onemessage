@@ -411,6 +411,25 @@ const signalProvider: MessagingProvider = {
     return cliExists("signal-cli") && resolveSettings() !== null;
   },
 
+  async authenticate(_opts) {
+    console.log("  Linking to Signal...\n");
+    const { getConfigPath } = await import("../config.ts");
+    const configPath = getConfigPath();
+    const proc = Bun.spawnSync(["signal-cli", "link", "-n", "onemessage"], {
+      stdin: "inherit", stdout: "inherit", stderr: "inherit",
+    });
+    if (proc.exitCode === 0) {
+      console.log("\n  Signal linked successfully.\n");
+      console.log(`  Add your phone number to ${configPath}:\n`);
+      console.log(`    { "signal": { "phone": "+YOUR_NUMBER" } }\n`);
+    } else {
+      console.log(`\n  Signal link failed. You can also configure manually:\n`);
+      console.log(`    signal-cli link -n "onemessage"\n`);
+      console.log(`  Then add to ${configPath}:\n`);
+      console.log(`    { "signal": { "phone": "+YOUR_NUMBER" } }\n`);
+    }
+  },
+
   async send(recipientId, body, opts) {
     const settings = resolveSettings(opts?.providerFlags);
     if (!settings) {

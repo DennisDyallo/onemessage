@@ -432,24 +432,8 @@ program
         }
       }
       console.log(`\n  Config: ${configPath}`);
-    } else if (providerName === "whatsapp") {
-      const { runWhatsAppAuth } = await import("./whatsapp-auth.ts");
-      await runWhatsAppAuth({ phone: opts.phone });
-    } else if (providerName === "signal" && !provider.isConfigured()) {
-      console.log("  Linking to Signal...\n");
-      const proc = Bun.spawnSync(["signal-cli", "link", "-n", "onemessage"], {
-        stdin: "inherit", stdout: "inherit", stderr: "inherit",
-      });
-      if (proc.exitCode === 0) {
-        console.log("\n  Signal linked successfully.\n");
-        console.log(`  Add your phone number to ${configPath}:\n`);
-        console.log(`    { "signal": { "phone": "+YOUR_NUMBER" } }\n`);
-      } else {
-        console.log(`\n  Signal link failed. You can also configure manually:\n`);
-        console.log(`    signal-cli link -n "onemessage"\n`);
-        console.log(`  Then add to ${configPath}:\n`);
-        console.log(`    { "signal": { "phone": "+YOUR_NUMBER" } }\n`);
-      }
+    } else if (provider.authenticate) {
+      await provider.authenticate({ phone: opts.phone });
     } else {
       console.log(`  ${providerName} is not configured.\n`);
       console.log(`  Create ${configPath} with:\n`);

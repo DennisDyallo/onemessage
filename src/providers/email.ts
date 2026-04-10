@@ -240,7 +240,7 @@ export async function fetchEmailInbox(
 
 const emailProvider: MessagingProvider = {
   name: "email",
-  displayName: "Email (Proton Mail)",
+  displayName: "Email (IMAP/SMTP)",
 
   isConfigured() {
     return resolveSettings() !== null;
