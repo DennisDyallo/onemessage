@@ -207,6 +207,7 @@ async function fetchFullMessage(
           filename: att.filename || "unnamed", contentType: att.contentType || "application/octet-stream",
           size: att.size || 0, ...(includeAttachments ? { data: att.content.toString("base64") } : {}),
         })),
+        ...(parsed.messageId ? { rfcMessageId: parsed.messageId } : {}),
       };
     } finally { lock.release(); }
   } catch (err: any) { log(`Error reading UID ${uid}: ${err.message}`); return null; }
@@ -286,6 +287,7 @@ const emailProvider: MessagingProvider = {
       ...(opts?.cc && { cc: opts.cc.join(", ") }),
       ...(opts?.bcc && { bcc: opts.bcc.join(", ") }),
       ...(opts?.replyTo && { replyTo: opts.replyTo }),
+      ...(opts?.inReplyTo && { inReplyTo: opts.inReplyTo, references: opts.inReplyTo }),
     };
 
     if (isHtml) { message.html = finalBody; } else { message.text = finalBody; }

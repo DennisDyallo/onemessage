@@ -26,6 +26,8 @@ export interface MessageFull extends MessageEnvelope {
   body: string;
   bodyFormat: "text" | "html";
   attachments: Attachment[];
+  /** RFC 822 Message-ID header (e.g. "<abc123@mail.example.com>") */
+  rfcMessageId?: string;
 }
 
 export interface Contact {
@@ -53,6 +55,8 @@ export interface SendOptions {
   bcc?: string[];
   replyTo?: string;
   account?: string;
+  /** RFC 822 Message-ID of the message being replied to (for In-Reply-To/References headers) */
+  inReplyTo?: string;
   /** Provider-specific CLI flag overrides (password, host, port, etc.) */
   providerFlags?: Record<string, unknown>;
 }

@@ -220,6 +220,7 @@ addProviderFlags(
     attachments: opts.attach,
     account: opts.account,
     replyTo,
+    inReplyTo: original.rfcMessageId,
     providerFlags: collectProviderFlags(opts),
   });
 

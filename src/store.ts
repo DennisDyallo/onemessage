@@ -61,6 +61,13 @@ function getDb(): Database {
   } catch {
     // Column already exists — ignore
   }
+
+  // rfc_message_id column for email In-Reply-To / References threading
+  try {
+    db.run("ALTER TABLE messages ADD COLUMN rfc_message_id TEXT");
+  } catch {
+    // Column already exists — ignore
+  }
   db.run("CREATE INDEX IF NOT EXISTS idx_messages_thread ON messages(provider, thread_id, date ASC)");
 
 
@@ -141,9 +148,9 @@ export function upsertFullMessages(
   const d = getDb();
   const stmt = d.prepare(`
     INSERT INTO messages
-      (id, provider, direction, account, from_json, to_json, subject, preview, body, body_format, date, unread, has_attachments, attachments_json, cached_at, thread_id)
+      (id, provider, direction, account, from_json, to_json, subject, preview, body, body_format, date, unread, has_attachments, attachments_json, cached_at, thread_id, rfc_message_id)
     VALUES
-      ($id, $provider, $direction, $account, $from_json, $to_json, $subject, $preview, $body, $body_format, $date, $unread, $has_attachments, $attachments_json, $cached_at, $thread_id)
+      ($id, $provider, $direction, $account, $from_json, $to_json, $subject, $preview, $body, $body_format, $date, $unread, $has_attachments, $attachments_json, $cached_at, $thread_id, $rfc_message_id)
     ON CONFLICT(provider, id) DO UPDATE SET
       direction        = excluded.direction,
       account          = CASE WHEN excluded.account != '' THEN excluded.account ELSE messages.account END,
@@ -158,6 +165,7 @@ export function upsertFullMessages(
       attachments_json = excluded.attachments_json,
       cached_at        = excluded.cached_at,
       thread_id        = COALESCE(excluded.thread_id, messages.thread_id),
+      rfc_message_id   = COALESCE(excluded.rfc_message_id, messages.rfc_message_id),
       from_json        = CASE
         WHEN json_extract(excluded.from_json, '$.name') IS NOT NULL
           AND json_extract(excluded.from_json, '$.name') != ''
@@ -191,6 +199,7 @@ export function upsertFullMessages(
         $attachments_json: JSON.stringify(msg.attachments.map(({ data, ...rest }) => rest)),
         $cached_at: now,
         $thread_id: threadId ?? null,
+        $rfc_message_id: msg.rfcMessageId ?? null,
       });
     }
   });
@@ -226,6 +235,7 @@ function rowToFull(row: any): MessageFull {
     body: row.body ?? "",
     bodyFormat: (row.body_format as "text" | "html") ?? "text",
     attachments: row.attachments_json ? JSON.parse(row.attachments_json) : [],
+    ...(row.rfc_message_id ? { rfcMessageId: row.rfc_message_id } : {}),
   };
 }
 
