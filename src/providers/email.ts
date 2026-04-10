@@ -221,14 +221,13 @@ export async function fetchEmailInbox(
   criteria?: any,
   limit?: number,
 ): Promise<void> {
-  // Only fetch primary accounts — secondary are never cached
-  const primary = accounts.filter(a => !s.secondaryAccounts.includes(a));
+  // Cache all accounts (primary and secondary) — display filtering happens at read time
   const fetched: MessageEnvelope[] = [];
-  for (const account of primary) {
+  for (const account of accounts) {
     fetched.push(...await fetchMailboxMessages(s, account, folder, criteria ?? {}, limit ?? 50));
   }
   if (fetched.length > 0) store.upsertMessages(fetched);
-  store.recordFetch("email", primary.join(","), folder);
+  store.recordFetch("email", accounts.join(","), folder);
 }
 
 // ---------------------------------------------------------------------------
@@ -311,26 +310,15 @@ const emailProvider: MessagingProvider = {
     }
     if (opts?.from) criteria.from = opts.from;
 
-    // Primary accounts — fetch and cache as normal
-    const primaryAccounts = accounts.filter(a => !s.secondaryAccounts.includes(a));
-    const needsFetch = opts?.fresh || !store.isFresh("email", FRESHNESS_MS, primaryAccounts.join(","), folder);
-    if (needsFetch && primaryAccounts.length > 0) {
-      await fetchEmailInbox(s, primaryAccounts, folder, criteria, limit);
+    // Fetch and cache all accounts (primary + secondary)
+    const needsFetch = opts?.fresh || !store.isFresh("email", FRESHNESS_MS, accounts.join(","), folder);
+    if (needsFetch) {
+      await fetchEmailInbox(s, accounts, folder, criteria, limit);
     }
 
-    const primary = store.getCachedInbox("email", { limit, unread: opts?.unread, since: opts?.since, from: opts?.from });
-    if (!opts?.all || s.secondaryAccounts.length === 0) return primary;
-
-    // Secondary accounts — live fetch only, never cached
-    const secondary: MessageEnvelope[] = [];
-    for (const account of s.secondaryAccounts) {
-      if (opts?.account && account !== opts.account) continue;
-      secondary.push(...await fetchMailboxMessages(s, account, folder, criteria, limit));
-    }
-
-    return [...primary, ...secondary]
-      .sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime())
-      .slice(0, limit);
+    // Default view: exclude secondary accounts. --all includes everything.
+    const excludeAccounts = opts?.all ? [] : s.secondaryAccounts;
+    return store.getCachedInbox("email", { limit, unread: opts?.unread, since: opts?.since, from: opts?.from, excludeAccounts });
   },
 
   async read(messageId, opts) {

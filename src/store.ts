@@ -231,14 +231,13 @@ function rowToFull(row: any): MessageFull {
 
 export function getCachedInbox(
   provider: string,
-  opts?: { limit?: number; unread?: boolean; since?: string; from?: string },
+  opts?: { limit?: number; unread?: boolean; since?: string; from?: string; excludeAccounts?: string[] },
 ): MessageEnvelope[] {
   const d = getDb();
   const conditions = ["provider = ?"];
   const params: any[] = [provider];
 
-  // Exclude thread sub-messages from inbox listing — those are individual
-  // messages within a conversation, stored via upsertFullMessages() with a threadId
+  // Exclude thread sub-messages from inbox listing
   conditions.push("thread_id IS NULL");
 
   if (opts?.unread) {
@@ -251,6 +250,11 @@ export function getCachedInbox(
   if (opts?.from) {
     conditions.push("(json_extract(from_json, '$.address') LIKE ? OR json_extract(from_json, '$.name') LIKE ?)");
     params.push(`%${opts.from}%`, `%${opts.from}%`);
+  }
+  if (opts?.excludeAccounts?.length) {
+    const placeholders = opts.excludeAccounts.map(() => "?").join(", ");
+    conditions.push(`account NOT IN (${placeholders})`);
+    params.push(...opts.excludeAccounts);
   }
 
   const limit = opts?.limit ?? 10;
