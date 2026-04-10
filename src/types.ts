@@ -72,6 +72,7 @@ export interface InboxOptions {
   folder?: string;
   account?: string;
   fresh?: boolean;
+  all?: boolean;
   providerFlags?: Record<string, unknown>;
 }
 

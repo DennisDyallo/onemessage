@@ -60,6 +60,7 @@ function getDb(): Database {
   }
   db.run("CREATE INDEX IF NOT EXISTS idx_messages_thread ON messages(provider, thread_id, date ASC)");
 
+
   db.run(`
     CREATE TABLE IF NOT EXISTS contacts (
       provider    TEXT NOT NULL,

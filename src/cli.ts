@@ -239,6 +239,7 @@ addProviderFlags(
     .option("--folder <name>", "Folder/chat name")
     .option("--account <id>", "Specific account")
     .option("--fresh", "Force re-fetch from source (bypass cache)", false)
+    .option("--all", "Include secondary-account emails", false)
     .option("--json", "Output JSON", false)
 ).action(async (providerName, opts) => {
   const limit = parseInt(opts.limit, 10) || 10;
@@ -259,7 +260,7 @@ addProviderFlags(
       const messages = await provider.inbox({
         limit, unread: opts.unread, since: opts.since,
         from: opts.from, folder: opts.folder, account: opts.account,
-        fresh: opts.fresh,
+        fresh: opts.fresh, all: opts.all,
         providerFlags,
       });
       allMessages.push(...messages);

@@ -27,6 +27,7 @@ const FRESHNESS_MS = 5 * 60_000; // 5 minutes
 export interface ResolvedEmail {
   password: string;
   accounts: string[];
+  secondaryAccounts: string[];
   defaultAccount: string;
   senderName: string;
   host: string;
@@ -53,6 +54,7 @@ export function resolveSettings(cliOverrides?: Record<string, unknown>): Resolve
   return {
     password,
     accounts: effectiveAccounts,
+    secondaryAccounts: email?.secondaryAccounts ?? [],
     defaultAccount,
     senderName: (cliOverrides?.senderName as string) ?? config.senderName ?? "",
     host: (cliOverrides?.host as string) ?? email?.host ?? EMAIL_DEFAULTS.host,
@@ -216,14 +218,14 @@ export async function fetchEmailInbox(
   criteria?: any,
   limit?: number,
 ): Promise<void> {
+  // Only fetch primary accounts — secondary are never cached
+  const primary = accounts.filter(a => !s.secondaryAccounts.includes(a));
   const fetched: MessageEnvelope[] = [];
-  for (const account of accounts) {
+  for (const account of primary) {
     fetched.push(...await fetchMailboxMessages(s, account, folder, criteria ?? {}, limit ?? 50));
   }
-  if (fetched.length > 0) {
-    store.upsertMessages(fetched);
-  }
-  store.recordFetch("email", accounts.join(","), folder);
+  if (fetched.length > 0) store.upsertMessages(fetched);
+  store.recordFetch("email", primary.join(","), folder);
 }
 
 // ---------------------------------------------------------------------------
@@ -297,28 +299,35 @@ const emailProvider: MessagingProvider = {
     const folder = opts?.folder ?? "INBOX";
     const limit = opts?.limit ?? 10;
 
-    // Check cache freshness — skip IMAP if recent enough
-    const needsFetch = opts?.fresh || !store.isFresh("email", FRESHNESS_MS, accounts.join(","), folder);
+    const criteria: any = {};
+    if (opts?.unread) criteria.seen = false;
+    if (opts?.since) {
+      const d = new Date(opts.since);
+      if (isNaN(d.getTime())) { log(`Invalid --since: ${opts.since}`); return []; }
+      criteria.since = d;
+    }
+    if (opts?.from) criteria.from = opts.from;
 
-    if (needsFetch) {
-      const criteria: any = {};
-      if (opts?.unread) criteria.seen = false;
-      if (opts?.since) {
-        const d = new Date(opts.since);
-        if (isNaN(d.getTime())) { log(`Invalid --since: ${opts.since}`); return []; }
-        criteria.since = d;
-      }
-      if (opts?.from) criteria.from = opts.from;
-
-      await fetchEmailInbox(s, accounts, folder, criteria, limit);
+    // Primary accounts — fetch and cache as normal
+    const primaryAccounts = accounts.filter(a => !s.secondaryAccounts.includes(a));
+    const needsFetch = opts?.fresh || !store.isFresh("email", FRESHNESS_MS, primaryAccounts.join(","), folder);
+    if (needsFetch && primaryAccounts.length > 0) {
+      await fetchEmailInbox(s, primaryAccounts, folder, criteria, limit);
     }
 
-    return store.getCachedInbox("email", {
-      limit,
-      unread: opts?.unread,
-      since: opts?.since,
-      from: opts?.from,
-    });
+    const primary = store.getCachedInbox("email", { limit, unread: opts?.unread, since: opts?.since, from: opts?.from });
+    if (!opts?.all || s.secondaryAccounts.length === 0) return primary;
+
+    // Secondary accounts — live fetch only, never cached
+    const secondary: MessageEnvelope[] = [];
+    for (const account of s.secondaryAccounts) {
+      if (opts?.account && account !== opts.account) continue;
+      secondary.push(...await fetchMailboxMessages(s, account, folder, criteria, limit));
+    }
+
+    return [...primary, ...secondary]
+      .sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime())
+      .slice(0, limit);
   },
 
   async read(messageId, opts) {
@@ -365,11 +374,9 @@ const emailProvider: MessagingProvider = {
 
     const all: MessageEnvelope[] = [];
     for (const account of accounts) {
-      all.push(...await fetchMailboxMessages(s, account, folder, criteria, limit));
-    }
-
-    if (all.length > 0) {
-      store.upsertMessages(all);
+      const msgs = await fetchMailboxMessages(s, account, folder, criteria, limit);
+      if (msgs.length > 0) store.upsertMessages(msgs);
+      all.push(...msgs);
     }
 
     return all.sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime());

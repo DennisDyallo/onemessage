@@ -29,6 +29,8 @@ export interface EmailProviderConfig {
   password: string;
   accounts: string[];
   default?: string;
+  // Accounts whose messages are hidden from default inbox (shown with --all)
+  secondaryAccounts?: string[];
   // Overrides — only needed if not using standard Proton Bridge
   host?: string;       // default: 127.0.0.1
   smtpPort?: number;   // default: 1025
