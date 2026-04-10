@@ -44,6 +44,8 @@ export interface EmailProviderConfig {
 
 export interface TelegramBotProviderConfig {
   botToken: string;
+  /** Your personal Telegram chat_id — used by `onemessage me` to send to yourself */
+  myChatId?: string;
 }
 
 export interface SignalProviderConfig {
