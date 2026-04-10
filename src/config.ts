@@ -8,12 +8,21 @@ import { homedir } from "os";
 
 export interface OneMessageConfig {
   senderName?: string;
+  me?: MeConfig;
   email?: EmailProviderConfig;
   telegramBot?: TelegramBotProviderConfig;
   signal?: SignalProviderConfig;
   sms?: SmsProviderConfig;
   whatsapp?: WhatsAppProviderConfig;
   daemon?: DaemonConfig;
+}
+
+/** Which provider + address to use for `onemessage me` (send to yourself) */
+export interface MeConfig {
+  /** Registered provider name, e.g. "telegram-bot", "signal", "email" */
+  provider: string;
+  /** Your address on that provider — chat_id, phone number, email address */
+  recipientId: string;
 }
 
 export interface DaemonConfig {
@@ -44,8 +53,6 @@ export interface EmailProviderConfig {
 
 export interface TelegramBotProviderConfig {
   botToken: string;
-  /** Your personal Telegram chat_id — used by `onemessage me` to send to yourself */
-  myChatId?: string;
 }
 
 export interface SignalProviderConfig {

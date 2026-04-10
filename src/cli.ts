@@ -167,15 +167,14 @@ addProviderFlags(
 
 program
   .command("me [body]")
-  .description("Send a message to yourself via Telegram bot (uses telegramBot.myChatId)")
+  .description("Send a message to yourself (uses config.me provider + recipientId)")
   .option("-f, --file <path>", "Read body from file")
-  .option("--bot-token <token>", "Bot token (overrides config)")
   .action(async (body, opts) => {
     const config = loadConfig();
-    const myChatId = config.telegramBot?.myChatId;
-    if (!myChatId) {
-      console.error('  ✗ myChatId not set. Add "myChatId": "<your_chat_id>" to telegramBot in config.');
-      console.error(`    Run: onemessage inbox telegram-bot  (after messaging your bot) to find your chat_id.`);
+    const me = config.me;
+    if (!me) {
+      console.error('  ✗ "me" not configured. Add to config.json:');
+      console.error('    { "me": { "provider": "telegram-bot", "recipientId": "<your_chat_id>" } }');
       process.exit(1);
     }
 
@@ -190,13 +189,11 @@ program
       resolvedBody = readFileSync(opts.file, "utf-8").trim();
     }
 
-    const provider = getProviderOrExit("telegram-bot");
-    const result = await provider.send(myChatId, resolvedBody, {
-      providerFlags: opts.botToken ? { botToken: opts.botToken } : undefined,
-    });
+    const provider = getProviderOrExit(me.provider);
+    const result = await provider.send(me.recipientId, resolvedBody);
 
     if (result.ok) {
-      console.log(`  ✓ sent to self via telegram-bot`);
+      console.log(`  ✓ sent to self via ${me.provider}`);
     } else {
       console.error(`  ✗ failed: ${result.error}`);
       process.exit(1);
@@ -477,13 +474,13 @@ program
           console.log(`  Create a bot via @BotFather on Telegram, then add to ${configPath}:\n`);
           console.log(`    {`);
           console.log(`      "telegramBot": {`);
-          console.log(`        "botToken": "123456:ABC-your-token",`);
-          console.log(`        "myChatId": "123456789"   // optional — enables: onemessage me "hello"`);
-          console.log(`      }`);
+          console.log(`        "botToken": "123456:ABC-your-token"`);
+          console.log(`      },`);
+          console.log(`      "me": { "provider": "telegram-bot", "recipientId": "<your_chat_id>" }`);
           console.log(`    }\n`);
           console.log(`  Or pass per-call: onemessage send telegram-bot <chat_id> "hi" --bot-token "123456:ABC..."\n`);
           console.log(`  Find your chat_id: message your bot, then run: onemessage inbox telegram-bot\n`);
-          console.log(`  Once myChatId is set: onemessage me "hello"  (send to yourself)\n`);
+          console.log(`  Once "me" is set: onemessage me "hello"  (send to yourself via any provider)\n`);
           break;
         case "sms":
           console.log(`  Requires kdeconnect-cli and a paired Android phone.\n`);
