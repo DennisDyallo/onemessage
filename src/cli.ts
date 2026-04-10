@@ -6,7 +6,7 @@ import "./providers/index.ts";
 
 import { getProviderOrExit, getAllProviders } from "./registry.ts";
 import { loadConfig, getConfigPath } from "./config.ts";
-import { getCachedMessage, getContacts } from "./store.ts";
+import { getCachedMessage, getContacts, getPreviousOutboundRecipient } from "./store.ts";
 import type { MessageEnvelope, MessageFull } from "./types.ts";
 
 // ---------------------------------------------------------------------------
@@ -196,17 +196,24 @@ addProviderFlags(
     process.exit(1);
   }
 
-  // For email: auto-set subject with Re: prefix and replyTo
+  // For email: auto-set subject with Re: prefix and replyTo.
+  // Prefer the alias address used in previous outgoing messages over the raw
+  // sender address, so SimpleLogin (or similar) aliases are preserved.
   let subject = opts.subject;
   let replyTo: string | undefined;
+  let recipient = senderAddress;
   if (providerName === "email") {
     if (!subject && original.subject) {
       subject = original.subject.startsWith("Re: ") ? original.subject : `Re: ${original.subject}`;
     }
     replyTo = senderAddress;
+    const emailCfg = loadConfig()?.email;
+    const ownAccounts: string[] = emailCfg?.accounts ?? [];
+    const previousAlias = subject ? getPreviousOutboundRecipient("email", subject, ownAccounts) : null;
+    if (previousAlias) recipient = previousAlias;
   }
 
-  const result = await provider.send(senderAddress, body ?? "", {
+  const result = await provider.send(recipient, body ?? "", {
     subject,
     html: opts.html,
     file: opts.file,
@@ -219,7 +226,7 @@ addProviderFlags(
   if (opts.json) {
     process.stdout.write(JSON.stringify(result, null, 2) + "\n");
   } else if (result.ok) {
-    console.log(`  ✓ replied via ${result.provider} → ${senderAddress}${result.messageId ? ` (${result.messageId})` : ""}`);
+    console.log(`  ✓ replied via ${result.provider} → ${recipient}${result.messageId ? ` (${result.messageId})` : ""}`);
   } else {
     console.error(`  ✗ reply failed: ${result.error}`);
     process.exit(1);

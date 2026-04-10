@@ -259,6 +259,48 @@ export function getCachedMessage(provider: string, messageId: string): MessageFu
   return rowToFull(row);
 }
 
+/**
+ * Find the recipient address used in a previous outgoing message with the same
+ * (normalised) subject. "Outgoing" is detected by checking whether `from_json`
+ * contains one of the caller's own account addresses (since IMAP fetches all
+ * messages as direction='in', even sent ones visible in All Mail / Sent).
+ */
+export function getPreviousOutboundRecipient(
+  provider: string,
+  subject: string,
+  ownAccounts: string[],
+): string | null {
+  if (ownAccounts.length === 0) return null;
+  const d = getDb();
+  // Strip leading Re:/RE: chains to match across turns
+  const normalised = subject.replace(/^(Re:\s*)+/i, "").trim();
+  const rows = d
+    .prepare(
+      `SELECT from_json, to_json FROM messages
+       WHERE provider = ? AND subject LIKE ?
+       ORDER BY date DESC LIMIT 50`
+    )
+    .all(provider, `%${normalised}%`) as Array<{ from_json: string; to_json: string }>;
+
+  // Strip +suffix tags (e.g. mo0nkin+services@proton.me → mo0nkin@proton.me)
+  const stripTag = (addr: string) => addr.replace(/\+[^@]*@/, "@").toLowerCase();
+  const ownNormalised = ownAccounts.map(stripTag);
+
+  for (const row of rows) {
+    try {
+      const from = JSON.parse(row.from_json) as { address?: string };
+      if (ownNormalised.includes(stripTag(from.address ?? ""))) {
+        const to = JSON.parse(row.to_json) as Array<{ address?: string }>;
+        const addr = to[0]?.address;
+        if (addr) return addr;
+      }
+    } catch {
+      // skip malformed rows
+    }
+  }
+  return null;
+}
+
 export function getThreadMessages(
   provider: string,
   threadId: string,
