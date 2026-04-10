@@ -8,12 +8,12 @@ import type { MessagingProvider, MessageEnvelope, MessageFull } from "../types.t
 // Config
 // ---------------------------------------------------------------------------
 
-interface TelegramSettings {
+interface TelegramBotSettings {
   botToken: string;
 }
 
-function resolveSettings(cliOverrides?: Record<string, unknown>): TelegramSettings | null {
-  const token = (cliOverrides?.botToken as string) ?? loadConfig().telegram?.botToken;
+function resolveSettings(cliOverrides?: Record<string, unknown>): TelegramBotSettings | null {
+  const token = (cliOverrides?.botToken as string) ?? loadConfig().telegramBot?.botToken;
   if (!token) return null;
   return { botToken: token };
 }
@@ -106,7 +106,7 @@ function updateToEnvelope(update: TelegramUpdate): MessageEnvelope | null {
 
   return {
     id: String(update.update_id),
-    provider: "telegram",
+    provider: "telegram-bot",
     from: { name: senderName(msg), address: fromAddr },
     to: [{ name: chatName(msg), address: chatId }],
     preview: body.slice(0, 100),
@@ -137,7 +137,7 @@ function updateToFull(update: TelegramUpdate): MessageFull | null {
 function nextOffset(): number | undefined {
   // Get the latest cached update_id; offset = update_id + 1 tells Telegram
   // to only return newer updates. Returns undefined on first run (no offset).
-  const recent = store.getCachedInbox("telegram", { limit: 1 });
+  const recent = store.getCachedInbox("telegram-bot", { limit: 1 });
   if (recent.length === 0) return undefined;
   const latestId = Number(recent[0]!.id);
   if (isNaN(latestId)) return undefined;
@@ -148,7 +148,7 @@ function nextOffset(): number | undefined {
 // Fetch and cache (callable by daemon)
 // ---------------------------------------------------------------------------
 
-export async function fetchTelegramUpdates(token: string): Promise<void> {
+export async function fetchTelegramBotUpdates(token: string): Promise<void> {
   const offset = nextOffset();
   const updates = (await apiGet(token, "getUpdates", {
     offset,
@@ -157,7 +157,7 @@ export async function fetchTelegramUpdates(token: string): Promise<void> {
   })) as TelegramUpdate[];
 
   if (!Array.isArray(updates) || updates.length === 0) {
-    store.recordFetch("telegram", "bot");
+    store.recordFetch("telegram-bot", "bot");
     return;
   }
 
@@ -172,16 +172,16 @@ export async function fetchTelegramUpdates(token: string): Promise<void> {
     store.upsertFullMessages(fulls);
   }
 
-  store.recordFetch("telegram", "bot");
+  store.recordFetch("telegram-bot", "bot");
 }
 
 // ---------------------------------------------------------------------------
 // Provider
 // ---------------------------------------------------------------------------
 
-const telegramProvider: MessagingProvider = {
-  name: "telegram",
-  displayName: "Telegram (Bot API)",
+const telegramBotProvider: MessagingProvider = {
+  name: "telegram-bot",
+  displayName: "Telegram Bot (Bot API)",
 
   isConfigured() {
     return resolveSettings() !== null;
@@ -192,9 +192,9 @@ const telegramProvider: MessagingProvider = {
     if (!settings) {
       return {
         ok: false,
-        provider: "telegram",
+        provider: "telegram-bot",
         recipientId,
-        error: "Telegram not configured. Run: onemessage auth telegram",
+        error: "Telegram bot not configured. Run: onemessage auth telegram-bot",
       };
     }
 
@@ -206,18 +206,18 @@ const telegramProvider: MessagingProvider = {
 
       const messageId = String(result.message_id);
       cacheSentMessage({
-        provider: "telegram",
+        provider: "telegram-bot",
         messageId,
         fromAddress: "bot",
         recipientId,
         body,
       });
 
-      return { ok: true, provider: "telegram", recipientId, messageId };
+      return { ok: true, provider: "telegram-bot", recipientId, messageId };
     } catch (err) {
       return {
         ok: false,
-        provider: "telegram",
+        provider: "telegram-bot",
         recipientId,
         error: err instanceof Error ? err.message : String(err),
       };
@@ -227,12 +227,12 @@ const telegramProvider: MessagingProvider = {
   async inbox(opts) {
     const settings = resolveSettings(opts?.providerFlags);
     if (!settings) {
-      console.error("Telegram not configured. Run: onemessage auth telegram");
+      console.error("Telegram bot not configured. Run: onemessage auth telegram-bot");
       return [];
     }
 
-    if (store.isFresh("telegram", 30_000, "bot") && !opts?.fresh) {
-      return store.getCachedInbox("telegram", {
+    if (store.isFresh("telegram-bot", 30_000, "bot") && !opts?.fresh) {
+      return store.getCachedInbox("telegram-bot", {
         limit: opts?.limit,
         unread: opts?.unread,
         since: opts?.since,
@@ -241,12 +241,12 @@ const telegramProvider: MessagingProvider = {
     }
 
     try {
-      await fetchTelegramUpdates(settings.botToken);
+      await fetchTelegramBotUpdates(settings.botToken);
     } catch (err) {
-      console.error(`[telegram] Failed to fetch updates: ${err instanceof Error ? err.message : err}`);
+      console.error(`[telegram-bot] Failed to fetch updates: ${err instanceof Error ? err.message : err}`);
     }
 
-    return store.getCachedInbox("telegram", {
+    return store.getCachedInbox("telegram-bot", {
       limit: opts?.limit,
       unread: opts?.unread,
       since: opts?.since,
@@ -255,15 +255,15 @@ const telegramProvider: MessagingProvider = {
   },
 
   async read(messageId, _opts) {
-    return readFromCacheOrFail("telegram", messageId);
+    return readFromCacheOrFail("telegram-bot", messageId);
   },
 
   async search(query, opts) {
-    return store.searchCached(query, "telegram", {
+    return store.searchCached(query, "telegram-bot", {
       limit: opts?.limit,
       since: opts?.since,
     });
   },
 };
 
-registerProvider(telegramProvider);
+registerProvider(telegramBotProvider);

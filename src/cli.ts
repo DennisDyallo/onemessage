@@ -102,7 +102,7 @@ function addProviderFlags(cmd: Command): Command {
     .option("--host <host>", "Server host (overrides config)")
     .option("--smtp-port <port>", "SMTP port (email)")
     .option("--imap-port <port>", "IMAP port (email)")
-    .option("--bot-token <token>", "Bot token (telegram)")
+    .option("--bot-token <token>", "Bot token (telegram-bot)")
     .option("--phone <number>", "Phone number (signal, sms)")
     .option("--device <name>", "Device name (sms via KDE Connect)");
 }
@@ -431,13 +431,17 @@ program
           console.log(`    onemessage send email "to@x.com" -s "Hi" "body" \\`);
           console.log(`      --password "bridge-pw" --from "you@pm.me"\n`);
           break;
-        case "telegram":
+        case "telegram-bot":
+          console.log(`  Sends messages as a Telegram bot (not your personal account).`);
+          console.log(`  The recipient must have started a chat with your bot first.\n`);
+          console.log(`  Create a bot via @BotFather on Telegram, then add to ${configPath}:\n`);
           console.log(`    {`);
-          console.log(`      "telegram": {`);
+          console.log(`      "telegramBot": {`);
           console.log(`        "botToken": "123456:ABC-your-token"`);
           console.log(`      }`);
           console.log(`    }\n`);
-          console.log(`  Or: onemessage send telegram "@user" "hi" --bot-token "123456:ABC..."\n`);
+          console.log(`  Or pass per-call: onemessage send telegram-bot <chat_id> "hi" --bot-token "123456:ABC..."\n`);
+          console.log(`  Find your chat_id: message your bot, then run: onemessage inbox telegram-bot\n`);
           break;
         case "sms":
           console.log(`  Requires kdeconnect-cli and a paired Android phone.\n`);

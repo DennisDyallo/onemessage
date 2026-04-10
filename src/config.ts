@@ -9,7 +9,7 @@ import { homedir } from "os";
 export interface OneMessageConfig {
   senderName?: string;
   email?: EmailProviderConfig;
-  telegram?: TelegramProviderConfig;
+  telegramBot?: TelegramBotProviderConfig;
   signal?: SignalProviderConfig;
   sms?: SmsProviderConfig;
   whatsapp?: WhatsAppProviderConfig;
@@ -42,7 +42,7 @@ export interface EmailProviderConfig {
   security?: string;   // default: STARTTLS
 }
 
-export interface TelegramProviderConfig {
+export interface TelegramBotProviderConfig {
   botToken: string;
 }
 
