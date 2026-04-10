@@ -24,6 +24,7 @@ function getDb(): Database {
       id              TEXT NOT NULL,
       provider        TEXT NOT NULL,
       direction       TEXT NOT NULL DEFAULT 'in',
+      account         TEXT NOT NULL DEFAULT '',
       from_json       TEXT,
       to_json         TEXT NOT NULL DEFAULT '[]',
       subject         TEXT,
@@ -38,6 +39,8 @@ function getDb(): Database {
       PRIMARY KEY (provider, id)
     )
   `);
+  // Non-destructive migration for existing databases
+  try { db.run("ALTER TABLE messages ADD COLUMN account TEXT NOT NULL DEFAULT ''"); } catch { /* already exists */ }
 
   db.run(`
     CREATE TABLE IF NOT EXISTS fetch_log (
@@ -82,11 +85,12 @@ export function upsertMessages(msgs: MessageEnvelope[], direction: "in" | "out" 
   const d = getDb();
   const stmt = d.prepare(`
     INSERT INTO messages
-      (id, provider, direction, from_json, to_json, subject, preview, date, unread, has_attachments, cached_at)
+      (id, provider, direction, account, from_json, to_json, subject, preview, date, unread, has_attachments, cached_at)
     VALUES
-      ($id, $provider, $direction, $from_json, $to_json, $subject, $preview, $date, $unread, $has_attachments, $cached_at)
+      ($id, $provider, $direction, $account, $from_json, $to_json, $subject, $preview, $date, $unread, $has_attachments, $cached_at)
     ON CONFLICT(provider, id) DO UPDATE SET
       direction       = excluded.direction,
+      account         = CASE WHEN excluded.account != '' THEN excluded.account ELSE messages.account END,
       to_json         = excluded.to_json,
       subject         = excluded.subject,
       preview         = excluded.preview,
@@ -114,6 +118,7 @@ export function upsertMessages(msgs: MessageEnvelope[], direction: "in" | "out" 
         $id: m.id,
         $provider: m.provider,
         $direction: direction,
+        $account: m.account ?? "",
         $from_json: m.from ? JSON.stringify(m.from) : null,
         $to_json: JSON.stringify(m.to),
         $subject: m.subject ?? null,
@@ -136,11 +141,12 @@ export function upsertFullMessages(
   const d = getDb();
   const stmt = d.prepare(`
     INSERT INTO messages
-      (id, provider, direction, from_json, to_json, subject, preview, body, body_format, date, unread, has_attachments, attachments_json, cached_at, thread_id)
+      (id, provider, direction, account, from_json, to_json, subject, preview, body, body_format, date, unread, has_attachments, attachments_json, cached_at, thread_id)
     VALUES
-      ($id, $provider, $direction, $from_json, $to_json, $subject, $preview, $body, $body_format, $date, $unread, $has_attachments, $attachments_json, $cached_at, $thread_id)
+      ($id, $provider, $direction, $account, $from_json, $to_json, $subject, $preview, $body, $body_format, $date, $unread, $has_attachments, $attachments_json, $cached_at, $thread_id)
     ON CONFLICT(provider, id) DO UPDATE SET
       direction        = excluded.direction,
+      account          = CASE WHEN excluded.account != '' THEN excluded.account ELSE messages.account END,
       to_json          = excluded.to_json,
       subject          = excluded.subject,
       preview          = excluded.preview,
@@ -172,6 +178,7 @@ export function upsertFullMessages(
         $id: msg.id,
         $provider: msg.provider,
         $direction: direction,
+        $account: msg.account ?? "",
         $from_json: msg.from ? JSON.stringify(msg.from) : null,
         $to_json: JSON.stringify(msg.to),
         $subject: msg.subject ?? null,
@@ -202,6 +209,7 @@ function rowToEnvelope(row: any): MessageEnvelope {
   return {
     id: row.id,
     provider: row.provider,
+    account: row.account || undefined,
     from: row.from_json ? JSON.parse(row.from_json) : null,
     to: JSON.parse(row.to_json),
     subject: row.subject ?? undefined,

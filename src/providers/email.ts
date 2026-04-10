@@ -29,6 +29,7 @@ export interface ResolvedEmail {
   accounts: string[];
   secondaryAccounts: string[];
   defaultAccount: string;
+  defaultFolder: string;
   senderName: string;
   host: string;
   smtpPort: number;
@@ -56,6 +57,7 @@ export function resolveSettings(cliOverrides?: Record<string, unknown>): Resolve
     accounts: effectiveAccounts,
     secondaryAccounts: email?.secondaryAccounts ?? [],
     defaultAccount,
+    defaultFolder: email?.defaultFolder ?? "INBOX",
     senderName: (cliOverrides?.senderName as string) ?? config.senderName ?? "",
     host: (cliOverrides?.host as string) ?? email?.host ?? EMAIL_DEFAULTS.host,
     smtpPort: (cliOverrides?.smtpPort as number) ?? email?.smtpPort ?? EMAIL_DEFAULTS.smtpPort,
@@ -113,10 +115,11 @@ function hasAttachmentParts(structure: any): boolean {
   return false;
 }
 
-function toEnvelope(uid: number, env: any, flags: Set<string>, bodyStructure: any): MessageEnvelope {
+function toEnvelope(uid: number, env: any, flags: Set<string>, bodyStructure: any, account = ""): MessageEnvelope {
   return {
     id: String(uid),
     provider: "email",
+    account,
     from: env.from?.[0]
       ? { name: env.from[0].name || "", address: env.from[0].address || "" }
       : null,
@@ -150,7 +153,7 @@ async function fetchMailboxMessages(
         { uid: true, envelope: true, flags: true, bodyStructure: true },
         { uid: true },
       )) {
-        messages.push(toEnvelope(msg.uid, msg.envelope, msg.flags ?? new Set(), msg.bodyStructure));
+        messages.push(toEnvelope(msg.uid, msg.envelope, msg.flags ?? new Set(), msg.bodyStructure, account));
       }
       return messages;
     } finally {
@@ -191,7 +194,7 @@ async function fetchFullMessage(
 
       const flags = raw.flags ?? new Set<string>();
       return {
-        id: String(raw.uid), provider: "email",
+        id: String(raw.uid), provider: "email", account,
         from: env?.from?.[0] ? { name: env.from[0].name || "", address: env.from[0].address || "" } : null,
         to: (env?.to || []).map((a: any) => ({ name: a.name || "", address: a.address || "" })),
         subject: env?.subject || "", preview: env?.subject || "",
@@ -296,7 +299,7 @@ const emailProvider: MessagingProvider = {
   async inbox(opts) {
     const s = requireSettings(opts?.providerFlags);
     const accounts = pickAccounts(s, opts?.account);
-    const folder = opts?.folder ?? "INBOX";
+    const folder = opts?.folder ?? s.defaultFolder;
     const limit = opts?.limit ?? 10;
 
     const criteria: any = {};
@@ -332,17 +335,18 @@ const emailProvider: MessagingProvider = {
 
   async read(messageId, opts) {
     const s = requireSettings(opts?.providerFlags);
-    const account = opts?.account ?? s.defaultAccount;
-    const folder = opts?.folder ?? "INBOX";
+    const folder = opts?.folder ?? s.defaultFolder;
     const prefer = opts?.prefer ?? "text";
     const uid = parseInt(messageId, 10);
     if (isNaN(uid) || uid < 1) { console.error(`Invalid message ID: "${messageId}"`); return null; }
 
-    // Check cache first (unless --fresh)
-    if (!opts?.fresh) {
-      const cached = store.getCachedMessage("email", messageId);
-      if (cached && cached.body) return cached;
-    }
+    // Always look up cache to find which account owns this UID —
+    // even with --fresh we need the account for the IMAP fetch.
+    const cached = store.getCachedMessage("email", messageId);
+    if (!opts?.fresh && cached?.body) return cached;
+
+    // Use: explicit --account flag > account stored in cache > default account
+    const account = opts?.account ?? cached?.account ?? s.defaultAccount;
 
     // Fetch from IMAP
     const msg = await fetchFullMessage(s, account, folder, uid, prefer, opts?.includeAttachments ?? false);
@@ -355,7 +359,7 @@ const emailProvider: MessagingProvider = {
   async search(query, opts) {
     const s = requireSettings(opts?.providerFlags);
     const accounts = pickAccounts(s, opts?.account);
-    const folder = opts?.folder ?? "INBOX";
+    const folder = opts?.folder ?? s.defaultFolder;
     const limit = opts?.limit ?? 10;
 
     // Use freshness gating like inbox — check if recent fetch exists

@@ -31,6 +31,10 @@ export interface EmailProviderConfig {
   default?: string;
   // Accounts whose messages are hidden from default inbox (shown with --all)
   secondaryAccounts?: string[];
+  // Default IMAP mailbox to fetch from. Use "All Mail" for Proton Mail setups
+  // that use filters/labels (Proton routes filtered mail out of INBOX).
+  // Defaults to "INBOX" for standard IMAP compatibility.
+  defaultFolder?: string;
   // Overrides — only needed if not using standard Proton Bridge
   host?: string;       // default: 127.0.0.1
   smtpPort?: number;   // default: 1025

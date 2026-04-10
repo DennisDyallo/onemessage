@@ -12,6 +12,7 @@
 export interface MessageEnvelope {
   id: string;
   provider: string;
+  account?: string;   // which account this message belongs to (email only)
   from: Contact | null;
   to: Contact[];
   subject?: string;
