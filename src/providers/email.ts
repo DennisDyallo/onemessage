@@ -44,18 +44,21 @@ export function resolveSettings(cliOverrides?: Record<string, unknown>): Resolve
   const password = (cliOverrides?.password as string) ?? email?.password;
   if (!password) return null;
 
-  const accounts = email?.accounts ?? [];
+  const primaryAccounts = email?.accounts ?? [];
+  const secondaryAccounts = email?.secondaryAccounts ?? [];
   const cliFrom = cliOverrides?.from as string | undefined;
 
-  const effectiveAccounts = accounts.length > 0 ? accounts : (cliFrom ? [cliFrom] : []);
+  // secondaryAccounts are implicitly part of the account list — no need to duplicate in config
+  const allAccounts = [...new Set([...primaryAccounts, ...secondaryAccounts])];
+  const effectiveAccounts = allAccounts.length > 0 ? allAccounts : (cliFrom ? [cliFrom] : []);
   if (effectiveAccounts.length === 0) return null;
 
-  const defaultAccount = cliFrom ?? email?.default ?? effectiveAccounts[0]!;
+  const defaultAccount = cliFrom ?? email?.default ?? primaryAccounts[0] ?? effectiveAccounts[0]!;
 
   return {
     password,
     accounts: effectiveAccounts,
-    secondaryAccounts: email?.secondaryAccounts ?? [],
+    secondaryAccounts,
     defaultAccount,
     defaultFolder: email?.defaultFolder ?? "INBOX",
     senderName: (cliOverrides?.senderName as string) ?? config.senderName ?? "",
