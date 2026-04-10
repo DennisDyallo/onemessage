@@ -115,6 +115,58 @@ name: "telegram"
 name: "telegram-bot"
 ```
 
+### Convention over configuration
+
+When a pattern appears identically across multiple providers, it is a **convention** — not an optional style. The shared utilities in `src/providers/shared.ts` are the canonical implementation of those conventions. Using them is mandatory; reimplementing equivalent logic inline is always wrong, even if the inline version is correct, because it creates drift and breaks consistency for future readers.
+
+**Shared conventions — reach for these before writing any new code:**
+
+| Utility | When to use |
+|---|---|
+| `readFromCacheOrFail(provider, messageId)` | Every `read()` implementation where the provider has no random-access fetch API (Signal, SMS, Telegram bot, WhatsApp) |
+| `cacheSentMessage({ provider, messageId, fromAddress, recipientId, body })` | Every `send()` implementation after a successful send |
+| `runCli(cmd, args, opts)` | Every shell-provider CLI invocation in a synchronous (CLI) context |
+| `runCliAsync(cmd, args, opts)` | Every shell-provider CLI invocation in an async (daemon) context |
+| `cliExists(cmd)` | Every `isConfigured()` that depends on an external binary |
+| `store.isFresh(provider, maxAgeMs, account)` | Every `inbox()` freshness gate |
+| `store.getCachedInbox(provider, opts)` | Every `inbox()` return path (both cache-hit and post-fetch) |
+| `store.searchCached(query, provider, opts)` | Every `search()` implementation |
+| `registerProvider(provider)` at module scope | Every provider file — self-registers on import, no manual wiring |
+
+**Canonical `inbox()` pattern** — copy this exactly, do not invent a variation:
+
+```typescript
+async inbox(opts) {
+  const settings = resolveSettings(opts?.providerFlags);
+  if (!settings) {
+    console.error("X not configured. Run: onemessage auth x");
+    return [];
+  }
+
+  if (store.isFresh("x", 30_000, settings.account) && !opts?.fresh) {
+    return store.getCachedInbox("x", { limit: opts?.limit, unread: opts?.unread, since: opts?.since, from: opts?.from });
+  }
+
+  await fetchXInbox(settings); // provider-specific fetch + store.upsertMessages/upsertFullMessages
+
+  return store.getCachedInbox("x", { limit: opts?.limit, unread: opts?.unread, since: opts?.since, from: opts?.from });
+},
+```
+
+```
+// WRONG — reimplements caching and error handling inline
+async read(messageId) {
+  const msg = store.db.query("SELECT * FROM messages WHERE id = ?").get(messageId);
+  if (!msg) { console.error("not found"); return null; }
+  return msg;
+}
+
+// RIGHT — convention handles this universally
+async read(messageId) {
+  return readFromCacheOrFail("x", messageId);
+}
+```
+
 ### New features: the multi-user test
 
 Before adding any feature, run it through this filter:
