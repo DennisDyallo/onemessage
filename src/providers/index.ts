@@ -12,3 +12,4 @@ import "./sms.ts";
 import "./signal.ts";
 import "./whatsapp.ts";
 import "./telegram-bot.ts";
+import "./instagram.ts";

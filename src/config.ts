@@ -11,6 +11,7 @@ export interface OneMessageConfig {
   me?: MeConfig;
   email?: EmailProviderConfig;
   telegramBot?: TelegramBotProviderConfig;
+  instagram?: InstagramProviderConfig;
   signal?: SignalProviderConfig;
   sms?: SmsProviderConfig;
   whatsapp?: WhatsAppProviderConfig;
@@ -32,6 +33,7 @@ export interface DaemonConfig {
     email?: { enabled?: boolean; pollIntervalMs?: number };
     sms?: { enabled?: boolean; pollIntervalMs?: number };
     "telegram-bot"?: { enabled?: boolean; pollIntervalMs?: number };
+    instagram?: { enabled?: boolean; pollIntervalMs?: number };
   };
 }
 
@@ -54,6 +56,10 @@ export interface EmailProviderConfig {
 
 export interface TelegramBotProviderConfig {
   botToken: string;
+}
+
+export interface InstagramProviderConfig {
+  username: string;
 }
 
 export interface SignalProviderConfig {

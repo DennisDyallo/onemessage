@@ -30,6 +30,7 @@ import {
 } from "./providers/email.ts";
 import { fetchSmsInbox } from "./providers/sms.ts";
 import { fetchTelegramBotUpdates } from "./providers/telegram-bot.ts";
+import { fetchInstagramInbox } from "./providers/instagram.ts";
 import { cliExists } from "./providers/shared.ts";
 
 // ---------------------------------------------------------------------------
@@ -454,6 +455,19 @@ export class UnifiedDaemon {
         this.schedulePoll("sms", interval, () => {
           fetchSmsInbox();
         });
+      }
+    }
+
+    // Instagram
+    const instagramConfig = config.instagram;
+    if (instagramConfig?.username && cliExists("instagram-cli")) {
+      const interval =
+        config.daemon?.providers?.instagram?.pollIntervalMs ?? defaultInterval;
+      const enabled = config.daemon?.providers?.instagram?.enabled !== false;
+      if (enabled) {
+        this.schedulePoll("instagram", interval, () =>
+          fetchInstagramInbox(instagramConfig.username),
+        );
       }
     }
   }
