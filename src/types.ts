@@ -20,6 +20,8 @@ export interface MessageEnvelope {
   date: string;
   unread: boolean;
   hasAttachments: boolean;
+  isGroup?: boolean;       // true = group, false = 1:1, undefined = unknown
+  groupName?: string;      // human-readable group name when isGroup is true
 }
 
 export interface MessageFull extends MessageEnvelope {

@@ -140,6 +140,7 @@ export async function parseAndStoreWAMessage(
   msg: WAMessage,
   sock?: WASocket,
   lidCache?: Map<string, string>,
+  groupName?: string,
 ): Promise<boolean> {
   try {
     if (!msg.message) return false;
@@ -150,6 +151,7 @@ export async function parseAndStoreWAMessage(
     if (!rawJid || rawJid === "status@broadcast") return false;
 
     const chatJid = await translateJid(rawJid, sock, lidCache);
+    const isGroup = chatJid.endsWith("@g.us");
     const fromMe = msg.key.fromMe ?? false;
 
     const content =
@@ -202,6 +204,8 @@ export async function parseAndStoreWAMessage(
       date: new Date(timestamp * 1000).toISOString(),
       unread: !fromMe,
       hasAttachments: false,
+      isGroup,
+      groupName: isGroup ? (groupName ?? chatJid.split("@")[0]) : undefined,
       attachments: [],
     };
 

@@ -325,7 +325,11 @@ export class UnifiedDaemon {
   // -----------------------------------------------------------------------
 
   private async parseAndStoreMessage(msg: WAMessage): Promise<boolean> {
-    return parseAndStoreWAMessage(msg, this.sock ?? undefined, this.lidToPhoneMap);
+    const remoteJid = msg.key.remoteJid;
+    const resolvedGroupName = remoteJid?.endsWith("@g.us")
+      ? this.groupCache.get(remoteJid)?.subject
+      : undefined;
+    return parseAndStoreWAMessage(msg, this.sock ?? undefined, this.lidToPhoneMap, resolvedGroupName);
   }
 
   // -----------------------------------------------------------------------

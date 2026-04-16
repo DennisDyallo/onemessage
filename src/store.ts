@@ -34,6 +34,8 @@ function getDb(): Database {
       date            TEXT NOT NULL,
       unread          INTEGER NOT NULL DEFAULT 1,
       has_attachments INTEGER NOT NULL DEFAULT 0,
+      is_group        INTEGER NOT NULL DEFAULT 0,
+      group_name      TEXT,
       attachments_json TEXT DEFAULT '[]',
       cached_at       TEXT NOT NULL,
       PRIMARY KEY (provider, id)
@@ -70,6 +72,10 @@ function getDb(): Database {
   }
   db.run("CREATE INDEX IF NOT EXISTS idx_messages_thread ON messages(provider, thread_id, date ASC)");
 
+  // is_group and group_name columns for group chat metadata
+  try { db.run("ALTER TABLE messages ADD COLUMN is_group INTEGER NOT NULL DEFAULT 0"); } catch { /* already exists */ }
+  try { db.run("ALTER TABLE messages ADD COLUMN group_name TEXT"); } catch { /* already exists */ }
+
 
   db.run(`
     CREATE TABLE IF NOT EXISTS contacts (
@@ -92,9 +98,9 @@ export function upsertMessages(msgs: MessageEnvelope[], direction: "in" | "out" 
   const d = getDb();
   const stmt = d.prepare(`
     INSERT INTO messages
-      (id, provider, direction, account, from_json, to_json, subject, preview, date, unread, has_attachments, cached_at)
+      (id, provider, direction, account, from_json, to_json, subject, preview, date, unread, has_attachments, is_group, group_name, cached_at)
     VALUES
-      ($id, $provider, $direction, $account, $from_json, $to_json, $subject, $preview, $date, $unread, $has_attachments, $cached_at)
+      ($id, $provider, $direction, $account, $from_json, $to_json, $subject, $preview, $date, $unread, $has_attachments, $is_group, $group_name, $cached_at)
     ON CONFLICT(provider, id) DO UPDATE SET
       direction       = excluded.direction,
       account         = CASE WHEN excluded.account != '' THEN excluded.account ELSE messages.account END,
@@ -104,6 +110,8 @@ export function upsertMessages(msgs: MessageEnvelope[], direction: "in" | "out" 
       date            = excluded.date,
       unread          = excluded.unread,
       has_attachments = excluded.has_attachments,
+      is_group        = excluded.is_group,
+      group_name      = COALESCE(excluded.group_name, messages.group_name),
       cached_at       = excluded.cached_at,
       from_json       = CASE
         WHEN json_extract(excluded.from_json, '$.name') IS NOT NULL
@@ -133,6 +141,8 @@ export function upsertMessages(msgs: MessageEnvelope[], direction: "in" | "out" 
         $date: m.date,
         $unread: m.unread ? 1 : 0,
         $has_attachments: m.hasAttachments ? 1 : 0,
+        $is_group: m.isGroup ? 1 : 0,
+        $group_name: m.groupName ?? null,
         $cached_at: now,
       });
     }
@@ -148,9 +158,9 @@ export function upsertFullMessages(
   const d = getDb();
   const stmt = d.prepare(`
     INSERT INTO messages
-      (id, provider, direction, account, from_json, to_json, subject, preview, body, body_format, date, unread, has_attachments, attachments_json, cached_at, thread_id, rfc_message_id)
+      (id, provider, direction, account, from_json, to_json, subject, preview, body, body_format, date, unread, has_attachments, is_group, group_name, attachments_json, cached_at, thread_id, rfc_message_id)
     VALUES
-      ($id, $provider, $direction, $account, $from_json, $to_json, $subject, $preview, $body, $body_format, $date, $unread, $has_attachments, $attachments_json, $cached_at, $thread_id, $rfc_message_id)
+      ($id, $provider, $direction, $account, $from_json, $to_json, $subject, $preview, $body, $body_format, $date, $unread, $has_attachments, $is_group, $group_name, $attachments_json, $cached_at, $thread_id, $rfc_message_id)
     ON CONFLICT(provider, id) DO UPDATE SET
       direction        = excluded.direction,
       account          = CASE WHEN excluded.account != '' THEN excluded.account ELSE messages.account END,
@@ -162,6 +172,8 @@ export function upsertFullMessages(
       date             = excluded.date,
       unread           = excluded.unread,
       has_attachments  = excluded.has_attachments,
+      is_group         = excluded.is_group,
+      group_name       = COALESCE(excluded.group_name, messages.group_name),
       attachments_json = excluded.attachments_json,
       cached_at        = excluded.cached_at,
       thread_id        = COALESCE(excluded.thread_id, messages.thread_id),
@@ -196,6 +208,8 @@ export function upsertFullMessages(
         $date: msg.date,
         $unread: msg.unread ? 1 : 0,
         $has_attachments: msg.hasAttachments ? 1 : 0,
+        $is_group: msg.isGroup ? 1 : 0,
+        $group_name: msg.groupName ?? null,
         $attachments_json: JSON.stringify(msg.attachments.map(({ data, ...rest }) => rest)),
         $cached_at: now,
         $thread_id: threadId ?? null,
@@ -226,6 +240,8 @@ function rowToEnvelope(row: any): MessageEnvelope {
     date: row.date,
     unread: row.unread === 1,
     hasAttachments: row.has_attachments === 1,
+    isGroup: row.is_group === 1,
+    groupName: row.group_name ?? undefined,
   };
 }
 

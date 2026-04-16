@@ -72,7 +72,7 @@ interface TelegramUpdate {
 interface TelegramMessage {
   message_id: number;
   date: number;
-  chat: { id: number; title?: string; first_name?: string; last_name?: string; username?: string };
+  chat: { id: number; type: string; title?: string; first_name?: string; last_name?: string; username?: string };
   from?: { id: number; first_name?: string; last_name?: string; username?: string };
   text?: string;
   caption?: string;
@@ -113,6 +113,8 @@ function updateToEnvelope(update: TelegramUpdate): MessageEnvelope | null {
     date: new Date(msg.date * 1000).toISOString(),
     unread: true,
     hasAttachments,
+    isGroup: msg.chat.type === "group" || msg.chat.type === "supergroup",
+    groupName: msg.chat.title ?? undefined,
   };
 }
 

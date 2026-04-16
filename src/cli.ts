@@ -48,8 +48,9 @@ function printEnvelopes(messages: MessageEnvelope[], json: boolean): void {
   }
   for (const m of messages) {
     const marker = m.unread ? "●" : " ";
+    const groupTag = m.isGroup ? " [G]" : "";
     const id = pad(m.id, 6);
-    const from = truncate(m.from?.name || m.from?.address || "unknown", 24);
+    const from = truncate((m.from?.name || m.from?.address || "unknown") + groupTag, 24);
     const subj = truncate(m.subject || m.preview || "", 40);
     console.log(`  ${marker} ${id}  ${pad(from, 24)}  ${pad(subj, 40)}  ${formatDate(m.date)}`);
   }
@@ -63,6 +64,7 @@ function printMessage(msg: MessageFull, json: boolean): void {
   console.log();
   console.log(`  From:    ${msg.from?.name || ""} <${msg.from?.address || ""}>`);
   console.log(`  To:      ${msg.to.map((c) => c.address).join(", ")}`);
+  if (msg.isGroup && msg.groupName) console.log(`  Group:   ${msg.groupName}`);
   if (msg.subject) console.log(`  Subject: ${msg.subject}`);
   console.log(`  Date:    ${msg.date}`);
   if (msg.hasAttachments) {

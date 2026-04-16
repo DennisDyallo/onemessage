@@ -203,6 +203,8 @@ function parseSignalMessages(jsonLines: string, account?: string): MessageFull[]
         date: timestamp ? new Date(timestamp).toISOString() : "",
         unread: true,
         hasAttachments,
+        isGroup: !!groupId,
+        groupName,
       });
     } catch {
       // Skip unparseable lines
