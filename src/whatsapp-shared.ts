@@ -28,8 +28,6 @@ import type { MessageFull } from "./types.ts";
 // ---------------------------------------------------------------------------
 
 export const WA_DIR = join(getConfigDir(), "whatsapp");
-export const PID_PATH = join(WA_DIR, "daemon.pid");
-export const SOCK_PATH = join(WA_DIR, "daemon.sock");
 export const AUTH_DIR = join(WA_DIR, "auth");
 
 // ---------------------------------------------------------------------------

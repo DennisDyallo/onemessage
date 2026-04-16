@@ -94,6 +94,20 @@ function getDb(): Database {
 // Write
 // ---------------------------------------------------------------------------
 
+/** ON CONFLICT clause for from_json: prefer whichever side has a real name. */
+const FROM_JSON_MERGE = `
+  from_json = CASE
+    WHEN json_extract(excluded.from_json, '$.name') IS NOT NULL
+      AND json_extract(excluded.from_json, '$.name') != ''
+      AND json_extract(excluded.from_json, '$.name') != json_extract(excluded.from_json, '$.address')
+    THEN excluded.from_json
+    WHEN json_extract(messages.from_json, '$.name') IS NOT NULL
+      AND json_extract(messages.from_json, '$.name') != ''
+      AND json_extract(messages.from_json, '$.name') != json_extract(messages.from_json, '$.address')
+    THEN messages.from_json
+    ELSE excluded.from_json
+  END`;
+
 export function upsertMessages(msgs: MessageEnvelope[], direction: "in" | "out" = "in"): void {
   const d = getDb();
   const stmt = d.prepare(`
@@ -113,17 +127,7 @@ export function upsertMessages(msgs: MessageEnvelope[], direction: "in" | "out" 
       is_group        = excluded.is_group,
       group_name      = COALESCE(excluded.group_name, messages.group_name),
       cached_at       = excluded.cached_at,
-      from_json       = CASE
-        WHEN json_extract(excluded.from_json, '$.name') IS NOT NULL
-          AND json_extract(excluded.from_json, '$.name') != ''
-          AND json_extract(excluded.from_json, '$.name') != json_extract(excluded.from_json, '$.address')
-        THEN excluded.from_json
-        WHEN json_extract(messages.from_json, '$.name') IS NOT NULL
-          AND json_extract(messages.from_json, '$.name') != ''
-          AND json_extract(messages.from_json, '$.name') != json_extract(messages.from_json, '$.address')
-        THEN messages.from_json
-        ELSE excluded.from_json
-      END
+      ${FROM_JSON_MERGE}
   `);
 
   const now = new Date().toISOString();
@@ -178,17 +182,7 @@ export function upsertFullMessages(
       cached_at        = excluded.cached_at,
       thread_id        = COALESCE(excluded.thread_id, messages.thread_id),
       rfc_message_id   = COALESCE(excluded.rfc_message_id, messages.rfc_message_id),
-      from_json        = CASE
-        WHEN json_extract(excluded.from_json, '$.name') IS NOT NULL
-          AND json_extract(excluded.from_json, '$.name') != ''
-          AND json_extract(excluded.from_json, '$.name') != json_extract(excluded.from_json, '$.address')
-        THEN excluded.from_json
-        WHEN json_extract(messages.from_json, '$.name') IS NOT NULL
-          AND json_extract(messages.from_json, '$.name') != ''
-          AND json_extract(messages.from_json, '$.name') != json_extract(messages.from_json, '$.address')
-        THEN messages.from_json
-        ELSE excluded.from_json
-      END
+      ${FROM_JSON_MERGE}
   `);
 
   const now = new Date().toISOString();

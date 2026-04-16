@@ -495,7 +495,7 @@ const signalProvider: MessagingProvider = {
       return [];
     }
 
-    if (store.isFresh("signal", 30_000, settings.account) && !opts?.providerFlags?.fresh) {
+    if (store.isFresh("signal", 30_000, settings.account) && !opts?.fresh) {
       return store.getCachedInbox("signal", {
         limit: opts?.limit,
         unread: opts?.unread,

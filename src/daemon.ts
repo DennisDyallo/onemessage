@@ -21,9 +21,9 @@ import {
 import { loadConfig } from "./config.ts";
 import * as store from "./store.ts";
 import type { MessageFull } from "./types.ts";
-import { WA_DIR, AUTH_DIR, createBaileysSocket, parseAndStoreWAMessage } from "./whatsapp-shared.ts";
+import { AUTH_DIR, createBaileysSocket, parseAndStoreWAMessage } from "./whatsapp-shared.ts";
 import { DAEMON_PID, DAEMON_SOCK } from "./daemon-shared.ts";
-import { fetchSignalInbox, fetchSignalInboxAsync, startSignalDaemon, type SignalDaemonHandle } from "./providers/signal.ts";
+import { fetchSignalInboxAsync, startSignalDaemon, type SignalDaemonHandle } from "./providers/signal.ts";
 import {
   fetchEmailInbox,
   resolveSettings as resolveEmailSettings,
@@ -86,6 +86,15 @@ export class UnifiedDaemon {
 
   // Lifecycle
   private startTime = Date.now();
+
+  /** Derive polled provider names from runtime state — never hardcode. */
+  private polledProviderNames(): string[] {
+    const names = new Set<string>();
+    for (const name of this.pollTimers.keys()) names.add(name);
+    for (const name of this.lastPoll.keys()) names.add(name);
+    if (this.signalDaemon) names.add("signal");
+    return [...names];
+  }
 
   // -----------------------------------------------------------------------
   // Start
@@ -571,7 +580,7 @@ export class UnifiedDaemon {
           string,
           { lastPoll: string | null; enabled: boolean; mode?: string }
         > = {};
-        for (const name of ["signal", "email", "sms"]) {
+        for (const name of this.polledProviderNames()) {
           const lastMs = this.lastPoll.get(name);
           pollingStatus[name] = {
             lastPoll: lastMs ? new Date(lastMs).toISOString() : null,
@@ -769,6 +778,24 @@ export class UnifiedDaemon {
               await this.pollProvider("sms", () => fetchSmsInbox());
               return { ok: true };
             }
+            case "telegram-bot": {
+              const token = config.telegramBot?.botToken;
+              if (!token)
+                return { ok: false, error: "telegram-bot not configured" };
+              await this.pollProvider("telegram-bot", () =>
+                fetchTelegramBotUpdates(token),
+              );
+              return { ok: true };
+            }
+            case "instagram": {
+              const username = config.instagram?.username;
+              if (!username)
+                return { ok: false, error: "instagram not configured" };
+              await this.pollProvider("instagram", () =>
+                fetchInstagramInbox(username),
+              );
+              return { ok: true };
+            }
             default:
               return {
                 ok: false,
@@ -798,6 +825,18 @@ export class UnifiedDaemon {
             this.pollProvider("sms", () => fetchSmsInbox()),
           );
         }
+        if (config.telegramBot?.botToken) {
+          const token = config.telegramBot.botToken;
+          promises.push(
+            this.pollProvider("telegram-bot", () => fetchTelegramBotUpdates(token)),
+          );
+        }
+        if (config.instagram?.username) {
+          const username = config.instagram.username;
+          promises.push(
+            this.pollProvider("instagram", () => fetchInstagramInbox(username)),
+          );
+        }
         await Promise.allSettled(promises);
         return { ok: true };
       }
@@ -817,7 +856,7 @@ export class UnifiedDaemon {
         };
 
         // Polled providers
-        for (const name of ["signal", "email", "sms"]) {
+        for (const name of this.polledProviderNames()) {
           const lastMs = this.lastPoll.get(name);
           providers[name] = {
             enabled: this.pollTimers.has(name) || (name === "signal" && this.signalDaemon !== null),

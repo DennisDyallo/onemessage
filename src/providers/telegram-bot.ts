@@ -163,12 +163,6 @@ export async function fetchTelegramBotUpdates(token: string): Promise<void> {
     return;
   }
 
-  const envelopes = updates.map(updateToEnvelope).filter(Boolean) as MessageEnvelope[];
-  if (envelopes.length > 0) {
-    store.upsertMessages(envelopes, "in");
-  }
-
-  // Also store full messages (body included) for read()
   const fulls = updates.map(updateToFull).filter(Boolean) as MessageFull[];
   if (fulls.length > 0) {
     store.upsertFullMessages(fulls);
