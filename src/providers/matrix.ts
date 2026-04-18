@@ -400,6 +400,8 @@ const matrixProvider: MessagingProvider = {
     }
 
     const readline = await import("readline");
+    const { Writable } = await import("stream");
+
     const rl = readline.createInterface({
       input: process.stdin,
       output: process.stdout,
@@ -407,87 +409,60 @@ const matrixProvider: MessagingProvider = {
     const ask = (q: string): Promise<string> =>
       new Promise((resolve) => rl.question(q, resolve));
 
-    const askHidden = (q: string): Promise<string> =>
-      new Promise((resolve, reject) => {
-        process.stdout.write(q);
-        const stdin = process.stdin;
-        const wasRaw = stdin.isRaw;
-        let input = "";
+    const homeserver = (await ask("Homeserver URL (e.g. https://matrix.org): ")).trim();
+    const userId = (await ask("User ID (e.g. @you:matrix.org): ")).trim();
+    rl.close();
 
-        const cleanup = () => {
-          if (stdin.isTTY) stdin.setRawMode(wasRaw ?? false);
-          stdin.removeListener("data", onData);
-        };
+    // Muted output stream suppresses echo for password input
+    const muted = new Writable({ write: (_c, _e, cb) => cb() });
+    const rlSecret = readline.createInterface({
+      input: process.stdin,
+      output: muted,
+      terminal: true,
+    });
+    process.stdout.write("Password: ");
+    const password = await new Promise<string>((resolve) =>
+      rlSecret.question("", (answer) => {
+        rlSecret.close();
+        process.stdout.write("\n");
+        resolve(answer);
+      }),
+    );
 
-        const onData = (ch: Buffer) => {
-          const c = ch.toString();
-          if (c === "\n" || c === "\r") {
-            cleanup();
-            process.stdout.write("\n");
-            resolve(input);
-          } else if (c === "\u0003") {
-            cleanup();
-            process.exit(1);
-          } else if (c === "\u007f" || c === "\b") {
-            input = input.slice(0, -1);
-          } else {
-            input += c;
-          }
-        };
+    const res = await fetch(
+      `${homeserver.replace(/\/$/, "")}/_matrix/client/v3/login`,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          type: "m.login.password",
+          identifier: { type: "m.id.user", user: userId },
+          password,
+        }),
+      },
+    );
 
-        try {
-          if (stdin.isTTY) stdin.setRawMode(true);
-          stdin.on("data", onData);
-        } catch (err) {
-          cleanup();
-          reject(err);
-        }
-      });
-
-    try {
-      const homeserver = (await ask("Homeserver URL (e.g. https://matrix.org): ")).trim();
-      const userId = (await ask("User ID (e.g. @you:matrix.org): ")).trim();
-      rl.close();
-      const password = (await askHidden("Password: ")).trim();
-
-      const res = await fetch(
-        `${homeserver.replace(/\/$/, "")}/_matrix/client/v3/login`,
-        {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            type: "m.login.password",
-            identifier: { type: "m.id.user", user: userId },
-            password,
-          }),
-        },
-      );
-
-      if (!res.ok) {
-        const text = await res.text().catch(() => "");
-        throw new Error(`Login failed: ${res.status} ${text}`);
-      }
-
-      const data = (await res.json()) as {
-        access_token: string;
-        device_id: string;
-        user_id: string;
-      };
-
-      config.matrix = {
-        homeserver: homeserver.replace(/\/$/, ""),
-        userId: data.user_id,
-        accessToken: data.access_token,
-        deviceId: data.device_id,
-      };
-      saveConfig(config);
-
-      console.log(`\nMatrix authenticated as ${data.user_id}`);
-      console.log(`Device: ${data.device_id}`);
-    } catch (err) {
-      rl.close();
-      throw err;
+    if (!res.ok) {
+      const text = await res.text().catch(() => "");
+      throw new Error(`Login failed: ${res.status} ${text}`);
     }
+
+    const data = (await res.json()) as {
+      access_token: string;
+      device_id: string;
+      user_id: string;
+    };
+
+    config.matrix = {
+      homeserver: homeserver.replace(/\/$/, ""),
+      userId: data.user_id,
+      accessToken: data.access_token,
+      deviceId: data.device_id,
+    };
+    saveConfig(config);
+
+    console.log(`\nMatrix authenticated as ${data.user_id}`);
+    console.log(`Device: ${data.device_id}`);
   },
 };
 
