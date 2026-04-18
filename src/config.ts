@@ -15,6 +15,7 @@ export interface OneMessageConfig {
   signal?: SignalProviderConfig;
   sms?: SmsProviderConfig;
   whatsapp?: WhatsAppProviderConfig;
+  matrix?: MatrixProviderConfig;
   daemon?: DaemonConfig;
 }
 
@@ -75,6 +76,13 @@ export interface WhatsAppProviderConfig {
   authDir?: string;
   phone?: string;
   idleTimeoutMin?: number;
+}
+
+export interface MatrixProviderConfig {
+  homeserver: string;
+  userId: string;
+  accessToken: string;
+  deviceId?: string;
 }
 
 // ---------------------------------------------------------------------------

@@ -226,9 +226,7 @@ export class UnifiedDaemon {
       "messaging-history.set",
       async ({
         messages,
-        chats: _chats,
         contacts: syncContacts,
-        isLatest: _isLatest,
       }) => {
         let stored = 0;
         for (const msg of messages) {
@@ -842,7 +840,6 @@ export class UnifiedDaemon {
       }
 
       case "providers": {
-        const config = loadConfig();
         const providers: Record<
           string,
           { enabled: boolean; polling: boolean; lastPoll: string | null }

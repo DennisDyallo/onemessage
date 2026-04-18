@@ -72,10 +72,6 @@ function getDb(): Database {
   }
   db.run("CREATE INDEX IF NOT EXISTS idx_messages_thread ON messages(provider, thread_id, date ASC)");
 
-  // is_group and group_name columns for group chat metadata
-  try { db.run("ALTER TABLE messages ADD COLUMN is_group INTEGER NOT NULL DEFAULT 0"); } catch { /* already exists */ }
-  try { db.run("ALTER TABLE messages ADD COLUMN group_name TEXT"); } catch { /* already exists */ }
-
 
   db.run(`
     CREATE TABLE IF NOT EXISTS contacts (

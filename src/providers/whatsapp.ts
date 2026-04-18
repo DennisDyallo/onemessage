@@ -82,13 +82,20 @@ const whatsappProvider: MessagingProvider = {
   },
 
   async inbox(opts) {
-    if (!store.isFresh("whatsapp", 60_000) || opts?.providerFlags?.fresh) {
-      try {
-        await ensureDaemon();
-        store.recordFetch("whatsapp");
-      } catch (err) {
-        console.warn(`[whatsapp] daemon failed to start: ${err instanceof Error ? err.message : err}`);
-      }
+    if (store.isFresh("whatsapp", 60_000) && !opts?.fresh) {
+      return store.getCachedInbox("whatsapp", {
+        limit: opts?.limit,
+        unread: opts?.unread,
+        since: opts?.since,
+        from: opts?.from,
+      });
+    }
+
+    try {
+      await ensureDaemon();
+      store.recordFetch("whatsapp");
+    } catch (err) {
+      console.warn(`[whatsapp] daemon failed to start: ${err instanceof Error ? err.message : err}`);
     }
 
     return store.getCachedInbox("whatsapp", {

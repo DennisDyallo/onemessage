@@ -488,6 +488,17 @@ program
           console.log(`  Then add to config:\n`);
           console.log(`    { "signal": { "phone": "+YOUR_NUMBER" } }\n`);
           break;
+        case "matrix":
+          console.log(`  Add to ${configPath}:\n`);
+          console.log(`    {`);
+          console.log(`      "matrix": {`);
+          console.log(`        "homeserver": "https://matrix.example.com",`);
+          console.log(`        "userId": "@you:example.com",`);
+          console.log(`        "accessToken": "your-access-token"`);
+          console.log(`      }`);
+          console.log(`    }\n`);
+          console.log(`  Or run: onemessage auth matrix  (interactive login)\n`);
+          break;
         default:
           console.log(`  Provider "${providerName}" setup instructions not yet available.`);
       }
