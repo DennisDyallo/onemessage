@@ -224,7 +224,11 @@ export function fetchSignalInbox(account: string): void {
   if (result.stdout) {
     const freshMessages = parseSignalMessages(result.stdout, account);
     if (freshMessages.length > 0) {
-      store.upsertFullMessages(freshMessages);
+      const incoming = freshMessages.filter((m) => m.from?.address !== account);
+      const outgoing = freshMessages.filter((m) => m.from?.address === account);
+      if (incoming.length > 0) store.upsertFullMessages(incoming, "in");
+      if (outgoing.length > 0) store.upsertFullMessages(outgoing, "out");
+      console.error(`[signal] Stored ${incoming.length} in + ${outgoing.length} out messages`);
     }
   } else if (!result.ok && result.stderr) {
     process.stderr.write(`[signal] ${result.stderr}\n`);
@@ -246,7 +250,11 @@ export async function fetchSignalInboxAsync(account: string): Promise<void> {
   if (result.stdout) {
     const freshMessages = parseSignalMessages(result.stdout, account);
     if (freshMessages.length > 0) {
-      store.upsertFullMessages(freshMessages);
+      const incoming = freshMessages.filter((m) => m.from?.address !== account);
+      const outgoing = freshMessages.filter((m) => m.from?.address === account);
+      if (incoming.length > 0) store.upsertFullMessages(incoming, "in");
+      if (outgoing.length > 0) store.upsertFullMessages(outgoing, "out");
+      console.error(`[signal] Stored ${incoming.length} in + ${outgoing.length} out messages`);
     }
   } else if (!result.ok && result.stderr) {
     process.stderr.write(`[signal] ${result.stderr}\n`);

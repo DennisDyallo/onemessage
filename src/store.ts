@@ -241,6 +241,7 @@ function rowToEnvelope(row: any): MessageEnvelope {
     hasAttachments: row.has_attachments === 1,
     isGroup: row.is_group === 1,
     groupName: row.group_name ?? undefined,
+    direction: row.direction as "in" | "out",
   };
 }
 

@@ -21,6 +21,18 @@ import type {
 const FRESHNESS_MS = 5 * 60_000; // 5 minutes
 
 // ---------------------------------------------------------------------------
+// Direction detection helper
+// ---------------------------------------------------------------------------
+
+function isOutgoingEmail(fromAddr: string | undefined, settings: ResolvedEmail): boolean {
+  if (!fromAddr) return false;
+  const ownAddresses = [...settings.accounts, ...(settings.secondaryAccounts ?? [])];
+  const stripTag = (addr: string) => addr.replace(/\+[^@]*@/, "@").toLowerCase();
+  const normalizedFrom = stripTag(fromAddr);
+  return ownAddresses.some(own => stripTag(own) === normalizedFrom);
+}
+
+// ---------------------------------------------------------------------------
 // Resolved email settings (config + CLI overrides merged)
 // ---------------------------------------------------------------------------
 
@@ -230,7 +242,11 @@ export async function fetchEmailInbox(
   for (const account of accounts) {
     fetched.push(...await fetchMailboxMessages(s, account, folder, criteria ?? {}, limit ?? 50));
   }
-  if (fetched.length > 0) store.upsertMessages(fetched);
+  const incoming = fetched.filter(m => !isOutgoingEmail(m.from?.address, s));
+  const outgoing = fetched.filter(m => isOutgoingEmail(m.from?.address, s));
+  if (incoming.length > 0) store.upsertMessages(incoming, "in");
+  if (outgoing.length > 0) store.upsertMessages(outgoing, "out");
+  console.error(`[email] Stored ${incoming.length} in + ${outgoing.length} out envelopes`);
   store.recordFetch("email", accounts.join(","), folder);
 }
 
@@ -344,7 +360,8 @@ const emailProvider: MessagingProvider = {
     // Fetch from IMAP
     const msg = await fetchFullMessage(s, account, folder, uid, prefer, opts?.includeAttachments ?? false);
     if (msg) {
-      store.upsertFullMessage(msg);
+      const dir = isOutgoingEmail(msg.from?.address, s) ? "out" : "in";
+      store.upsertFullMessage(msg, dir);
     }
     return msg;
   },
@@ -372,7 +389,12 @@ const emailProvider: MessagingProvider = {
     const all: MessageEnvelope[] = [];
     for (const account of accounts) {
       const msgs = await fetchMailboxMessages(s, account, folder, criteria, limit);
-      if (msgs.length > 0) store.upsertMessages(msgs);
+      if (msgs.length > 0) {
+        const incoming = msgs.filter(m => !isOutgoingEmail(m.from?.address, s));
+        const outgoing = msgs.filter(m => isOutgoingEmail(m.from?.address, s));
+        if (incoming.length > 0) store.upsertMessages(incoming, "in");
+        if (outgoing.length > 0) store.upsertMessages(outgoing, "out");
+      }
       all.push(...msgs);
     }
 

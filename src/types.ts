@@ -22,6 +22,7 @@ export interface MessageEnvelope {
   hasAttachments: boolean;
   isGroup?: boolean;       // true = group, false = 1:1, undefined = unknown
   groupName?: string;      // human-readable group name when isGroup is true
+  direction?: "in" | "out";
 }
 
 export interface MessageFull extends MessageEnvelope {

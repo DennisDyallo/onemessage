@@ -74,8 +74,8 @@ function toSmsMessage(opts: {
   return {
     id,
     provider: "sms",
-    from: direction === "in" ? { name: contact, address: contact } : null,
-    to: direction === "out" ? [{ name: contact, address: contact }] : [],
+    from: { name: contact, address: contact },
+    to: [{ name: contact, address: contact }],
     preview: body.slice(0, 100),
     body,
     bodyFormat: "text",
@@ -83,6 +83,7 @@ function toSmsMessage(opts: {
     date: timestamp,
     unread: !read,
     hasAttachments: false,
+    direction,
   };
 }
 
@@ -198,7 +199,11 @@ function threadToFullMessage(messages: MessageFull[], threadId: string): Message
 export function fetchSmsInbox(opts?: { unread?: boolean; fresh?: boolean; from?: string }): void {
   const messages = fetchSmsConversations(opts);
   if (messages.length > 0) {
-    store.upsertFullMessages(messages);
+    const incoming = messages.filter((m) => m.direction === "in");
+    const outgoing = messages.filter((m) => m.direction === "out");
+    if (incoming.length > 0) store.upsertFullMessages(incoming, "in");
+    if (outgoing.length > 0) store.upsertFullMessages(outgoing, "out");
+    console.error(`[sms] Stored ${incoming.length} in + ${outgoing.length} out messages`);
   }
   store.recordFetch("sms");
 }
@@ -296,7 +301,11 @@ const smsProvider: MessagingProvider = {
         // Fetch from phone
         const messages = fetchThreadHistory(threadId);
         if (messages.length > 0) {
-          store.upsertFullMessages(messages, "in", messageId);
+          const incoming = messages.filter((m) => m.direction === "in");
+          const outgoing = messages.filter((m) => m.direction === "out");
+          if (incoming.length > 0) store.upsertFullMessages(incoming, "in", messageId);
+          if (outgoing.length > 0) store.upsertFullMessages(outgoing, "out", messageId);
+          console.error(`[sms] Stored ${incoming.length} in + ${outgoing.length} out messages (thread ${threadId})`);
           return threadToFullMessage(messages, messageId);
         }
       }
