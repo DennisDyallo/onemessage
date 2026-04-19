@@ -53,6 +53,7 @@ describe("direction field", () => {
       unread: true,
       hasAttachments: false,
       attachments: [],
+      direction: "out" as const,
     };
     upsertFullMessages([msg], "out");
     const result = getCachedMessage(testProvider, "test-dir-full-1");

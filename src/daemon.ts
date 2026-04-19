@@ -292,6 +292,7 @@ export class UnifiedDaemon {
           date: new Date(timestamp * 1000).toISOString(),
           unread: false,
           hasAttachments: false,
+          direction: "in",
           attachments: [],
         };
 
@@ -401,7 +402,11 @@ export class UnifiedDaemon {
           this.signalDaemon = startSignalDaemon({
             account: signalConfig.phone,
             onMessage: (messages) => {
-              store.upsertFullMessages(messages);
+              const account = signalConfig.phone;
+              const incoming = messages.filter((m) => m.from?.address !== account);
+              const outgoing = messages.filter((m) => m.from?.address === account);
+              if (incoming.length > 0) store.upsertFullMessages(incoming, "in");
+              if (outgoing.length > 0) store.upsertFullMessages(outgoing, "out");
               store.recordFetch("signal", signalConfig.phone);
               this.lastPoll.set("signal", Date.now());
               process.stderr.write(

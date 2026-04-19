@@ -208,6 +208,7 @@ async function fetchFullMessage(
       else if (parsed.html) { body = typeof parsed.html === "string" ? parsed.html : ""; bodyFormat = "html"; }
 
       const flags = raw.flags ?? new Set<string>();
+      const fromAddr = env?.from?.[0]?.address;
       return {
         id: String(raw.uid), provider: "email", account,
         from: env?.from?.[0] ? { name: env.from[0].name || "", address: env.from[0].address || "" } : null,
@@ -220,6 +221,7 @@ async function fetchFullMessage(
           size: att.size || 0, ...(includeAttachments ? { data: att.content.toString("base64") } : {}),
         })),
         ...(parsed.messageId ? { rfcMessageId: parsed.messageId } : {}),
+        direction: isOutgoingEmail(fromAddr, s) ? "out" : "in",
       };
     } finally { lock.release(); }
   } catch (err: any) { log(`Error reading UID ${uid}: ${err.message}`); return null; }

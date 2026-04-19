@@ -209,6 +209,18 @@ bun scripts/backfill-contacts.ts [provider]        # extract pushNames from mess
 
 DB path: `~/.config/onemessage/messages.db`
 
+## Instagram Rate Limiting
+
+Instagram aggressively detects bot-like behaviour. The Instagram provider must be gentle:
+
+- **MAX_THREADS_PER_SYNC = 1** — never fetch more than 1 thread history per sync cycle. Instagram's API is slow and rate-limited.
+- **CLI_TIMEOUT_MS = 60s** — `instagram-cli` has significant Node.js startup overhead (~2-5s per invocation)
+- **No aggressive pagination** — fetch only the latest page (20 messages) per thread. Do not chase cursors or attempt to backfill full history.
+- **Inbox limit stays at 20** — the `--limit 20` on inbox fetch is intentional. Instagram threads are summaries, not messages.
+- **Thread reads rotate naturally** — most recently active threads get priority. Over multiple sync cycles, all threads eventually get fetched.
+- **If Instagram auth expires or rate-limits**, the sync daemon gracefully skips it and continues with other providers.
+- **`read()` with `--fresh` re-fetches the thread** — Unlike other cache-only providers, Instagram threads may have uncached sub-messages (because `MAX_THREADS_PER_SYNC` limits how many threads are fetched per cycle). The `--fresh` flag on `read()` calls `fetchThreadMessages()` to backfill before returning from cache. This is intentional and does not violate the `readFromCacheOrFail` convention — it extends it with a targeted pre-fetch.
+
 ## Maintenance
 
 signal-cli must be updated every ~3 months or Signal's servers reject it: `brew upgrade signal-cli`

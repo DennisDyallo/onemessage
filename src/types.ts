@@ -31,6 +31,7 @@ export interface MessageFull extends MessageEnvelope {
   attachments: Attachment[];
   /** RFC 822 Message-ID header (e.g. "<abc123@mail.example.com>") */
   rfcMessageId?: string;
+  direction: "in" | "out";
 }
 
 export interface Contact {

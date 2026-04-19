@@ -186,6 +186,10 @@ function parseSignalMessages(jsonLines: string, account?: string): MessageFull[]
       const groupId = dataMsg?.groupInfo?.groupId;
       const groupName = groupId ? (groupNames.get(groupId) ?? groupId) : undefined;
 
+      // direction is a placeholder here — the actual direction ("in"/"out")
+      // is determined by the caller (fetchSignalInbox) which splits on account
+      // address and passes the correct value to upsertFullMessages.
+      const isSync = !!syncMsg;
       messages.push({
         id: String(timestamp),
         provider: "signal",
@@ -205,6 +209,7 @@ function parseSignalMessages(jsonLines: string, account?: string): MessageFull[]
         hasAttachments,
         isGroup: !!groupId,
         groupName,
+        direction: isSync ? "out" : "in",
       });
     } catch {
       // Skip unparseable lines
@@ -522,7 +527,7 @@ const signalProvider: MessagingProvider = {
     });
   },
 
-  async read(messageId, opts) {
+  async read(messageId, _opts) {
     return readFromCacheOrFail("signal", messageId);
   },
 

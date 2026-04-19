@@ -205,6 +205,7 @@ export async function parseAndStoreWAMessage(
       isGroup,
       groupName: isGroup ? (groupName ?? chatJid.split("@")[0]) : undefined,
       attachments: [],
+      direction,
     };
 
     store.upsertFullMessages([full], direction);

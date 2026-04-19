@@ -138,6 +138,7 @@ function readMessageToFull(msg: ReadMessage, threadId: string, threadTitle: stri
     unread: false,
     hasAttachments: msg.media !== undefined,
     attachments: [],
+    direction: msg.isOutgoing ? "out" : "in",
   };
 }
 
@@ -326,7 +327,24 @@ const instagramProvider: MessagingProvider = {
     });
   },
 
-  async read(messageId, _opts) {
+  async read(messageId, opts) {
+    if (opts?.fresh) {
+      const settings = resolveSettings(opts?.providerFlags);
+      if (!settings) {
+        console.error("Instagram not configured. Run: onemessage auth instagram");
+        return null;
+      }
+      // Re-fetch the thread so sub-messages not yet cached are backfilled.
+      // Use the messageId as thread ID — Instagram thread IDs are the same as
+      // the envelope IDs stored in the DB.
+      const messages = await fetchThreadMessages(messageId, "", settings.username);
+      if (messages.length > 0) {
+        const incoming = messages.filter((m) => m.from?.address !== "me");
+        const outgoing = messages.filter((m) => m.from?.address === "me");
+        if (incoming.length > 0) store.upsertFullMessages(incoming, "in", messageId);
+        if (outgoing.length > 0) store.upsertFullMessages(outgoing, "out", messageId);
+      }
+    }
     return readFromCacheOrFail("instagram", messageId);
   },
 

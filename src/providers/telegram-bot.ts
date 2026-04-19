@@ -126,6 +126,7 @@ function updateToFull(update: TelegramUpdate): MessageFull | null {
 
   return {
     ...envelope,
+    direction: "in",
     body,
     bodyFormat: "text",
     attachments: [],
@@ -165,7 +166,7 @@ export async function fetchTelegramBotUpdates(token: string): Promise<void> {
 
   const fulls = updates.map(updateToFull).filter(Boolean) as MessageFull[];
   if (fulls.length > 0) {
-    store.upsertFullMessages(fulls);
+    store.upsertFullMessages(fulls, "in");
   }
 
   store.recordFetch("telegram-bot", "bot");

@@ -41,8 +41,9 @@ function getDb(): Database {
       PRIMARY KEY (provider, id)
     )
   `);
-  // Non-destructive migration for existing databases
+  // Non-destructive migrations for existing databases
   try { db.run("ALTER TABLE messages ADD COLUMN account TEXT NOT NULL DEFAULT ''"); } catch { /* already exists */ }
+  try { db.run("ALTER TABLE messages ADD COLUMN direction TEXT NOT NULL DEFAULT 'in'"); } catch { /* already exists */ }
 
   db.run(`
     CREATE TABLE IF NOT EXISTS fetch_log (
@@ -187,7 +188,7 @@ export function upsertFullMessages(
       stmt.run({
         $id: msg.id,
         $provider: msg.provider,
-        $direction: direction,
+        $direction: msg.direction ?? direction,
         $account: msg.account ?? "",
         $from_json: msg.from ? JSON.stringify(msg.from) : null,
         $to_json: JSON.stringify(msg.to),
@@ -241,13 +242,14 @@ function rowToEnvelope(row: any): MessageEnvelope {
     hasAttachments: row.has_attachments === 1,
     isGroup: row.is_group === 1,
     groupName: row.group_name ?? undefined,
-    direction: row.direction as "in" | "out",
+    direction: (row.direction as "in" | "out") ?? "in",
   };
 }
 
 function rowToFull(row: any): MessageFull {
   return {
     ...rowToEnvelope(row),
+    direction: (row.direction as "in" | "out") ?? "in",
     body: row.body ?? "",
     bodyFormat: (row.body_format as "text" | "html") ?? "text",
     attachments: row.attachments_json ? JSON.parse(row.attachments_json) : [],

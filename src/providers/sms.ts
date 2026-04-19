@@ -74,8 +74,8 @@ function toSmsMessage(opts: {
   return {
     id,
     provider: "sms",
-    from: { name: contact, address: contact },
-    to: [{ name: contact, address: contact }],
+    from: direction === "in" ? { name: contact, address: contact } : { name: "me", address: "me" },
+    to: direction === "in" ? [{ name: "me", address: "me" }] : [{ name: contact, address: contact }],
     preview: body.slice(0, 100),
     body,
     bodyFormat: "text",
@@ -166,12 +166,12 @@ function fetchThreadHistory(threadId: number): MessageFull[] {
  */
 function threadToFullMessage(messages: MessageFull[], threadId: string): MessageFull {
   // Determine the contact from the first incoming message, or first message at all
-  const firstIncoming = messages.find((m) => m.from !== null);
+  const firstIncoming = messages.find((m) => m.direction === "in");
   const contact = firstIncoming?.from ?? messages[0]?.to?.[0] ?? { name: "unknown", address: "unknown" };
 
   const body = messages
     .map((m) => {
-      const dir = m.from ? "<" : ">";
+      const dir = m.direction === "in" ? "<" : ">";
       const date = new Date(m.date).toLocaleString();
       return `[${date}] ${dir} ${m.body}`;
     })
@@ -189,6 +189,7 @@ function threadToFullMessage(messages: MessageFull[], threadId: string): Message
     date: messages[messages.length - 1]?.date ?? new Date().toISOString(),
     unread: messages.some((m) => m.unread),
     hasAttachments: false,
+    direction: "in",
   };
 }
 
