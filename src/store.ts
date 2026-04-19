@@ -176,7 +176,7 @@ export function upsertFullMessages(
       group_name       = COALESCE(excluded.group_name, messages.group_name),
       attachments_json = excluded.attachments_json,
       cached_at        = excluded.cached_at,
-      thread_id        = COALESCE(excluded.thread_id, messages.thread_id),
+      thread_id        = excluded.thread_id,
       rfc_message_id   = COALESCE(excluded.rfc_message_id, messages.rfc_message_id),
       ${FROM_JSON_MERGE}
   `);
@@ -212,6 +212,15 @@ export function upsertFullMessages(
 
 export function upsertFullMessage(msg: MessageFull, direction: "in" | "out" = "in"): void {
   upsertFullMessages([msg], direction);
+}
+
+export function deleteMessages(provider: string, ids: string[]): void {
+  const d = getDb();
+  const stmt = d.prepare("DELETE FROM messages WHERE provider = ? AND id = ?");
+  const tx = d.transaction(() => {
+    for (const id of ids) stmt.run(provider, id);
+  });
+  tx();
 }
 
 // ---------------------------------------------------------------------------

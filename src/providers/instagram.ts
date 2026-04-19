@@ -23,7 +23,7 @@ function resolveSettings(cliOverrides?: Record<string, unknown>): InstagramSetti
 // ---------------------------------------------------------------------------
 
 const CLI = "instagram-cli";
-const CLI_TIMEOUT_MS = 30_000; // instagram-cli has Node.js startup overhead
+const CLI_TIMEOUT_MS = 60_000; // instagram-cli has Node.js startup overhead + thread reads
 
 /** stderr noise from Ink/React rendering */
 const STDERR_FILTERS = [
@@ -118,23 +118,19 @@ function threadToEnvelope(thread: InboxThread): MessageEnvelope {
   };
 }
 
-function threadToFull(thread: InboxThread): MessageFull | null {
-  if (!thread.lastMessage) return null;
-  const envelope = threadToEnvelope(thread);
-  return {
-    ...envelope,
-    body: thread.lastMessage.text ?? `[${thread.lastMessage.itemType}]`,
-    bodyFormat: "text",
-    attachments: [],
-  };
-}
-
 function readMessageToFull(msg: ReadMessage, threadId: string, threadTitle: string): MessageFull {
+  const from = msg.isOutgoing
+    ? { name: "me", address: "me" }
+    : { name: threadTitle || msg.username, address: msg.username };
+  const to = msg.isOutgoing
+    ? [{ name: threadTitle, address: threadId }]
+    : [{ name: "me", address: "me" }];
+
   return {
     id: msg.id,
     provider: "instagram",
-    from: { name: msg.username, address: msg.username },
-    to: [{ name: threadTitle, address: threadId }],
+    from,
+    to,
     preview: msg.text ?? `[${msg.itemType}]`,
     body: msg.text ?? `[${msg.itemType}]`,
     bodyFormat: "text",
@@ -148,6 +144,42 @@ function readMessageToFull(msg: ReadMessage, threadId: string, threadTitle: stri
 // ---------------------------------------------------------------------------
 // Fetch and cache (callable by daemon)
 // ---------------------------------------------------------------------------
+
+const MAX_THREADS_PER_SYNC = 1;
+const THREAD_MESSAGE_LIMIT = 10;
+const INTER_REQUEST_DELAY_MIN_MS = 3_000;
+const INTER_REQUEST_DELAY_MAX_MS = 6_000;
+
+function randomDelay(): Promise<void> {
+  const ms = Math.floor(Math.random() * (INTER_REQUEST_DELAY_MAX_MS - INTER_REQUEST_DELAY_MIN_MS + 1)) + INTER_REQUEST_DELAY_MIN_MS;
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+async function fetchThreadMessages(
+  threadId: string,
+  threadTitle: string,
+  username: string,
+): Promise<MessageFull[]> {
+  const result = await runInstagramCliAsync(
+    ["read", threadId, "-o", "json", "-u", username, "--limit", String(THREAD_MESSAGE_LIMIT)],
+    CLI_TIMEOUT_MS,
+  );
+
+  if (!result.ok) {
+    console.error(`[instagram] Failed to read thread ${threadId}: ${result.stderr || `exit ${result.exitCode}`}`);
+    return [];
+  }
+
+  const parsed = parseCliJson<ReadResult>(result.stdout);
+  if (!parsed.ok || !parsed.data?.messages) {
+    console.error(`[instagram] Failed to parse thread ${threadId}: ${parsed.error ?? "no messages"}`);
+    return [];
+  }
+
+  return parsed.data.messages.map((msg) =>
+    readMessageToFull(msg, threadId, threadTitle),
+  );
+}
 
 export async function fetchInstagramInbox(username: string): Promise<void> {
   const result = await runInstagramCliAsync(
@@ -165,14 +197,28 @@ export async function fetchInstagramInbox(username: string): Promise<void> {
   }
 
   const threads = parsed.data;
+
+  const sorted = [...threads].sort(
+    (a, b) => new Date(b.lastActivity).getTime() - new Date(a.lastActivity).getTime(),
+  );
+
+  // Store all thread envelopes so the daemon can read them by thread ID
   const envelopes = threads.map(threadToEnvelope);
   if (envelopes.length > 0) {
     store.upsertMessages(envelopes, "in");
   }
 
-  const fulls = threads.map(threadToFull).filter(Boolean) as MessageFull[];
-  if (fulls.length > 0) {
-    store.upsertFullMessages(fulls);
+  // Fetch individual messages for most-active threads (grouped under thread ID)
+  // Delay between inbox fetch and thread reads to avoid burst patterns
+  for (const thread of sorted.slice(0, MAX_THREADS_PER_SYNC)) {
+    await randomDelay();
+    const messages = await fetchThreadMessages(thread.id, thread.title, username);
+    if (messages.length > 0) {
+      const incoming = messages.filter((m) => m.from?.address !== "me");
+      const outgoing = messages.filter((m) => m.from?.address === "me");
+      if (incoming.length > 0) store.upsertFullMessages(incoming, "in", thread.id);
+      if (outgoing.length > 0) store.upsertFullMessages(outgoing, "out", thread.id);
+    }
   }
 
   store.recordFetch("instagram", username);
@@ -257,7 +303,7 @@ const instagramProvider: MessagingProvider = {
       return [];
     }
 
-    if (store.isFresh("instagram", 30_000, settings.username) && !opts?.fresh) {
+    if (store.isFresh("instagram", 300_000, settings.username) && !opts?.fresh) {
       return store.getCachedInbox("instagram", {
         limit: opts?.limit,
         unread: opts?.unread,

@@ -346,9 +346,25 @@ addProviderFlags(
     .option("--prefer <format>", "Body format: text or html", "text")
     .option("--attachments", "Include attachment data", false)
     .option("--fresh", "Force re-fetch from source (bypass cache)", false)
+    .option("--thread", "Return all sub-messages for a thread ID", false)
     .option("--json", "Output JSON", false)
 ).action(async (providerName, messageId, opts) => {
   const provider = getProviderOrExit(providerName);
+
+  if (opts.thread) {
+    const { getThreadMessages } = await import("./store.ts");
+    const msgs = getThreadMessages(providerName, messageId);
+    if (msgs.length === 0) {
+      console.error(`No thread messages found for "${messageId}".`);
+      process.exit(1);
+    }
+    if (opts.json) {
+      console.log(JSON.stringify(msgs));
+    } else {
+      for (const m of msgs) printMessage(m, false);
+    }
+    return;
+  }
 
   const msg = await provider.read(messageId, {
     folder: opts.folder,
