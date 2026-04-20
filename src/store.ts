@@ -151,9 +151,14 @@ export function upsertMessages(msgs: MessageEnvelope[], direction: "in" | "out" 
   tx();
 }
 
+/**
+ * Upsert full messages into the store.
+ *
+ * Direction is read from each message's `direction` field (required on MessageFull).
+ * There is no direction parameter — the message is the single source of truth.
+ */
 export function upsertFullMessages(
   msgs: MessageFull[],
-  direction: "in" | "out" = "in",
   threadId?: string,
 ): void {
   const d = getDb();
@@ -188,7 +193,7 @@ export function upsertFullMessages(
       stmt.run({
         $id: msg.id,
         $provider: msg.provider,
-        $direction: msg.direction ?? direction,
+        $direction: msg.direction,
         $account: msg.account ?? "",
         $from_json: msg.from ? JSON.stringify(msg.from) : null,
         $to_json: JSON.stringify(msg.to),
@@ -211,8 +216,8 @@ export function upsertFullMessages(
   tx();
 }
 
-export function upsertFullMessage(msg: MessageFull, direction: "in" | "out" = "in"): void {
-  upsertFullMessages([msg], direction);
+export function upsertFullMessage(msg: MessageFull): void {
+  upsertFullMessages([msg]);
 }
 
 export function deleteMessages(provider: string, ids: string[]): void {

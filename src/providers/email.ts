@@ -363,7 +363,7 @@ const emailProvider: MessagingProvider = {
     const msg = await fetchFullMessage(s, account, folder, uid, prefer, opts?.includeAttachments ?? false);
     if (msg) {
       const dir = isOutgoingEmail(msg.from?.address, s) ? "out" : "in";
-      store.upsertFullMessage(msg, dir);
+      store.upsertFullMessage(msg);
     }
     return msg;
   },

@@ -202,8 +202,8 @@ export function fetchSmsInbox(opts?: { unread?: boolean; fresh?: boolean; from?:
   if (messages.length > 0) {
     const incoming = messages.filter((m) => m.direction === "in");
     const outgoing = messages.filter((m) => m.direction === "out");
-    if (incoming.length > 0) store.upsertFullMessages(incoming, "in");
-    if (outgoing.length > 0) store.upsertFullMessages(outgoing, "out");
+    if (incoming.length > 0) store.upsertFullMessages(incoming);
+    if (outgoing.length > 0) store.upsertFullMessages(outgoing);
     console.error(`[sms] Stored ${incoming.length} in + ${outgoing.length} out messages`);
   }
   store.recordFetch("sms");
@@ -304,8 +304,8 @@ const smsProvider: MessagingProvider = {
         if (messages.length > 0) {
           const incoming = messages.filter((m) => m.direction === "in");
           const outgoing = messages.filter((m) => m.direction === "out");
-          if (incoming.length > 0) store.upsertFullMessages(incoming, "in", messageId);
-          if (outgoing.length > 0) store.upsertFullMessages(outgoing, "out", messageId);
+          if (incoming.length > 0) store.upsertFullMessages(incoming, messageId);
+          if (outgoing.length > 0) store.upsertFullMessages(outgoing, messageId);
           console.error(`[sms] Stored ${incoming.length} in + ${outgoing.length} out messages (thread ${threadId})`);
           return threadToFullMessage(messages, messageId);
         }

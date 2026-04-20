@@ -296,7 +296,7 @@ export class UnifiedDaemon {
           attachments: [],
         };
 
-        store.upsertFullMessages([envelope], "in");
+        store.upsertFullMessages([envelope]);
         enriched++;
       }
       if (enriched > 0) {

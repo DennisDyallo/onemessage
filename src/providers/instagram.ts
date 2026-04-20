@@ -217,8 +217,8 @@ export async function fetchInstagramInbox(username: string): Promise<void> {
     if (messages.length > 0) {
       const incoming = messages.filter((m) => m.from?.address !== "me");
       const outgoing = messages.filter((m) => m.from?.address === "me");
-      if (incoming.length > 0) store.upsertFullMessages(incoming, "in", thread.id);
-      if (outgoing.length > 0) store.upsertFullMessages(outgoing, "out", thread.id);
+      if (incoming.length > 0) store.upsertFullMessages(incoming, thread.id);
+      if (outgoing.length > 0) store.upsertFullMessages(outgoing, thread.id);
     }
   }
 
@@ -341,8 +341,8 @@ const instagramProvider: MessagingProvider = {
       if (messages.length > 0) {
         const incoming = messages.filter((m) => m.from?.address !== "me");
         const outgoing = messages.filter((m) => m.from?.address === "me");
-        if (incoming.length > 0) store.upsertFullMessages(incoming, "in", messageId);
-        if (outgoing.length > 0) store.upsertFullMessages(outgoing, "out", messageId);
+        if (incoming.length > 0) store.upsertFullMessages(incoming, messageId);
+        if (outgoing.length > 0) store.upsertFullMessages(outgoing, messageId);
       }
     }
     return readFromCacheOrFail("instagram", messageId);

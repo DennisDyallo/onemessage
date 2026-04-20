@@ -55,7 +55,7 @@ describe("direction field", () => {
       attachments: [],
       direction: "out" as const,
     };
-    upsertFullMessages([msg], "out");
+    upsertFullMessages([msg]);
     const result = getCachedMessage(testProvider, "test-dir-full-1");
     expect(result).toBeDefined();
     expect(result?.direction).toBe("out");

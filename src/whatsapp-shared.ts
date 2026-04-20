@@ -208,7 +208,7 @@ export async function parseAndStoreWAMessage(
       direction,
     };
 
-    store.upsertFullMessages([full], direction);
+    store.upsertFullMessages([full]);
     return true;
   } catch (err) {
     process.stderr.write(

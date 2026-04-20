@@ -189,10 +189,9 @@ function parseSignalMessages(jsonLines: string, account?: string): MessageFull[]
       const groupId = dataMsg?.groupInfo?.groupId;
       const groupName = groupId ? (groupNames.get(groupId) ?? groupId) : undefined;
 
-      // NOTE: msg.direction takes precedence over the direction parameter in
-      // upsertFullMessages (store.ts uses msg.direction ?? direction). Callers
-      // (fetchSignalInbox, daemon.ts) must explicitly override m.direction for
-      // outgoing DataMessages where isSync is false but from=account.
+      // NOTE: isSync is unreliable for direction — DataMessages from own
+      // account have isSync=false but are outgoing. processSignalMessages
+      // overrides direction based on from.address vs account before upserting.
       const isSync = !!syncMsg;
       messages.push({
         id: String(timestamp),
@@ -236,8 +235,7 @@ function parseSignalMessages(jsonLines: string, account?: string): MessageFull[]
  * Why this exists: parseSignalMessages sets direction based on isSync, but
  * DataMessages from the user's own account arrive as "in" even though they
  * are outgoing. The direction split by account address is the authoritative
- * source, so we override msg.direction before upsert (since upsertFullMessages
- * uses msg.direction ?? parameter, and the message field wins).
+ * source, so we override msg.direction before upsert.
  */
 export function processSignalMessages(messages: MessageFull[], account: string): { incoming: number; outgoing: number } {
   if (messages.length === 0) return { incoming: 0, outgoing: 0 };
@@ -248,8 +246,8 @@ export function processSignalMessages(messages: MessageFull[], account: string):
   // Fix direction for outgoing messages that parseSignalMessages tagged as "in"
   for (const m of outgoing) m.direction = "out";
 
-  if (incoming.length > 0) store.upsertFullMessages(incoming, "in");
-  if (outgoing.length > 0) store.upsertFullMessages(outgoing, "out");
+  if (incoming.length > 0) store.upsertFullMessages(incoming);
+  if (outgoing.length > 0) store.upsertFullMessages(outgoing);
 
   return { incoming: incoming.length, outgoing: outgoing.length };
 }
