@@ -224,6 +224,37 @@ function parseSignalMessages(jsonLines: string, account?: string): MessageFull[]
 }
 
 // ---------------------------------------------------------------------------
+// Shared post-parse processing — split, fix direction, upsert
+// ---------------------------------------------------------------------------
+
+/**
+ * Process parsed Signal messages: split by direction, fix direction field,
+ * and upsert to the store. This is the single source of truth for Signal
+ * message processing — used by fetchSignalInbox, fetchSignalInboxAsync,
+ * and the daemon's onMessage callback.
+ *
+ * Why this exists: parseSignalMessages sets direction based on isSync, but
+ * DataMessages from the user's own account arrive as "in" even though they
+ * are outgoing. The direction split by account address is the authoritative
+ * source, so we override msg.direction before upsert (since upsertFullMessages
+ * uses msg.direction ?? parameter, and the message field wins).
+ */
+export function processSignalMessages(messages: MessageFull[], account: string): { incoming: number; outgoing: number } {
+  if (messages.length === 0) return { incoming: 0, outgoing: 0 };
+
+  const incoming = messages.filter((m) => m.from?.address !== account);
+  const outgoing = messages.filter((m) => m.from?.address === account);
+
+  // Fix direction for outgoing messages that parseSignalMessages tagged as "in"
+  for (const m of outgoing) m.direction = "out";
+
+  if (incoming.length > 0) store.upsertFullMessages(incoming, "in");
+  if (outgoing.length > 0) store.upsertFullMessages(outgoing, "out");
+
+  return { incoming: incoming.length, outgoing: outgoing.length };
+}
+
+// ---------------------------------------------------------------------------
 // Fetch-and-cache (callable by daemon)
 // ---------------------------------------------------------------------------
 
@@ -232,16 +263,9 @@ export function fetchSignalInbox(account: string): void {
 
   if (result.stdout) {
     const freshMessages = parseSignalMessages(result.stdout, account);
-    if (freshMessages.length > 0) {
-      const incoming = freshMessages.filter((m) => m.from?.address !== account);
-      const outgoing = freshMessages.filter((m) => m.from?.address === account);
-      // Explicitly set direction — parseSignalMessages may assign "in" to
-      // DataMessages even when from=account (msg.direction overrides the
-      // direction parameter in upsertFullMessages).
-      for (const m of outgoing) m.direction = "out";
-      if (incoming.length > 0) store.upsertFullMessages(incoming, "in");
-      if (outgoing.length > 0) store.upsertFullMessages(outgoing, "out");
-      console.error(`[signal] Stored ${incoming.length} in + ${outgoing.length} out messages`);
+    const { incoming, outgoing } = processSignalMessages(freshMessages, account);
+    if (incoming + outgoing > 0) {
+      console.error(`[signal] Stored ${incoming} in + ${outgoing} out messages`);
     }
   } else if (!result.ok && result.stderr) {
     process.stderr.write(`[signal] ${result.stderr}\n`);
@@ -262,14 +286,9 @@ export async function fetchSignalInboxAsync(account: string): Promise<void> {
 
   if (result.stdout) {
     const freshMessages = parseSignalMessages(result.stdout, account);
-    if (freshMessages.length > 0) {
-      const incoming = freshMessages.filter((m) => m.from?.address !== account);
-      const outgoing = freshMessages.filter((m) => m.from?.address === account);
-      // Explicitly set direction — see fetchSignalInbox for rationale.
-      for (const m of outgoing) m.direction = "out";
-      if (incoming.length > 0) store.upsertFullMessages(incoming, "in");
-      if (outgoing.length > 0) store.upsertFullMessages(outgoing, "out");
-      console.error(`[signal] Stored ${incoming.length} in + ${outgoing.length} out messages`);
+    const { incoming, outgoing } = processSignalMessages(freshMessages, account);
+    if (incoming + outgoing > 0) {
+      console.error(`[signal] Stored ${incoming} in + ${outgoing} out messages`);
     }
   } else if (!result.ok && result.stderr) {
     process.stderr.write(`[signal] ${result.stderr}\n`);

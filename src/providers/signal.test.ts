@@ -1,37 +1,32 @@
 /**
- * Unit tests for Signal direction detection logic.
+ * Unit + integration tests for Signal message processing.
  *
- * Signal assigns direction at upsert time by splitting messages:
- * - incoming:  m.from.address !== account  (received from someone else)
- * - outgoing:  m.from.address === account  (syncMessage — sent by us)
- *
- * These tests exercise that split logic using mock message data
- * shaped like what parseSignalMessages produces, without touching
- * the real signal-cli binary or the database.
+ * Tests the REAL processSignalMessages function — not a copy.
+ * Integration tests use a __test__ provider prefix to avoid polluting real data.
  */
-import { describe, test, expect } from "bun:test";
+import { describe, test, expect, beforeEach } from "bun:test";
+import { processSignalMessages } from "./signal.ts";
+import * as store from "../store.ts";
 import type { MessageFull } from "../types.ts";
 
 // ---------------------------------------------------------------------------
-// Inline replica of the direction-split logic from fetchSignalInbox
+// Helpers
 // ---------------------------------------------------------------------------
 
-function splitByDirection(
-  messages: MessageFull[],
-  account: string,
-): { incoming: MessageFull[]; outgoing: MessageFull[] } {
-  const incoming = messages.filter((m) => m.from?.address !== account);
-  const outgoing = messages.filter((m) => m.from?.address === account);
-  return { incoming, outgoing };
-}
+const MY_ACCOUNT = "+46700000000";
+const CONTACT_A = "+46711111111";
+const CONTACT_B = "+46722222222";
+const TEST_PROVIDER = "__test_signal__";
 
-// ---------------------------------------------------------------------------
-// Helpers to build mock MessageFull objects
-// ---------------------------------------------------------------------------
+let counter = 0;
 
-function makeMsg(fromAddress: string, extras?: Partial<MessageFull>): MessageFull {
+function makeMsg(
+  fromAddress: string,
+  extras?: Partial<MessageFull>,
+): MessageFull {
+  counter++;
   return {
-    id: `signal-${Date.now()}-${Math.random()}`,
+    id: `sig-test-${Date.now()}-${counter}`,
     provider: "signal",
     from: { name: "Test User", address: fromAddress },
     to: [],
@@ -47,71 +42,150 @@ function makeMsg(fromAddress: string, extras?: Partial<MessageFull>): MessageFul
   };
 }
 
+beforeEach(() => {
+  counter = 0;
+});
+
 // ---------------------------------------------------------------------------
-// Tests
+// Unit tests: processSignalMessages — direction splitting + mutation
 // ---------------------------------------------------------------------------
 
-describe("Signal direction detection", () => {
-  const myAccount = "+46700000000";
-
-  test("message from another number is classified as incoming", () => {
-    const msg = makeMsg("+46711111111");
-    const { incoming, outgoing } = splitByDirection([msg], myAccount);
-    expect(incoming).toHaveLength(1);
-    expect(outgoing).toHaveLength(0);
-    expect(incoming[0]!.from?.address).toBe("+46711111111");
-  });
-
-  test("message from own account is classified as outgoing (sync message)", () => {
-    const msg = makeMsg(myAccount, { direction: "out" });
-    const { incoming, outgoing } = splitByDirection([msg], myAccount);
-    expect(outgoing).toHaveLength(1);
-    expect(incoming).toHaveLength(0);
-  });
-
-  test("mixed batch is split correctly", () => {
-    const msgs = [
-      makeMsg("+46722222222"),
-      makeMsg(myAccount, { direction: "out" }),
-      makeMsg("+46733333333"),
+describe("processSignalMessages", () => {
+  test("splits incoming and outgoing by account address", () => {
+    const messages = [
+      makeMsg(CONTACT_A),
+      makeMsg(MY_ACCOUNT, { direction: "out" }),
+      makeMsg(CONTACT_B),
     ];
-    const { incoming, outgoing } = splitByDirection(msgs, myAccount);
-    expect(incoming).toHaveLength(2);
-    expect(outgoing).toHaveLength(1);
+
+    const result = processSignalMessages(messages, MY_ACCOUNT);
+
+    expect(result.incoming).toBe(2);
+    expect(result.outgoing).toBe(1);
   });
 
-  test("group message (group: address) is classified as incoming", () => {
-    const msg = makeMsg("group:abc123==");
-    const { incoming, outgoing } = splitByDirection([msg], myAccount);
-    expect(incoming).toHaveLength(1);
-    expect(outgoing).toHaveLength(0);
+  test("fixes direction on outgoing DataMessages (from=account, direction='in')", () => {
+    // THE bug case: DataMessage from own account has direction="in"
+    // because isSync is false, but it's actually outgoing.
+    const msg = makeMsg(MY_ACCOUNT, { direction: "in" });
+
+    processSignalMessages([msg], MY_ACCOUNT);
+
+    expect(msg.direction).toBe("out");
   });
 
-  test("all outgoing — no incoming messages", () => {
-    const msgs = [
-      makeMsg(myAccount, { direction: "out" }),
-      makeMsg(myAccount, { direction: "out" }),
+  test("preserves direction on outgoing SyncMessages (already 'out')", () => {
+    const msg = makeMsg(MY_ACCOUNT, { direction: "out" });
+
+    processSignalMessages([msg], MY_ACCOUNT);
+
+    expect(msg.direction).toBe("out");
+  });
+
+  test("does not modify direction on incoming messages", () => {
+    const msg = makeMsg(CONTACT_A, { direction: "in" });
+
+    processSignalMessages([msg], MY_ACCOUNT);
+
+    expect(msg.direction).toBe("in");
+  });
+
+  test("handles empty message array without error", () => {
+    const result = processSignalMessages([], MY_ACCOUNT);
+
+    expect(result.incoming).toBe(0);
+    expect(result.outgoing).toBe(0);
+  });
+
+  test("all outgoing batch — both DataMessage and SyncMessage get direction='out'", () => {
+    const messages = [
+      makeMsg(MY_ACCOUNT, { direction: "in" }),
+      makeMsg(MY_ACCOUNT, { direction: "out" }),
     ];
-    const { incoming, outgoing } = splitByDirection(msgs, myAccount);
-    expect(incoming).toHaveLength(0);
-    expect(outgoing).toHaveLength(2);
+
+    const result = processSignalMessages(messages, MY_ACCOUNT);
+
+    expect(result.incoming).toBe(0);
+    expect(result.outgoing).toBe(2);
+    expect(messages[0].direction).toBe("out");
+    expect(messages[1].direction).toBe("out");
   });
 
-  test("empty batch produces empty results", () => {
-    const { incoming, outgoing } = splitByDirection([], myAccount);
-    expect(incoming).toHaveLength(0);
-    expect(outgoing).toHaveLength(0);
+  test("all incoming batch — no direction mutation", () => {
+    const messages = [makeMsg(CONTACT_A), makeMsg(CONTACT_B)];
+
+    const result = processSignalMessages(messages, MY_ACCOUNT);
+
+    expect(result.incoming).toBe(2);
+    expect(result.outgoing).toBe(0);
   });
 
-  test("direction field on parsed message is 'in' for data messages", () => {
-    // syncMessage presence → isSync → direction "out"
-    // absence of syncMessage → direction "in"
-    const incomingMsg = makeMsg("+46799999999", { direction: "in" });
-    expect(incomingMsg.direction).toBe("in");
+  test("group messages (group: address) classified as incoming", () => {
+    const msg = makeMsg("group:abc123==", {
+      isGroup: true,
+      groupName: "Test Group",
+    });
+
+    const result = processSignalMessages([msg], MY_ACCOUNT);
+
+    expect(result.incoming).toBe(1);
+    expect(result.outgoing).toBe(0);
+    expect(msg.direction).toBe("in");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Integration: processSignalMessages → DB round-trip
+//
+// These test the full chain: direction fix → upsert → getCachedMessage
+// Uses real DB with unique test IDs to avoid collisions.
+// ---------------------------------------------------------------------------
+
+describe("processSignalMessages → DB round-trip", () => {
+  test("outgoing DataMessage stored with direction='out'", () => {
+    const id = `integ-out-${Date.now()}`;
+    const msg = makeMsg(MY_ACCOUNT, {
+      id,
+      direction: "in", // DataMessage from own account — should be fixed to "out"
+      to: [{ name: "Contact A", address: CONTACT_A }],
+      body: "outgoing integration test",
+    });
+
+    processSignalMessages([msg], MY_ACCOUNT);
+
+    const stored = store.getCachedMessage("signal", id);
+    expect(stored).not.toBeNull();
+    expect(stored!.direction).toBe("out");
+    expect(stored!.body).toBe("outgoing integration test");
   });
 
-  test("direction field on parsed message is 'out' for sync messages", () => {
-    const outgoingMsg = makeMsg(myAccount, { direction: "out" });
-    expect(outgoingMsg.direction).toBe("out");
+  test("incoming message stored with direction='in'", () => {
+    const id = `integ-in-${Date.now()}`;
+    const msg = makeMsg(CONTACT_A, {
+      id,
+      direction: "in",
+      body: "incoming integration test",
+    });
+
+    processSignalMessages([msg], MY_ACCOUNT);
+
+    const stored = store.getCachedMessage("signal", id);
+    expect(stored).not.toBeNull();
+    expect(stored!.direction).toBe("in");
+  });
+
+  test("mixed batch — each message has correct direction in DB", () => {
+    const ts = Date.now();
+    const messages = [
+      makeMsg(CONTACT_A, { id: `mix-in-${ts}`, body: "from contact" }),
+      makeMsg(MY_ACCOUNT, { id: `mix-out-${ts}`, direction: "in", body: "from me" }),
+      makeMsg(CONTACT_B, { id: `mix-in2-${ts}`, body: "from contact B" }),
+    ];
+
+    processSignalMessages(messages, MY_ACCOUNT);
+
+    expect(store.getCachedMessage("signal", `mix-in-${ts}`)!.direction).toBe("in");
+    expect(store.getCachedMessage("signal", `mix-out-${ts}`)!.direction).toBe("out");
+    expect(store.getCachedMessage("signal", `mix-in2-${ts}`)!.direction).toBe("in");
   });
 });

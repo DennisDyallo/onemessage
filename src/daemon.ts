@@ -23,7 +23,7 @@ import * as store from "./store.ts";
 import type { MessageFull } from "./types.ts";
 import { AUTH_DIR, createBaileysSocket, parseAndStoreWAMessage } from "./whatsapp-shared.ts";
 import { DAEMON_PID, DAEMON_SOCK } from "./daemon-shared.ts";
-import { fetchSignalInboxAsync, startSignalDaemon, type SignalDaemonHandle } from "./providers/signal.ts";
+import { fetchSignalInboxAsync, processSignalMessages, startSignalDaemon, type SignalDaemonHandle } from "./providers/signal.ts";
 import {
   fetchEmailInbox,
   resolveSettings as resolveEmailSettings,
@@ -402,18 +402,11 @@ export class UnifiedDaemon {
           this.signalDaemon = startSignalDaemon({
             account: signalConfig.phone,
             onMessage: (messages) => {
-              const account = signalConfig.phone;
-              const incoming = messages.filter((m) => m.from?.address !== account);
-              const outgoing = messages.filter((m) => m.from?.address === account);
-              // Explicitly set direction — parseSignalMessages may assign "in"
-              // to DataMessages even when from=account.
-              for (const m of outgoing) m.direction = "out";
-              if (incoming.length > 0) store.upsertFullMessages(incoming, "in");
-              if (outgoing.length > 0) store.upsertFullMessages(outgoing, "out");
+              const { incoming, outgoing } = processSignalMessages(messages, signalConfig.phone);
               store.recordFetch("signal", signalConfig.phone);
               this.lastPoll.set("signal", Date.now());
               process.stderr.write(
-                `[daemon] signal daemon received ${messages.length} message(s)\n`,
+                `[daemon] signal daemon: ${incoming} in + ${outgoing} out\n`,
               );
             },
             onError: (error) => {
