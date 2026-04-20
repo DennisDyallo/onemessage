@@ -405,6 +405,9 @@ export class UnifiedDaemon {
               const account = signalConfig.phone;
               const incoming = messages.filter((m) => m.from?.address !== account);
               const outgoing = messages.filter((m) => m.from?.address === account);
+              // Explicitly set direction — parseSignalMessages may assign "in"
+              // to DataMessages even when from=account.
+              for (const m of outgoing) m.direction = "out";
               if (incoming.length > 0) store.upsertFullMessages(incoming, "in");
               if (outgoing.length > 0) store.upsertFullMessages(outgoing, "out");
               store.recordFetch("signal", signalConfig.phone);

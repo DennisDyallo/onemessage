@@ -162,6 +162,9 @@ function parseSignalMessages(jsonLines: string, account?: string): MessageFull[]
     }
   } catch {}
 
+  // Build contact name lookup from incoming messages (for enriching outgoing `to` names)
+  const contactNames = store.getContactNamesByAddress("signal");
+
   for (const line of jsonLines.split("\n")) {
     if (!line.trim()) continue;
     try {
@@ -186,9 +189,10 @@ function parseSignalMessages(jsonLines: string, account?: string): MessageFull[]
       const groupId = dataMsg?.groupInfo?.groupId;
       const groupName = groupId ? (groupNames.get(groupId) ?? groupId) : undefined;
 
-      // direction is a placeholder here — the actual direction ("in"/"out")
-      // is determined by the caller (fetchSignalInbox) which splits on account
-      // address and passes the correct value to upsertFullMessages.
+      // NOTE: msg.direction takes precedence over the direction parameter in
+      // upsertFullMessages (store.ts uses msg.direction ?? direction). Callers
+      // (fetchSignalInbox, daemon.ts) must explicitly override m.direction for
+      // outgoing DataMessages where isSync is false but from=account.
       const isSync = !!syncMsg;
       messages.push({
         id: String(timestamp),
@@ -197,7 +201,7 @@ function parseSignalMessages(jsonLines: string, account?: string): MessageFull[]
           ? { name: `${sourceName} [${groupName}]`, address: `group:${groupId}` }
           : { name: sourceName, address: source },
         to: syncMsg?.destinationNumber
-          ? [{ name: "", address: syncMsg.destinationNumber }]
+          ? [{ name: contactNames.get(syncMsg.destinationNumber) ?? "", address: syncMsg.destinationNumber }]
           : [],
         subject: groupName,
         preview: content.slice(0, 100),
@@ -231,6 +235,10 @@ export function fetchSignalInbox(account: string): void {
     if (freshMessages.length > 0) {
       const incoming = freshMessages.filter((m) => m.from?.address !== account);
       const outgoing = freshMessages.filter((m) => m.from?.address === account);
+      // Explicitly set direction — parseSignalMessages may assign "in" to
+      // DataMessages even when from=account (msg.direction overrides the
+      // direction parameter in upsertFullMessages).
+      for (const m of outgoing) m.direction = "out";
       if (incoming.length > 0) store.upsertFullMessages(incoming, "in");
       if (outgoing.length > 0) store.upsertFullMessages(outgoing, "out");
       console.error(`[signal] Stored ${incoming.length} in + ${outgoing.length} out messages`);
@@ -257,6 +265,8 @@ export async function fetchSignalInboxAsync(account: string): Promise<void> {
     if (freshMessages.length > 0) {
       const incoming = freshMessages.filter((m) => m.from?.address !== account);
       const outgoing = freshMessages.filter((m) => m.from?.address === account);
+      // Explicitly set direction — see fetchSignalInbox for rationale.
+      for (const m of outgoing) m.direction = "out";
       if (incoming.length > 0) store.upsertFullMessages(incoming, "in");
       if (outgoing.length > 0) store.upsertFullMessages(outgoing, "out");
       console.error(`[signal] Stored ${incoming.length} in + ${outgoing.length} out messages`);

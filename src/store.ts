@@ -458,6 +458,37 @@ export function backfillMessageNames(provider: string): number {
   return result.changes;
 }
 
+/**
+ * Build a contact name lookup from incoming messages.
+ * Returns a map of address → name for all known senders in the given provider.
+ * Useful for enriching outgoing messages where the recipient name is missing.
+ */
+export function getContactNamesByAddress(
+  provider: string,
+): Map<string, string> {
+  const d = getDb();
+  const rows = d
+    .prepare(
+      `SELECT DISTINCT
+        json_extract(from_json, '$.address') as address,
+        json_extract(from_json, '$.name') as name
+      FROM messages
+      WHERE provider = ? AND direction = 'in'
+        AND json_extract(from_json, '$.name') IS NOT NULL
+        AND json_extract(from_json, '$.name') != ''
+        AND json_extract(from_json, '$.address') NOT LIKE 'group:%'`
+    )
+    .all(provider) as Array<{ address: string; name: string }>;
+
+  const map = new Map<string, string>();
+  for (const row of rows) {
+    if (row.address && row.name) {
+      map.set(row.address, row.name);
+    }
+  }
+  return map;
+}
+
 export function getContacts(
   provider: string,
   opts?: { limit?: number; search?: string },
