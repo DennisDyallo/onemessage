@@ -54,6 +54,13 @@ export class UnifiedDaemon {
   // Lifecycle
   private startTime = Date.now();
 
+  constructor(adapters?: ProviderAdapter[]) {
+    if (adapters) {
+      this.adapters = adapters;
+      for (const a of adapters) this.adapterMap.set(a.name, a);
+    }
+  }
+
   /** Derive polled provider names from runtime state — never hardcode. */
   private polledProviderNames(): string[] {
     const names = new Set<string>();
@@ -103,18 +110,20 @@ export class UnifiedDaemon {
   // -----------------------------------------------------------------------
 
   private async startAdapters(): Promise<void> {
-    this.adapters = [
-      new WhatsAppAdapter(),
-      new SignalAdapter(),
-      new EmailAdapter(),
-      new SmsAdapter(),
-      new TelegramBotAdapter(),
-      new InstagramAdapter(),
-      new MatrixAdapter(),
-    ];
+    if (this.adapters.length === 0) {
+      this.adapters = [
+        new WhatsAppAdapter(),
+        new SignalAdapter(),
+        new EmailAdapter(),
+        new SmsAdapter(),
+        new TelegramBotAdapter(),
+        new InstagramAdapter(),
+        new MatrixAdapter(),
+      ];
 
-    for (const adapter of this.adapters) {
-      this.adapterMap.set(adapter.name, adapter);
+      for (const adapter of this.adapters) {
+        this.adapterMap.set(adapter.name, adapter);
+      }
     }
 
     const orchestrator: DaemonOrchestrator = {
@@ -202,6 +211,10 @@ export class UnifiedDaemon {
         },
       },
     });
+  }
+
+  async processIpc(raw: string): Promise<DaemonResponse> {
+    return this.handleRequest(raw);
   }
 
   private async handleRequest(raw: string): Promise<DaemonResponse> {
