@@ -39,13 +39,14 @@ export function isDaemonRunning(): boolean {
 
 export function daemonRequest(req: object): Promise<any> {
   return new Promise((resolve, reject) => {
+    let socket: ReturnType<typeof connect> | null = null;
     const timeout = setTimeout(() => {
-      socket.destroy();
+      if (socket) socket.destroy();
       reject(new Error("Daemon request timed out (30s)"));
     }, 30_000);
 
-    const socket = connect(DAEMON_SOCK, () => {
-      socket.write(JSON.stringify(req) + "\n");
+    socket = connect(DAEMON_SOCK, () => {
+      socket!.write(JSON.stringify(req) + "\n");
     });
 
     let data = "";

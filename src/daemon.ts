@@ -473,20 +473,28 @@ export class UnifiedDaemon {
           const firstLine = lines[0];
           if (!firstLine) return;
 
-          self
-            .handleRequest(firstLine)
-            .then((resp) => {
-              socket.write(JSON.stringify(resp));
+          (async () => {
+            try {
+              const resp = await self.handleRequest(firstLine);
+              try {
+                socket.write(JSON.stringify(resp));
+              } catch (writeErr) {
+                process.stderr.write(`[daemon] socket.write failed: ${writeErr}\n`);
+              }
               socket.end();
-            })
-            .catch((err) => {
+            } catch (err) {
               const errResp: DaemonResponse = {
                 ok: false,
                 error: String(err),
               };
-              socket.write(JSON.stringify(errResp));
+              try {
+                socket.write(JSON.stringify(errResp));
+              } catch (writeErr) {
+                process.stderr.write(`[daemon] error response write failed: ${writeErr}\n`);
+              }
               socket.end();
-            });
+            }
+          })();
         },
         open() {},
         close() {},
