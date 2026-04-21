@@ -117,100 +117,7 @@ export class WhatsAppAdapter implements IpcCapableAdapter {
     if (!req.name) {
       return { ok: false, error: "name required" };
     }
-
-    const slashIdx = req.name.indexOf("/");
-    const communityName = (slashIdx >= 0 ? req.name.slice(0, slashIdx) : req.name)
-      .trim()
-      .toLowerCase();
-    const channelName =
-      slashIdx >= 0
-        ? req.name
-            .slice(slashIdx + 1)
-            .trim()
-            .toLowerCase()
-        : undefined;
-
-    if (channelName) {
-      const communityMatches = Array.from(this.groupCache.values()).filter(
-        (g) => g.isCommunity && g.subject.toLowerCase().includes(communityName),
-      );
-      if (communityMatches.length === 0) {
-        return {
-          ok: false,
-          error: `no community matching "${req.name.slice(0, slashIdx)}"`,
-        };
-      }
-      const parent =
-        communityMatches.find((c) => c.subject.toLowerCase() === communityName) ??
-        communityMatches[0];
-      if (!parent) return { ok: false, error: `no community matching "${communityName}"` };
-      const channels = Array.from(this.groupCache.values()).filter(
-        (g) => g.linkedParent === parent.id && g.subject.toLowerCase().includes(channelName),
-      );
-      if (channels.length === 0) {
-        const allChannels = Array.from(this.groupCache.values())
-          .filter((g) => g.linkedParent === parent.id)
-          .map((g) => g.subject);
-        return {
-          ok: false,
-          error: `no channel "${req.name.slice(slashIdx + 1).trim()}" in ${parent.subject}. Available: ${allChannels.join(", ")}`,
-        };
-      }
-      if (channels.length > 1) {
-        return {
-          ok: false,
-          error: `ambiguous: ${channels.map((c) => `${c.subject} (${c.id})`).join(", ")}`,
-        };
-      }
-      return { ok: true, data: channels[0] };
-    }
-
-    const needle = communityName;
-    const matches = Array.from(this.groupCache.values()).filter((g) =>
-      g.subject.toLowerCase().includes(needle),
-    );
-
-    if (matches.length === 0) {
-      return { ok: false, error: `no group matching "${req.name}"` };
-    }
-
-    if (matches.length === 1) {
-      return { ok: true, data: matches[0] };
-    }
-
-    const communityHits = matches.filter((g) => g.isCommunity);
-
-    if (communityHits.length === 1) {
-      const cParent = communityHits[0];
-      if (!cParent) return { ok: false, error: "unexpected: empty community hits" };
-      const children = matches.filter((g) => g.linkedParent === cParent.id);
-      const defaultChannel = children.find(
-        (c) => c.subject.toLowerCase() === cParent.subject.toLowerCase(),
-      );
-      if (defaultChannel) {
-        return { ok: true, data: defaultChannel };
-      }
-      const allChannels = Array.from(this.groupCache.values()).filter(
-        (g) => g.linkedParent === cParent.id,
-      );
-      return {
-        ok: false,
-        error: `"${req.name}" is a community. Use "group:${cParent.subject}/<channel>". Channels: ${allChannels.map((c) => c.subject).join(", ")}`,
-      };
-    }
-
-    const labels = matches.map((g) => {
-      if (g.isCommunity) return `${g.subject} [community] (${g.id})`;
-      if (g.linkedParent) {
-        const parent = this.groupCache.get(g.linkedParent);
-        return `${g.subject} [in ${parent?.subject ?? "unknown"}] (${g.id})`;
-      }
-      return `${g.subject} (${g.id})`;
-    });
-    return {
-      ok: false,
-      error: `ambiguous: ${labels.join(", ")}`,
-    };
+    return resolveGroup(req.name, this.groupCache);
   }
 
   // -------------------------------------------------------------------------
@@ -425,4 +332,112 @@ export class WhatsAppAdapter implements IpcCapableAdapter {
       this.flushing = false;
     }
   }
+}
+
+// ---------------------------------------------------------------------------
+// Exported group resolution logic (extracted for testability)
+// ---------------------------------------------------------------------------
+
+export type GroupCacheEntry = {
+  id: string;
+  subject: string;
+  isCommunity?: boolean;
+  linkedParent?: string;
+};
+
+export function resolveGroup(
+  name: string,
+  groupCache: Map<string, GroupCacheEntry>,
+): DaemonResponse {
+  const slashIdx = name.indexOf("/");
+  const communityName = (slashIdx >= 0 ? name.slice(0, slashIdx) : name).trim().toLowerCase();
+  const channelName =
+    slashIdx >= 0
+      ? name
+          .slice(slashIdx + 1)
+          .trim()
+          .toLowerCase()
+      : undefined;
+
+  if (channelName) {
+    const communityMatches = Array.from(groupCache.values()).filter(
+      (g) => g.isCommunity && g.subject.toLowerCase().includes(communityName),
+    );
+    if (communityMatches.length === 0) {
+      return {
+        ok: false,
+        error: `no community matching "${name.slice(0, slashIdx)}"`,
+      };
+    }
+    const parent =
+      communityMatches.find((c) => c.subject.toLowerCase() === communityName) ??
+      communityMatches[0];
+    if (!parent) return { ok: false, error: `no community matching "${communityName}"` };
+    const channels = Array.from(groupCache.values()).filter(
+      (g) => g.linkedParent === parent.id && g.subject.toLowerCase().includes(channelName),
+    );
+    if (channels.length === 0) {
+      const allChannels = Array.from(groupCache.values())
+        .filter((g) => g.linkedParent === parent.id)
+        .map((g) => g.subject);
+      return {
+        ok: false,
+        error: `no channel "${name.slice(slashIdx + 1).trim()}" in ${parent.subject}. Available: ${allChannels.join(", ")}`,
+      };
+    }
+    if (channels.length > 1) {
+      return {
+        ok: false,
+        error: `ambiguous: ${channels.map((c) => `${c.subject} (${c.id})`).join(", ")}`,
+      };
+    }
+    return { ok: true, data: channels[0] };
+  }
+
+  const needle = communityName;
+  const matches = Array.from(groupCache.values()).filter((g) =>
+    g.subject.toLowerCase().includes(needle),
+  );
+
+  if (matches.length === 0) {
+    return { ok: false, error: `no group matching "${name}"` };
+  }
+
+  if (matches.length === 1) {
+    return { ok: true, data: matches[0] };
+  }
+
+  const communityHits = matches.filter((g) => g.isCommunity);
+
+  if (communityHits.length === 1) {
+    const cParent = communityHits[0];
+    if (!cParent) return { ok: false, error: "unexpected: empty community hits" };
+    const children = matches.filter((g) => g.linkedParent === cParent.id);
+    const defaultChannel = children.find(
+      (c) => c.subject.toLowerCase() === cParent.subject.toLowerCase(),
+    );
+    if (defaultChannel) {
+      return { ok: true, data: defaultChannel };
+    }
+    const allChannels = Array.from(groupCache.values()).filter(
+      (g) => g.linkedParent === cParent.id,
+    );
+    return {
+      ok: false,
+      error: `"${name}" is a community. Use "group:${cParent.subject}/<channel>". Channels: ${allChannels.map((c) => c.subject).join(", ")}`,
+    };
+  }
+
+  const labels = matches.map((g) => {
+    if (g.isCommunity) return `${g.subject} [community] (${g.id})`;
+    if (g.linkedParent) {
+      const parent = groupCache.get(g.linkedParent);
+      return `${g.subject} [in ${parent?.subject ?? "unknown"}] (${g.id})`;
+    }
+    return `${g.subject} (${g.id})`;
+  });
+  return {
+    ok: false,
+    error: `ambiguous: ${labels.join(", ")}`,
+  };
 }
