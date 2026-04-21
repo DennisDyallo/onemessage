@@ -23,15 +23,12 @@ import * as store from "./store.ts";
 import type { MessageFull } from "./types.ts";
 import { AUTH_DIR, createBaileysSocket, parseAndStoreWAMessage } from "./whatsapp-shared.ts";
 import { DAEMON_PID, DAEMON_SOCK } from "./daemon-shared.ts";
-import { fetchSignalInboxAsync, processSignalMessages, startSignalDaemon, type SignalDaemonHandle } from "./providers/signal.ts";
-import {
-  fetchEmailInbox,
-  resolveSettings as resolveEmailSettings,
-} from "./providers/email.ts";
-import { fetchSmsInbox } from "./providers/sms.ts";
-import { fetchTelegramBotUpdates } from "./providers/telegram-bot.ts";
-import { fetchInstagramInbox } from "./providers/instagram.ts";
-import { cliExists } from "./providers/shared.ts";
+import type { ProviderAdapter, DaemonOrchestrator } from "./daemon-adapter.ts";
+import { SignalAdapter } from "./daemon-signal.ts";
+import { EmailAdapter } from "./daemon-email.ts";
+import { SmsAdapter } from "./daemon-sms.ts";
+import { TelegramBotAdapter } from "./daemon-telegram-bot.ts";
+import { InstagramAdapter } from "./daemon-instagram.ts";
 
 // ---------------------------------------------------------------------------
 // IPC types
@@ -73,8 +70,9 @@ export class UnifiedDaemon {
   private outgoingQueue: Array<{ jid: string; text: string }> = [];
   private flushing = false;
 
-  // Signal daemon mode
-  private signalDaemon: SignalDaemonHandle | null = null;
+  // Provider adapters
+  private adapters: ProviderAdapter[] = [];
+  private adapterMap = new Map<string, ProviderAdapter>();
 
   // Polling
   private pollTimers = new Map<string, ReturnType<typeof setInterval>>();
@@ -92,7 +90,9 @@ export class UnifiedDaemon {
     const names = new Set<string>();
     for (const name of this.pollTimers.keys()) names.add(name);
     for (const name of this.lastPoll.keys()) names.add(name);
-    if (this.signalDaemon) names.add("signal");
+    for (const adapter of this.adapters) {
+      if (adapter.isActive()) names.add(adapter.name);
+    }
     return [...names];
   }
 
@@ -388,99 +388,34 @@ export class UnifiedDaemon {
   // -----------------------------------------------------------------------
 
   private startPolling(): void {
-    const config = loadConfig();
-    const defaultInterval = config.daemon?.pollIntervalMs ?? 60_000; // 1 min
+    // Instantiate all adapters
+    this.adapters = [
+      new SignalAdapter(),
+      new EmailAdapter(),
+      new SmsAdapter(),
+      new TelegramBotAdapter(),
+      new InstagramAdapter(),
+    ];
 
-    // Signal
-    const signalConfig = config.signal;
-    if (signalConfig?.phone) {
-      const enabled = config.daemon?.providers?.signal?.enabled !== false;
-      const signalMode = config.daemon?.providers?.signal?.mode ?? "poll";
-
-      if (enabled) {
-        if (signalMode === "daemon") {
-          this.signalDaemon = startSignalDaemon({
-            account: signalConfig.phone,
-            onMessage: (messages) => {
-              const { incoming, outgoing } = processSignalMessages(messages, signalConfig.phone);
-              store.recordFetch("signal", signalConfig.phone);
-              this.lastPoll.set("signal", Date.now());
-              process.stderr.write(
-                `[daemon] signal daemon: ${incoming} in + ${outgoing} out\n`,
-              );
-            },
-            onError: (error) => {
-              process.stderr.write(`[daemon] signal daemon error: ${error}\n`);
-            },
-          });
-          // Do an initial poll to backfill any messages that arrived while daemon was down
-          this.pollProvider("signal", () =>
-            fetchSignalInboxAsync(signalConfig.phone),
-          );
-          process.stderr.write("[daemon] signal using real-time daemon mode\n");
-        } else {
-          const interval =
-            config.daemon?.providers?.signal?.pollIntervalMs ?? defaultInterval;
-          this.schedulePoll("signal", interval, () =>
-            fetchSignalInboxAsync(signalConfig.phone),
-          );
-        }
-      }
+    // Build name → adapter map for IPC dispatch
+    for (const adapter of this.adapters) {
+      this.adapterMap.set(adapter.name, adapter);
     }
 
-    // Email
-    const emailSettings = resolveEmailSettings();
-    if (emailSettings) {
-      const interval =
-        config.daemon?.providers?.email?.pollIntervalMs ?? defaultInterval;
-      const enabled = config.daemon?.providers?.email?.enabled !== false;
-      if (enabled) {
-        this.schedulePoll("email", interval, async () => {
-          await fetchEmailInbox(
-            emailSettings,
-            emailSettings.accounts,
-            "INBOX",
-          );
-        });
-      }
-    }
+    // Create the orchestrator interface for adapters
+    const orchestrator: DaemonOrchestrator = {
+      schedulePoll: (name, interval, fn) => this.schedulePoll(name, interval, fn),
+      pollNow: (name, fn) => this.pollProvider(name, fn),
+      setLastPoll: (name) => this.lastPoll.set(name, Date.now()),
+      defaultPollInterval: () => {
+        const config = loadConfig();
+        return config.daemon?.pollIntervalMs ?? 60_000;
+      },
+    };
 
-    // Telegram bot
-    const telegramBotConfig = config.telegramBot;
-    if (telegramBotConfig?.botToken) {
-      const interval =
-        config.daemon?.providers?.["telegram-bot"]?.pollIntervalMs ?? defaultInterval;
-      const enabled = config.daemon?.providers?.["telegram-bot"]?.enabled !== false;
-      if (enabled) {
-        this.schedulePoll("telegram-bot", interval, () =>
-          fetchTelegramBotUpdates(telegramBotConfig.botToken),
-        );
-      }
-    }
-
-    // SMS
-    if (cliExists("kdeconnect-read-sms")) {
-      const interval =
-        config.daemon?.providers?.sms?.pollIntervalMs ?? defaultInterval;
-      const enabled = config.daemon?.providers?.sms?.enabled !== false;
-      if (enabled) {
-        this.schedulePoll("sms", interval, () => {
-          fetchSmsInbox();
-        });
-      }
-    }
-
-    // Instagram
-    const instagramConfig = config.instagram;
-    if (instagramConfig?.username && cliExists("instagram-cli")) {
-      const interval =
-        config.daemon?.providers?.instagram?.pollIntervalMs ?? defaultInterval;
-      const enabled = config.daemon?.providers?.instagram?.enabled !== false;
-      if (enabled) {
-        this.schedulePoll("instagram", interval, () =>
-          fetchInstagramInbox(instagramConfig.username),
-        );
-      }
+    // Start all adapters
+    for (const adapter of this.adapters) {
+      adapter.start(orchestrator);
     }
   }
 
@@ -580,11 +515,12 @@ export class UnifiedDaemon {
           { lastPoll: string | null; enabled: boolean; mode?: string }
         > = {};
         for (const name of this.polledProviderNames()) {
+          const adapter = this.adapterMap.get(name);
           const lastMs = this.lastPoll.get(name);
           pollingStatus[name] = {
             lastPoll: lastMs ? new Date(lastMs).toISOString() : null,
-            enabled: this.pollTimers.has(name) || (name === "signal" && this.signalDaemon !== null),
-            ...(name === "signal" && this.signalDaemon ? { mode: "daemon" } : {}),
+            enabled: this.pollTimers.has(name) || (adapter?.isActive() ?? false),
+            ...(adapter?.statusInfo() ?? {}),
           };
         }
 
@@ -745,96 +681,35 @@ export class UnifiedDaemon {
 
       case "fetch": {
         const provider = req.provider;
-        const config = loadConfig();
 
         if (provider) {
           // Trigger a single provider
-          switch (provider) {
-            case "signal": {
-              const phone = config.signal?.phone;
-              if (!phone)
-                return { ok: false, error: "signal not configured" };
-              await this.pollProvider("signal", () =>
-                fetchSignalInboxAsync(phone),
-              );
-              return { ok: true };
-            }
-            case "email": {
-              const settings = resolveEmailSettings();
-              if (!settings)
-                return { ok: false, error: "email not configured" };
-              await this.pollProvider("email", () =>
-                fetchEmailInbox(settings, settings.accounts, "INBOX"),
-              );
-              return { ok: true };
-            }
-            case "sms": {
-              if (!cliExists("kdeconnect-read-sms"))
-                return {
-                  ok: false,
-                  error: "kdeconnect-read-sms not found",
-                };
-              await this.pollProvider("sms", () => fetchSmsInbox());
-              return { ok: true };
-            }
-            case "telegram-bot": {
-              const token = config.telegramBot?.botToken;
-              if (!token)
-                return { ok: false, error: "telegram-bot not configured" };
-              await this.pollProvider("telegram-bot", () =>
-                fetchTelegramBotUpdates(token),
-              );
-              return { ok: true };
-            }
-            case "instagram": {
-              const username = config.instagram?.username;
-              if (!username)
-                return { ok: false, error: "instagram not configured" };
-              await this.pollProvider("instagram", () =>
-                fetchInstagramInbox(username),
-              );
-              return { ok: true };
-            }
-            default:
-              return {
-                ok: false,
-                error: `unknown provider: ${provider}`,
-              };
+          const adapter = this.adapterMap.get(provider);
+          if (!adapter) {
+            return {
+              ok: false,
+              error: `unknown provider: ${provider}`,
+            };
+          }
+          if (!adapter.isActive()) {
+            return { ok: false, error: `${provider} not configured` };
+          }
+          try {
+            await this.pollProvider(provider, () => adapter.fetch());
+            return { ok: true };
+          } catch (err) {
+            return { ok: false, error: String(err) };
           }
         }
 
-        // Poll all configured providers
+        // Poll all active providers
         const promises: Promise<void>[] = [];
-        if (config.signal?.phone) {
-          const phone = config.signal.phone;
-          promises.push(
-            this.pollProvider("signal", () => fetchSignalInboxAsync(phone)),
-          );
-        }
-        const emailSettings = resolveEmailSettings();
-        if (emailSettings) {
-          promises.push(
-            this.pollProvider("email", () =>
-              fetchEmailInbox(emailSettings, emailSettings.accounts, "INBOX"),
-            ),
-          );
-        }
-        if (cliExists("kdeconnect-read-sms")) {
-          promises.push(
-            this.pollProvider("sms", () => fetchSmsInbox()),
-          );
-        }
-        if (config.telegramBot?.botToken) {
-          const token = config.telegramBot.botToken;
-          promises.push(
-            this.pollProvider("telegram-bot", () => fetchTelegramBotUpdates(token)),
-          );
-        }
-        if (config.instagram?.username) {
-          const username = config.instagram.username;
-          promises.push(
-            this.pollProvider("instagram", () => fetchInstagramInbox(username)),
-          );
+        for (const adapter of this.adapters) {
+          if (adapter.isActive()) {
+            promises.push(
+              this.pollProvider(adapter.name, () => adapter.fetch()),
+            );
+          }
         }
         await Promise.allSettled(promises);
         return { ok: true };
@@ -853,12 +728,12 @@ export class UnifiedDaemon {
           lastPoll: null,
         };
 
-        // Polled providers
-        for (const name of this.polledProviderNames()) {
-          const lastMs = this.lastPoll.get(name);
-          providers[name] = {
-            enabled: this.pollTimers.has(name) || (name === "signal" && this.signalDaemon !== null),
-            polling: this.polling.get(name) ?? false,
+        // Polled providers (from adapters)
+        for (const adapter of this.adapters) {
+          const lastMs = this.lastPoll.get(adapter.name);
+          providers[adapter.name] = {
+            enabled: adapter.isActive(),
+            polling: this.polling.get(adapter.name) ?? false,
             lastPoll: lastMs ? new Date(lastMs).toISOString() : null,
           };
         }
@@ -879,11 +754,13 @@ export class UnifiedDaemon {
   // -----------------------------------------------------------------------
 
   private cleanup(): void {
-    // Stop Signal daemon subprocess
-    try {
-      this.signalDaemon?.stop();
-    } catch {
-      // ignore
+    // Stop all adapters
+    for (const adapter of this.adapters) {
+      try {
+        adapter.cleanup();
+      } catch {
+        // ignore
+      }
     }
 
     // Close Baileys connection
