@@ -6,14 +6,14 @@
  */
 
 import { loadConfig } from "./config.ts";
-import * as store from "./store.ts";
+import type { DaemonOrchestrator, ProviderAdapter } from "./daemon-adapter.ts";
 import {
   fetchSignalInboxAsync,
   processSignalMessages,
-  startSignalDaemon,
   type SignalDaemonHandle,
+  startSignalDaemon,
 } from "./providers/signal.ts";
-import type { ProviderAdapter, DaemonOrchestrator } from "./daemon-adapter.ts";
+import * as store from "./store.ts";
 
 // ---------------------------------------------------------------------------
 // Signal adapter
@@ -35,30 +35,28 @@ export class SignalAdapter implements ProviderAdapter {
     if (!enabled) return;
 
     const mode = config.daemon?.providers?.signal?.mode ?? "poll";
-    const interval = config.daemon?.providers?.signal?.pollIntervalMs ?? orchestrator.defaultPollInterval();
+    const interval =
+      config.daemon?.providers?.signal?.pollIntervalMs ?? orchestrator.defaultPollInterval();
 
+    const phone = this.phone;
     if (mode === "daemon") {
       this.daemonHandle = startSignalDaemon({
-        account: this.phone,
+        account: phone,
         onMessage: (messages) => {
-          const { incoming, outgoing } = processSignalMessages(messages, this.phone!);
-          store.recordFetch("signal", this.phone!);
+          const { incoming, outgoing } = processSignalMessages(messages, phone);
+          store.recordFetch("signal", phone);
           orchestrator.setLastPoll("signal");
-          process.stderr.write(
-            `[daemon] signal daemon: ${incoming} in + ${outgoing} out\n`,
-          );
+          process.stderr.write(`[daemon] signal daemon: ${incoming} in + ${outgoing} out\n`);
         },
         onError: (error) => {
           process.stderr.write(`[daemon] signal daemon error: ${error}\n`);
         },
       });
       // Backfill any missed messages
-      orchestrator.pollNow("signal", () => fetchSignalInboxAsync(this.phone!));
+      orchestrator.pollNow("signal", () => fetchSignalInboxAsync(phone));
       process.stderr.write("[daemon] signal using real-time daemon mode\n");
     } else {
-      orchestrator.schedulePoll("signal", interval, () =>
-        fetchSignalInboxAsync(this.phone!),
-      );
+      orchestrator.schedulePoll("signal", interval, () => fetchSignalInboxAsync(phone));
     }
   }
 

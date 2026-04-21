@@ -1,8 +1,8 @@
-import { registerProvider } from "../registry.ts";
 import { loadConfig } from "../config.ts";
+import { registerProvider } from "../registry.ts";
 import * as store from "../store.ts";
-import { cliExists, runCli, runCliAsync, readFromCacheOrFail, cacheSentMessage } from "./shared.ts";
-import type { MessagingProvider, MessageEnvelope, MessageFull } from "../types.ts";
+import type { MessageEnvelope, MessageFull, MessagingProvider } from "../types.ts";
+import { cacheSentMessage, cliExists, readFromCacheOrFail, runCli, runCliAsync } from "./shared.ts";
 
 // ---------------------------------------------------------------------------
 // Config
@@ -152,7 +152,9 @@ const INTER_REQUEST_DELAY_MIN_MS = 3_000;
 const INTER_REQUEST_DELAY_MAX_MS = 6_000;
 
 function randomDelay(): Promise<void> {
-  const ms = Math.floor(Math.random() * (INTER_REQUEST_DELAY_MAX_MS - INTER_REQUEST_DELAY_MIN_MS + 1)) + INTER_REQUEST_DELAY_MIN_MS;
+  const ms =
+    Math.floor(Math.random() * (INTER_REQUEST_DELAY_MAX_MS - INTER_REQUEST_DELAY_MIN_MS + 1)) +
+    INTER_REQUEST_DELAY_MIN_MS;
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
@@ -167,19 +169,21 @@ async function fetchThreadMessages(
   );
 
   if (!result.ok) {
-    console.error(`[instagram] Failed to read thread ${threadId}: ${result.stderr || `exit ${result.exitCode}`}`);
+    console.error(
+      `[instagram] Failed to read thread ${threadId}: ${result.stderr || `exit ${result.exitCode}`}`,
+    );
     return [];
   }
 
   const parsed = parseCliJson<ReadResult>(result.stdout);
   if (!parsed.ok || !parsed.data?.messages) {
-    console.error(`[instagram] Failed to parse thread ${threadId}: ${parsed.error ?? "no messages"}`);
+    console.error(
+      `[instagram] Failed to parse thread ${threadId}: ${parsed.error ?? "no messages"}`,
+    );
     return [];
   }
 
-  return parsed.data.messages.map((msg) =>
-    readMessageToFull(msg, threadId, threadTitle),
-  );
+  return parsed.data.messages.map((msg) => readMessageToFull(msg, threadId, threadTitle));
 }
 
 export async function fetchInstagramInbox(username: string): Promise<void> {
@@ -189,7 +193,9 @@ export async function fetchInstagramInbox(username: string): Promise<void> {
   );
 
   if (!result.ok) {
-    throw new Error(`instagram-cli inbox failed: ${result.stderr || result.stdout || `exit ${result.exitCode}`}`);
+    throw new Error(
+      `instagram-cli inbox failed: ${result.stderr || result.stdout || `exit ${result.exitCode}`}`,
+    );
   }
 
   const parsed = parseCliJson<InboxThread[]>(result.stdout);
@@ -244,7 +250,9 @@ const instagramProvider: MessagingProvider = {
     }
     console.log("  Launching instagram-cli auth login...\n");
     const proc = Bun.spawnSync([CLI, "auth", "login"], {
-      stdin: "inherit", stdout: "inherit", stderr: "inherit",
+      stdin: "inherit",
+      stdout: "inherit",
+      stderr: "inherit",
     });
     if (proc.exitCode === 0) {
       const { getConfigPath } = await import("../config.ts");
@@ -260,15 +268,32 @@ const instagramProvider: MessagingProvider = {
   async send(recipientId, body, opts) {
     const settings = resolveSettings(opts?.providerFlags);
     if (!settings) {
-      return { ok: false, provider: "instagram", recipientId, error: "Instagram not configured. Run: onemessage auth instagram" };
+      return {
+        ok: false,
+        provider: "instagram",
+        recipientId,
+        error: "Instagram not configured. Run: onemessage auth instagram",
+      };
     }
 
     if (!cliExists(CLI)) {
-      return { ok: false, provider: "instagram", recipientId, error: "instagram-cli not found. Install: npm install -g @i7m/instagram-cli" };
+      return {
+        ok: false,
+        provider: "instagram",
+        recipientId,
+        error: "instagram-cli not found. Install: npm install -g @i7m/instagram-cli",
+      };
     }
 
     const result = runInstagramCli([
-      "send", recipientId, "--text", body, "-o", "json", "-u", settings.username,
+      "send",
+      recipientId,
+      "--text",
+      body,
+      "-o",
+      "json",
+      "-u",
+      settings.username,
     ]);
 
     if (!result.ok) {
@@ -282,7 +307,12 @@ const instagramProvider: MessagingProvider = {
 
     const parsed = parseCliJson<SendResult>(result.stdout);
     if (!parsed.ok || !parsed.data) {
-      return { ok: false, provider: "instagram", recipientId, error: parsed.error ?? "Send failed" };
+      return {
+        ok: false,
+        provider: "instagram",
+        recipientId,
+        error: parsed.error ?? "Send failed",
+      };
     }
 
     const messageId = parsed.data.messageId ?? String(Date.now());
@@ -316,7 +346,9 @@ const instagramProvider: MessagingProvider = {
     try {
       await fetchInstagramInbox(settings.username);
     } catch (err) {
-      console.error(`[instagram] Failed to fetch inbox: ${err instanceof Error ? err.message : err}`);
+      console.error(
+        `[instagram] Failed to fetch inbox: ${err instanceof Error ? err.message : err}`,
+      );
     }
 
     return store.getCachedInbox("instagram", {

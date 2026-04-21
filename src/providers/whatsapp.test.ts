@@ -16,7 +16,7 @@
  * mock Baileys-shaped message data, without touching the real
  * WhatsApp daemon or socket.
  */
-import { describe, test, expect } from "bun:test";
+import { describe, expect, test } from "bun:test";
 import type { MessageFull } from "../types.ts";
 
 // ---------------------------------------------------------------------------
@@ -77,10 +77,7 @@ function processWhatsAppMsg(msg: MockBaileysMsg, contactNames?: Map<string, stri
     ? { name: recipientName, address: recipientAddress }
     : { name: "me", address: "me" };
 
-  const content =
-    msg.message?.conversation ??
-    msg.message?.extendedTextMessage?.text ??
-    "";
+  const content = msg.message?.conversation ?? msg.message?.extendedTextMessage?.text ?? "";
 
   const timestamp =
     typeof msg.messageTimestamp === "number"

@@ -1,11 +1,11 @@
+import { existsSync } from "node:fs";
+import { join } from "node:path";
+import { daemonRequest, ensureDaemon } from "../daemon-shared.ts";
 import { registerProvider } from "../registry.ts";
 import * as store from "../store.ts";
-import { readFromCacheOrFail, cacheSentMessage } from "./shared.ts";
 import type { MessagingProvider } from "../types.ts";
-import { existsSync } from "fs";
-import { join } from "path";
 import { AUTH_DIR } from "../whatsapp-shared.ts";
-import { isDaemonRunning, ensureDaemon, daemonRequest } from "../daemon-shared.ts";
+import { cacheSentMessage, readFromCacheOrFail } from "./shared.ts";
 
 // ---------------------------------------------------------------------------
 // Recipient resolution
@@ -14,7 +14,7 @@ import { isDaemonRunning, ensureDaemon, daemonRequest } from "../daemon-shared.t
 async function recipientToJid(recipientId: string): Promise<string | null> {
   // Phone number: +46... → 46...@s.whatsapp.net
   if (recipientId.startsWith("+")) {
-    return recipientId.slice(1) + "@s.whatsapp.net";
+    return `${recipientId.slice(1)}@s.whatsapp.net`;
   }
 
   // Group: group:name or group:12345678
@@ -22,7 +22,7 @@ async function recipientToJid(recipientId: string): Promise<string | null> {
     const groupRef = recipientId.slice(6);
     // Purely numeric → direct group JID
     if (/^\d+$/.test(groupRef)) {
-      return groupRef + "@g.us";
+      return `${groupRef}@g.us`;
     }
     // Name lookup via daemon
     const res = await daemonRequest({ type: "resolve-group", name: groupRef });
@@ -54,7 +54,7 @@ const whatsappProvider: MessagingProvider = {
     await runWhatsAppAuth({ phone: opts?.phone });
   },
 
-  async send(recipientId, body, opts) {
+  async send(recipientId, body, _opts) {
     await ensureDaemon();
     const jid = await recipientToJid(recipientId);
     if (!jid) {
@@ -95,7 +95,9 @@ const whatsappProvider: MessagingProvider = {
       await ensureDaemon();
       store.recordFetch("whatsapp");
     } catch (err) {
-      console.warn(`[whatsapp] daemon failed to start: ${err instanceof Error ? err.message : err}`);
+      console.warn(
+        `[whatsapp] daemon failed to start: ${err instanceof Error ? err.message : err}`,
+      );
     }
 
     return store.getCachedInbox("whatsapp", {
@@ -106,7 +108,7 @@ const whatsappProvider: MessagingProvider = {
     });
   },
 
-  async read(messageId, opts) {
+  async read(messageId, _opts) {
     return readFromCacheOrFail("whatsapp", messageId);
   },
 

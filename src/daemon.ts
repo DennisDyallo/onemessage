@@ -9,17 +9,17 @@
  *   daemon.sock — Unix domain socket for IPC
  */
 
-import { existsSync, mkdirSync, writeFileSync, unlinkSync } from "fs";
+import { existsSync, mkdirSync, unlinkSync, writeFileSync } from "node:fs";
 
 import { loadConfig } from "./config.ts";
-import { DAEMON_PID, DAEMON_SOCK } from "./daemon-shared.ts";
-import type { ProviderAdapter, DaemonOrchestrator, DaemonResponse } from "./daemon-adapter.ts";
+import type { DaemonOrchestrator, DaemonResponse, ProviderAdapter } from "./daemon-adapter.ts";
 import { isIpcCapable } from "./daemon-adapter.ts";
-import { SignalAdapter } from "./daemon-signal.ts";
 import { EmailAdapter } from "./daemon-email.ts";
+import { InstagramAdapter } from "./daemon-instagram.ts";
+import { DAEMON_PID, DAEMON_SOCK } from "./daemon-shared.ts";
+import { SignalAdapter } from "./daemon-signal.ts";
 import { SmsAdapter } from "./daemon-sms.ts";
 import { TelegramBotAdapter } from "./daemon-telegram-bot.ts";
-import { InstagramAdapter } from "./daemon-instagram.ts";
 import { WhatsAppAdapter } from "./daemon-whatsapp.ts";
 
 // ---------------------------------------------------------------------------
@@ -94,9 +94,7 @@ export class UnifiedDaemon {
     process.on("SIGTERM", () => this.cleanup());
     process.on("SIGINT", () => this.cleanup());
 
-    process.stderr.write(
-      `[daemon] started pid=${process.pid} sock=${DAEMON_SOCK}\n`,
-    );
+    process.stderr.write(`[daemon] started pid=${process.pid} sock=${DAEMON_SOCK}\n`);
   }
 
   // -----------------------------------------------------------------------
@@ -132,25 +130,16 @@ export class UnifiedDaemon {
     }
   }
 
-  private schedulePoll(
-    name: string,
-    intervalMs: number,
-    fn: () => void | Promise<void>,
-  ): void {
+  private schedulePoll(name: string, intervalMs: number, fn: () => void | Promise<void>): void {
     this.pollProvider(name, fn);
     this.pollTimers.set(
       name,
       setInterval(() => this.pollProvider(name, fn), intervalMs),
     );
-    process.stderr.write(
-      `[daemon] polling ${name} every ${Math.round(intervalMs / 1000)}s\n`,
-    );
+    process.stderr.write(`[daemon] polling ${name} every ${Math.round(intervalMs / 1000)}s\n`);
   }
 
-  private async pollProvider(
-    name: string,
-    fn: () => void | Promise<void>,
-  ): Promise<void> {
+  private async pollProvider(name: string, fn: () => void | Promise<void>): Promise<void> {
     if (this.polling.get(name)) return; // skip if still running
     this.polling.set(name, true);
     try {
@@ -175,10 +164,7 @@ export class UnifiedDaemon {
       unix: DAEMON_SOCK,
       socket: {
         data(socket, data) {
-          const raw =
-            typeof data === "string"
-              ? data
-              : Buffer.from(data).toString("utf-8");
+          const raw = typeof data === "string" ? data : Buffer.from(data).toString("utf-8");
 
           const lines = raw.split("\n").filter((l) => l.trim());
           const firstLine = lines[0];
@@ -286,9 +272,7 @@ export class UnifiedDaemon {
         const promises: Promise<void>[] = [];
         for (const adapter of this.adapters) {
           if (adapter.isActive()) {
-            promises.push(
-              this.pollProvider(adapter.name, () => adapter.fetch()),
-            );
+            promises.push(this.pollProvider(adapter.name, () => adapter.fetch()));
           }
         }
         await Promise.allSettled(promises);

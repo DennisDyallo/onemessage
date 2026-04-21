@@ -5,9 +5,9 @@
  * and by daemon.ts itself for PID/socket paths.
  */
 
-import { join, dirname } from "path";
-import { existsSync, readFileSync } from "fs";
-import { connect } from "net";
+import { existsSync, readFileSync } from "node:fs";
+import { connect } from "node:net";
+import { dirname, join } from "node:path";
 import { getConfigDir } from "./config.ts";
 
 // ---------------------------------------------------------------------------
@@ -25,7 +25,7 @@ export function isDaemonRunning(): boolean {
   if (!existsSync(DAEMON_PID)) return false;
   try {
     const pid = parseInt(readFileSync(DAEMON_PID, "utf-8").trim(), 10);
-    if (isNaN(pid)) return false;
+    if (Number.isNaN(pid)) return false;
     process.kill(pid, 0);
     return true;
   } catch {
@@ -37,6 +37,7 @@ export function isDaemonRunning(): boolean {
 // IPC client
 // ---------------------------------------------------------------------------
 
+// biome-ignore lint/suspicious/noExplicitAny: IPC response shape varies by request type
 export function daemonRequest(req: object): Promise<any> {
   return new Promise((resolve, reject) => {
     let socket: ReturnType<typeof connect> | null = null;
@@ -46,7 +47,7 @@ export function daemonRequest(req: object): Promise<any> {
     }, 30_000);
 
     socket = connect(DAEMON_SOCK, () => {
-      socket!.write(JSON.stringify(req) + "\n");
+      socket?.write(`${JSON.stringify(req)}\n`);
     });
 
     let data = "";

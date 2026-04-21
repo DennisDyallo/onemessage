@@ -1,22 +1,13 @@
-import nodemailer from "nodemailer";
+import { existsSync, readFileSync } from "node:fs";
+import { basename, extname, resolve } from "node:path";
 import { ImapFlow } from "imapflow";
-import { simpleParser, type ParsedMail } from "mailparser";
-import { existsSync, readFileSync } from "fs";
-import { basename, extname, resolve } from "path";
+import { type ParsedMail, simpleParser } from "mailparser";
 import { lookup } from "mime-types";
+import nodemailer from "nodemailer";
+import { EMAIL_DEFAULTS, loadConfig } from "../config.ts";
 import { registerProvider } from "../registry.ts";
-import { loadConfig, EMAIL_DEFAULTS } from "../config.ts";
 import * as store from "../store.ts";
-import type {
-  MessagingProvider,
-  SendOptions,
-  SendResult,
-  InboxOptions,
-  ReadOptions,
-  SearchOptions,
-  MessageEnvelope,
-  MessageFull,
-} from "../types.ts";
+import type { MessageEnvelope, MessageFull, MessagingProvider } from "../types.ts";
 
 const FRESHNESS_MS = 5 * 60_000; // 5 minutes
 
@@ -29,7 +20,7 @@ function isOutgoingEmail(fromAddr: string | undefined, settings: ResolvedEmail):
   const ownAddresses = [...settings.accounts, ...(settings.secondaryAccounts ?? [])];
   const stripTag = (addr: string) => addr.replace(/\+[^@]*@/, "@").toLowerCase();
   const normalizedFrom = stripTag(fromAddr);
-  return ownAddresses.some(own => stripTag(own) === normalizedFrom);
+  return ownAddresses.some((own) => stripTag(own) === normalizedFrom);
 }
 
 // ---------------------------------------------------------------------------
@@ -62,10 +53,11 @@ export function resolveSettings(cliOverrides?: Record<string, unknown>): Resolve
 
   // secondaryAccounts are implicitly part of the account list — no need to duplicate in config
   const allAccounts = [...new Set([...primaryAccounts, ...secondaryAccounts])];
-  const effectiveAccounts = allAccounts.length > 0 ? allAccounts : (cliFrom ? [cliFrom] : []);
+  const effectiveAccounts = allAccounts.length > 0 ? allAccounts : cliFrom ? [cliFrom] : [];
   if (effectiveAccounts.length === 0) return null;
 
-  const defaultAccount = cliFrom ?? email?.default ?? primaryAccounts[0] ?? effectiveAccounts[0]!;
+  const defaultAccount =
+    cliFrom ?? email?.default ?? primaryAccounts[0] ?? effectiveAccounts[0] ?? "";
 
   return {
     password,
@@ -121,16 +113,26 @@ function pickAccounts(s: ResolvedEmail, accountFilter?: string): string[] {
   return [accountFilter];
 }
 
+// biome-ignore lint/suspicious/noExplicitAny: imapflow body structure is untyped
 function hasAttachmentParts(structure: any): boolean {
   if (!structure) return false;
   if (structure.disposition === "attachment") return true;
   if (structure.childNodes) {
+    // biome-ignore lint/suspicious/noExplicitAny: imapflow body structure children are untyped
     return structure.childNodes.some((child: any) => hasAttachmentParts(child));
   }
   return false;
 }
 
-function toEnvelope(uid: number, env: any, flags: Set<string>, bodyStructure: any, account = ""): MessageEnvelope {
+function toEnvelope(
+  uid: number,
+  // biome-ignore lint/suspicious/noExplicitAny: imapflow envelope is untyped
+  env: any,
+  flags: Set<string>,
+  // biome-ignore lint/suspicious/noExplicitAny: imapflow bodyStructure is untyped
+  bodyStructure: any,
+  account = "",
+): MessageEnvelope {
   return {
     id: String(uid),
     provider: "email",
@@ -138,6 +140,7 @@ function toEnvelope(uid: number, env: any, flags: Set<string>, bodyStructure: an
     from: env.from?.[0]
       ? { name: env.from[0].name || "", address: env.from[0].address || "" }
       : null,
+    // biome-ignore lint/suspicious/noExplicitAny: imapflow address objects are untyped
     to: (env.to || []).map((a: any) => ({ name: a.name || "", address: a.address || "" })),
     subject: env.subject || "",
     preview: env.subject || "",
@@ -151,6 +154,7 @@ async function fetchMailboxMessages(
   s: ResolvedEmail,
   account: string,
   folder: string,
+  // biome-ignore lint/suspicious/noExplicitAny: imapflow search criteria is untyped
   criteria: any,
   limit: number,
 ): Promise<MessageEnvelope[]> {
@@ -168,14 +172,16 @@ async function fetchMailboxMessages(
         { uid: true, envelope: true, flags: true, bodyStructure: true },
         { uid: true },
       )) {
-        messages.push(toEnvelope(msg.uid, msg.envelope, msg.flags ?? new Set(), msg.bodyStructure, account));
+        messages.push(
+          toEnvelope(msg.uid, msg.envelope, msg.flags ?? new Set(), msg.bodyStructure, account),
+        );
       }
       return messages;
     } finally {
       lock.release();
     }
-  } catch (err: any) {
-    log(`Error for ${account}: ${err.message}`);
+  } catch (err: unknown) {
+    log(`Error for ${account}: ${err instanceof Error ? err.message : String(err)}`);
     return [];
   } finally {
     if (client) await client.logout().catch(() => {});
@@ -195,37 +201,64 @@ async function fetchFullMessage(
     client = await createImapClient(s, account);
     const lock = await client.getMailboxLock(folder);
     try {
-      const raw = await client.fetchOne(uid, { source: true, uid: true, envelope: true, flags: true, bodyStructure: true }, { uid: true });
-      if (!raw || !raw.source) return null;
+      const raw = await client.fetchOne(
+        uid,
+        { source: true, uid: true, envelope: true, flags: true, bodyStructure: true },
+        { uid: true },
+      );
+      if (!raw || typeof raw === "boolean" || !raw.source) return null;
 
       const parsed: ParsedMail = await simpleParser(raw.source);
       const env = raw.envelope;
 
       let body = "";
       let bodyFormat: "text" | "html" = "text";
-      if (prefer === "html" && parsed.html) { body = typeof parsed.html === "string" ? parsed.html : ""; bodyFormat = "html"; }
-      else if (parsed.text) { body = parsed.text; }
-      else if (parsed.html) { body = typeof parsed.html === "string" ? parsed.html : ""; bodyFormat = "html"; }
+      if (prefer === "html" && parsed.html) {
+        body = typeof parsed.html === "string" ? parsed.html : "";
+        bodyFormat = "html";
+      } else if (parsed.text) {
+        body = parsed.text;
+      } else if (parsed.html) {
+        body = typeof parsed.html === "string" ? parsed.html : "";
+        bodyFormat = "html";
+      }
 
       const flags = raw.flags ?? new Set<string>();
       const fromAddr = env?.from?.[0]?.address;
       return {
-        id: String(raw.uid), provider: "email", account,
-        from: env?.from?.[0] ? { name: env.from[0].name || "", address: env.from[0].address || "" } : null,
+        id: String(raw.uid),
+        provider: "email",
+        account,
+        from: env?.from?.[0]
+          ? { name: env.from[0].name || "", address: env.from[0].address || "" }
+          : null,
+        // biome-ignore lint/suspicious/noExplicitAny: imapflow address objects are untyped
         to: (env?.to || []).map((a: any) => ({ name: a.name || "", address: a.address || "" })),
-        subject: env?.subject || "", preview: env?.subject || "",
-        date: env?.date?.toISOString() || "", unread: !flags.has("\\Seen"),
-        hasAttachments: (parsed.attachments || []).length > 0, body, bodyFormat,
+        subject: env?.subject || "",
+        preview: env?.subject || "",
+        date: env?.date?.toISOString() || "",
+        unread: !flags.has("\\Seen"),
+        hasAttachments: (parsed.attachments || []).length > 0,
+        body,
+        bodyFormat,
         attachments: (parsed.attachments || []).map((att) => ({
-          filename: att.filename || "unnamed", contentType: att.contentType || "application/octet-stream",
-          size: att.size || 0, ...(includeAttachments ? { data: att.content.toString("base64") } : {}),
+          filename: att.filename || "unnamed",
+          contentType: att.contentType || "application/octet-stream",
+          size: att.size || 0,
+          ...(includeAttachments ? { data: att.content.toString("base64") } : {}),
         })),
         ...(parsed.messageId ? { rfcMessageId: parsed.messageId } : {}),
         direction: isOutgoingEmail(fromAddr, s) ? "out" : "in",
       };
-    } finally { lock.release(); }
-  } catch (err: any) { log(`Error reading UID ${uid}: ${err.message}`); return null; }
-  finally { if (client) await client.logout().catch(() => {}); }
+    } finally {
+      lock.release();
+    }
+  } catch (err: unknown) {
+    log(`Error reading UID ${uid}: ${err instanceof Error ? err.message : String(err)}`);
+    return null;
+  } finally {
+    if (client) await client.logout().catch(() => {});
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -236,16 +269,17 @@ export async function fetchEmailInbox(
   s: ResolvedEmail,
   accounts: string[],
   folder: string,
+  // biome-ignore lint/suspicious/noExplicitAny: imapflow search criteria is untyped
   criteria?: any,
   limit?: number,
 ): Promise<void> {
   // Cache all accounts (primary and secondary) — display filtering happens at read time
   const fetched: MessageEnvelope[] = [];
   for (const account of accounts) {
-    fetched.push(...await fetchMailboxMessages(s, account, folder, criteria ?? {}, limit ?? 50));
+    fetched.push(...(await fetchMailboxMessages(s, account, folder, criteria ?? {}, limit ?? 50)));
   }
-  const incoming = fetched.filter(m => !isOutgoingEmail(m.from?.address, s));
-  const outgoing = fetched.filter(m => isOutgoingEmail(m.from?.address, s));
+  const incoming = fetched.filter((m) => !isOutgoingEmail(m.from?.address, s));
+  const outgoing = fetched.filter((m) => isOutgoingEmail(m.from?.address, s));
   if (incoming.length > 0) store.upsertMessages(incoming, "in");
   if (outgoing.length > 0) store.upsertMessages(outgoing, "out");
   console.error(`[email] Stored ${incoming.length} in + ${outgoing.length} out envelopes`);
@@ -269,14 +303,27 @@ const emailProvider: MessagingProvider = {
     const from = opts?.account ?? s.defaultAccount;
 
     if (!s.accounts.includes(from)) {
-      return { ok: false, provider: "email", recipientId, error: `"${from}" not in accounts: ${s.accounts.join(", ")}` };
+      return {
+        ok: false,
+        provider: "email",
+        recipientId,
+        error: `"${from}" not in accounts: ${s.accounts.join(", ")}`,
+      };
     }
 
     let finalBody = body;
     let isHtml = opts?.html ?? false;
     if (opts?.file) {
-      try { finalBody = readFileSync(opts.file, "utf-8"); }
-      catch (err: any) { return { ok: false, provider: "email", recipientId, error: `Cannot read "${opts.file}": ${err.message}` }; }
+      try {
+        finalBody = readFileSync(opts.file, "utf-8");
+      } catch (err: unknown) {
+        return {
+          ok: false,
+          provider: "email",
+          recipientId,
+          error: `Cannot read "${opts.file}": ${err instanceof Error ? err.message : String(err)}`,
+        };
+      }
       if (opts.file.endsWith(".html") || opts.file.endsWith(".htm")) isHtml = true;
     }
 
@@ -291,8 +338,15 @@ const emailProvider: MessagingProvider = {
 
     const attachments = (opts?.attachments ?? []).map((filePath) => {
       const resolved = resolve(filePath);
-      if (!existsSync(resolved)) { console.error(`Attachment not found: ${resolved}`); process.exit(1); }
-      return { filename: basename(resolved), path: resolved, contentType: lookup(extname(resolved)) || "application/octet-stream" };
+      if (!existsSync(resolved)) {
+        console.error(`Attachment not found: ${resolved}`);
+        process.exit(1);
+      }
+      return {
+        filename: basename(resolved),
+        path: resolved,
+        contentType: lookup(extname(resolved)) || "application/octet-stream",
+      };
     });
 
     const fromHeader = s.senderName ? `"${s.senderName}" <${from}>` : from;
@@ -308,13 +362,22 @@ const emailProvider: MessagingProvider = {
       ...(opts?.inReplyTo && { inReplyTo: opts.inReplyTo, references: opts.inReplyTo }),
     };
 
-    if (isHtml) { message.html = finalBody; } else { message.text = finalBody; }
+    if (isHtml) {
+      message.html = finalBody;
+    } else {
+      message.text = finalBody;
+    }
 
     try {
       const info = await transporter.sendMail(message);
       return { ok: true, provider: "email", recipientId, messageId: info.messageId };
-    } catch (err: any) {
-      return { ok: false, provider: "email", recipientId, error: err.message };
+    } catch (err: unknown) {
+      return {
+        ok: false,
+        provider: "email",
+        recipientId,
+        error: err instanceof Error ? err.message : String(err),
+      };
     }
   },
 
@@ -324,24 +387,35 @@ const emailProvider: MessagingProvider = {
     const folder = opts?.folder ?? s.defaultFolder;
     const limit = opts?.limit ?? 10;
 
+    // biome-ignore lint/suspicious/noExplicitAny: imapflow search criteria is untyped
     const criteria: any = {};
     if (opts?.unread) criteria.seen = false;
     if (opts?.since) {
       const d = new Date(opts.since);
-      if (isNaN(d.getTime())) { log(`Invalid --since: ${opts.since}`); return []; }
+      if (Number.isNaN(d.getTime())) {
+        log(`Invalid --since: ${opts.since}`);
+        return [];
+      }
       criteria.since = d;
     }
     if (opts?.from) criteria.from = opts.from;
 
     // Fetch and cache all accounts (primary + secondary)
-    const needsFetch = opts?.fresh || !store.isFresh("email", FRESHNESS_MS, accounts.join(","), folder);
+    const needsFetch =
+      opts?.fresh || !store.isFresh("email", FRESHNESS_MS, accounts.join(","), folder);
     if (needsFetch) {
       await fetchEmailInbox(s, accounts, folder, criteria, limit);
     }
 
     // Default view: exclude secondary accounts. --all includes everything.
     const excludeAccounts = opts?.all ? [] : s.secondaryAccounts;
-    return store.getCachedInbox("email", { limit, unread: opts?.unread, since: opts?.since, from: opts?.from, excludeAccounts });
+    return store.getCachedInbox("email", {
+      limit,
+      unread: opts?.unread,
+      since: opts?.since,
+      from: opts?.from,
+      excludeAccounts,
+    });
   },
 
   async read(messageId, opts) {
@@ -349,7 +423,10 @@ const emailProvider: MessagingProvider = {
     const folder = opts?.folder ?? s.defaultFolder;
     const prefer = opts?.prefer ?? "text";
     const uid = parseInt(messageId, 10);
-    if (isNaN(uid) || uid < 1) { console.error(`Invalid message ID: "${messageId}"`); return null; }
+    if (Number.isNaN(uid) || uid < 1) {
+      console.error(`Invalid message ID: "${messageId}"`);
+      return null;
+    }
 
     // Always look up cache to find which account owns this UID —
     // even with --fresh we need the account for the IMAP fetch.
@@ -360,9 +437,16 @@ const emailProvider: MessagingProvider = {
     const account = opts?.account ?? cached?.account ?? s.defaultAccount;
 
     // Fetch from IMAP
-    const msg = await fetchFullMessage(s, account, folder, uid, prefer, opts?.includeAttachments ?? false);
+    const msg = await fetchFullMessage(
+      s,
+      account,
+      folder,
+      uid,
+      prefer,
+      opts?.includeAttachments ?? false,
+    );
     if (msg) {
-      const dir = isOutgoingEmail(msg.from?.address, s) ? "out" : "in";
+      const _dir = isOutgoingEmail(msg.from?.address, s) ? "out" : "in";
       store.upsertFullMessage(msg);
     }
     return msg;
@@ -375,25 +459,27 @@ const emailProvider: MessagingProvider = {
     const limit = opts?.limit ?? 10;
 
     // Use freshness gating like inbox — check if recent fetch exists
-    const needsFetch = opts?.fresh || !store.isFresh("email", FRESHNESS_MS, accounts.join(","), folder);
+    const needsFetch =
+      opts?.fresh || !store.isFresh("email", FRESHNESS_MS, accounts.join(","), folder);
 
     if (!needsFetch) {
       const cached = store.searchCached(query, "email", { limit: opts?.limit, since: opts?.since });
       if (cached.length > 0) return cached;
     }
 
+    // biome-ignore lint/suspicious/noExplicitAny: imapflow search criteria is untyped
     const criteria: any = { or: [{ subject: query }, { body: query }] };
     if (opts?.since) {
       const d = new Date(opts.since);
-      if (!isNaN(d.getTime())) criteria.since = d;
+      if (!Number.isNaN(d.getTime())) criteria.since = d;
     }
 
     const all: MessageEnvelope[] = [];
     for (const account of accounts) {
       const msgs = await fetchMailboxMessages(s, account, folder, criteria, limit);
       if (msgs.length > 0) {
-        const incoming = msgs.filter(m => !isOutgoingEmail(m.from?.address, s));
-        const outgoing = msgs.filter(m => isOutgoingEmail(m.from?.address, s));
+        const incoming = msgs.filter((m) => !isOutgoingEmail(m.from?.address, s));
+        const outgoing = msgs.filter((m) => isOutgoingEmail(m.from?.address, s));
         if (incoming.length > 0) store.upsertMessages(incoming, "in");
         if (outgoing.length > 0) store.upsertMessages(outgoing, "out");
       }

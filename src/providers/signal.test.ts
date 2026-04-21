@@ -4,10 +4,10 @@
  * Tests the REAL processSignalMessages function — not a copy.
  * Integration tests use a __test__ provider prefix to avoid polluting real data.
  */
-import { describe, test, expect, beforeEach } from "bun:test";
-import { processSignalMessages } from "./signal.ts";
+import { beforeEach, describe, expect, test } from "bun:test";
 import * as store from "../store.ts";
 import type { MessageFull } from "../types.ts";
+import { processSignalMessages } from "./signal.ts";
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -16,14 +16,11 @@ import type { MessageFull } from "../types.ts";
 const MY_ACCOUNT = "+46700000000";
 const CONTACT_A = "+46711111111";
 const CONTACT_B = "+46722222222";
-const TEST_PROVIDER = "__test_signal__";
+const _TEST_PROVIDER = "__test_signal__";
 
 let counter = 0;
 
-function makeMsg(
-  fromAddress: string,
-  extras?: Partial<MessageFull>,
-): MessageFull {
+function makeMsg(fromAddress: string, extras?: Partial<MessageFull>): MessageFull {
   counter++;
   return {
     id: `sig-test-${Date.now()}-${counter}`,
@@ -107,8 +104,8 @@ describe("processSignalMessages", () => {
 
     expect(result.incoming).toBe(0);
     expect(result.outgoing).toBe(2);
-    expect(messages[0]!.direction).toBe("out");
-    expect(messages[1]!.direction).toBe("out");
+    expect(messages[0]?.direction).toBe("out");
+    expect(messages[1]?.direction).toBe("out");
   });
 
   test("all incoming batch — no direction mutation", () => {
@@ -155,8 +152,8 @@ describe("processSignalMessages → DB round-trip", () => {
 
     const stored = store.getCachedMessage("signal", id);
     expect(stored).not.toBeNull();
-    expect(stored!.direction).toBe("out");
-    expect(stored!.body).toBe("outgoing integration test");
+    expect(stored?.direction).toBe("out");
+    expect(stored?.body).toBe("outgoing integration test");
   });
 
   test("incoming message stored with direction='in'", () => {
@@ -171,7 +168,7 @@ describe("processSignalMessages → DB round-trip", () => {
 
     const stored = store.getCachedMessage("signal", id);
     expect(stored).not.toBeNull();
-    expect(stored!.direction).toBe("in");
+    expect(stored?.direction).toBe("in");
   });
 
   test("mixed batch — each message has correct direction in DB", () => {
@@ -184,8 +181,8 @@ describe("processSignalMessages → DB round-trip", () => {
 
     processSignalMessages(messages, MY_ACCOUNT);
 
-    expect(store.getCachedMessage("signal", `mix-in-${ts}`)!.direction).toBe("in");
-    expect(store.getCachedMessage("signal", `mix-out-${ts}`)!.direction).toBe("out");
-    expect(store.getCachedMessage("signal", `mix-in2-${ts}`)!.direction).toBe("in");
+    expect(store.getCachedMessage("signal", `mix-in-${ts}`)?.direction).toBe("in");
+    expect(store.getCachedMessage("signal", `mix-out-${ts}`)?.direction).toBe("out");
+    expect(store.getCachedMessage("signal", `mix-in2-${ts}`)?.direction).toBe("in");
   });
 });

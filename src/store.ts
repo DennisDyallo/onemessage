@@ -1,6 +1,6 @@
 import { Database } from "bun:sqlite";
-import { mkdirSync } from "fs";
-import { join } from "path";
+import { mkdirSync } from "node:fs";
+import { join } from "node:path";
 import { getConfigDir } from "./config.ts";
 import type { MessageEnvelope, MessageFull } from "./types.ts";
 
@@ -42,8 +42,16 @@ function getDb(): Database {
     )
   `);
   // Non-destructive migrations for existing databases
-  try { db.run("ALTER TABLE messages ADD COLUMN account TEXT NOT NULL DEFAULT ''"); } catch { /* already exists */ }
-  try { db.run("ALTER TABLE messages ADD COLUMN direction TEXT NOT NULL DEFAULT 'in'"); } catch { /* already exists */ }
+  try {
+    db.run("ALTER TABLE messages ADD COLUMN account TEXT NOT NULL DEFAULT ''");
+  } catch {
+    /* already exists */
+  }
+  try {
+    db.run("ALTER TABLE messages ADD COLUMN direction TEXT NOT NULL DEFAULT 'in'");
+  } catch {
+    /* already exists */
+  }
 
   db.run(`
     CREATE TABLE IF NOT EXISTS fetch_log (
@@ -71,8 +79,9 @@ function getDb(): Database {
   } catch {
     // Column already exists — ignore
   }
-  db.run("CREATE INDEX IF NOT EXISTS idx_messages_thread ON messages(provider, thread_id, date ASC)");
-
+  db.run(
+    "CREATE INDEX IF NOT EXISTS idx_messages_thread ON messages(provider, thread_id, date ASC)",
+  );
 
   db.run(`
     CREATE TABLE IF NOT EXISTS contacts (
@@ -157,10 +166,7 @@ export function upsertMessages(msgs: MessageEnvelope[], direction: "in" | "out" 
  * Direction is read from each message's `direction` field (required on MessageFull).
  * There is no direction parameter — the message is the single source of truth.
  */
-export function upsertFullMessages(
-  msgs: MessageFull[],
-  threadId?: string,
-): void {
+export function upsertFullMessages(msgs: MessageFull[], threadId?: string): void {
   const d = getDb();
   const stmt = d.prepare(`
     INSERT INTO messages
@@ -233,6 +239,7 @@ export function deleteMessages(provider: string, ids: string[]): void {
 // Read
 // ---------------------------------------------------------------------------
 
+// biome-ignore lint/suspicious/noExplicitAny: SQLite rows are untyped record objects
 function rowToEnvelope(row: any): MessageEnvelope {
   return {
     id: row.id,
@@ -251,6 +258,7 @@ function rowToEnvelope(row: any): MessageEnvelope {
   };
 }
 
+// biome-ignore lint/suspicious/noExplicitAny: SQLite rows are untyped record objects
 function rowToFull(row: any): MessageFull {
   return {
     ...rowToEnvelope(row),
@@ -264,11 +272,17 @@ function rowToFull(row: any): MessageFull {
 
 export function getCachedInbox(
   provider: string,
-  opts?: { limit?: number; unread?: boolean; since?: string; from?: string; excludeAccounts?: string[] },
+  opts?: {
+    limit?: number;
+    unread?: boolean;
+    since?: string;
+    from?: string;
+    excludeAccounts?: string[];
+  },
 ): MessageEnvelope[] {
   const d = getDb();
   const conditions = ["provider = ?"];
-  const params: any[] = [provider];
+  const params: (string | number)[] = [provider];
 
   // Exclude thread sub-messages from inbox listing
   conditions.push("thread_id IS NULL");
@@ -281,7 +295,9 @@ export function getCachedInbox(
     params.push(opts.since);
   }
   if (opts?.from) {
-    conditions.push("(json_extract(from_json, '$.address') LIKE ? OR json_extract(from_json, '$.name') LIKE ?)");
+    conditions.push(
+      "(json_extract(from_json, '$.address') LIKE ? OR json_extract(from_json, '$.name') LIKE ?)",
+    );
     params.push(`%${opts.from}%`, `%${opts.from}%`);
   }
   if (opts?.excludeAccounts?.length) {
@@ -294,12 +310,17 @@ export function getCachedInbox(
   const sql = `SELECT * FROM messages WHERE ${conditions.join(" AND ")} ORDER BY date DESC LIMIT ?`;
   params.push(limit);
 
-  return d.prepare(sql).all(...params).map(rowToEnvelope);
+  return d
+    .prepare(sql)
+    .all(...params)
+    .map(rowToEnvelope);
 }
 
 export function getCachedMessage(provider: string, messageId: string): MessageFull | null {
   const d = getDb();
-  const row = d.prepare("SELECT * FROM messages WHERE provider = ? AND id = ?").get(provider, messageId);
+  const row = d
+    .prepare("SELECT * FROM messages WHERE provider = ? AND id = ?")
+    .get(provider, messageId);
   if (!row) return null;
   return rowToFull(row);
 }
@@ -323,7 +344,7 @@ export function getPreviousOutboundRecipient(
     .prepare(
       `SELECT from_json, to_json FROM messages
        WHERE provider = ? AND subject LIKE ?
-       ORDER BY date DESC LIMIT 50`
+       ORDER BY date DESC LIMIT 50`,
     )
     .all(provider, `%${normalised}%`) as Array<{ from_json: string; to_json: string }>;
 
@@ -355,7 +376,7 @@ export function getThreadMessages(
   const limit = opts?.limit ?? 100;
   const rows = d
     .prepare(
-      "SELECT * FROM messages WHERE provider = ? AND thread_id = ? ORDER BY date ASC LIMIT ?"
+      "SELECT * FROM messages WHERE provider = ? AND thread_id = ? ORDER BY date ASC LIMIT ?",
     )
     .all(provider, threadId, limit);
   return rows.map(rowToFull);
@@ -368,7 +389,7 @@ export function searchCached(
 ): MessageEnvelope[] {
   const d = getDb();
   const conditions: string[] = [];
-  const params: any[] = [];
+  const params: (string | number)[] = [];
 
   if (provider) {
     conditions.push("provider = ?");
@@ -387,7 +408,10 @@ export function searchCached(
   const sql = `SELECT * FROM messages WHERE ${conditions.join(" AND ")} ORDER BY date DESC LIMIT ?`;
   params.push(limit);
 
-  return d.prepare(sql).all(...params).map(rowToEnvelope);
+  return d
+    .prepare(sql)
+    .all(...params)
+    .map(rowToEnvelope);
 }
 
 // ---------------------------------------------------------------------------
@@ -396,9 +420,9 @@ export function searchCached(
 
 export function isFresh(provider: string, maxAgeMs: number, account = "", folder = ""): boolean {
   const d = getDb();
-  const row: any = d.prepare(
-    "SELECT fetched_at FROM fetch_log WHERE provider = ? AND account = ? AND folder = ?"
-  ).get(provider, account, folder);
+  const row = d
+    .prepare("SELECT fetched_at FROM fetch_log WHERE provider = ? AND account = ? AND folder = ?")
+    .get(provider, account, folder) as { fetched_at: string } | null;
 
   if (!row) return false;
   const fetchedAt = new Date(row.fetched_at).getTime();
@@ -468,9 +492,7 @@ export function backfillMessageNames(provider: string): number {
  * Returns a map of address → name for all known senders in the given provider.
  * Useful for enriching outgoing messages where the recipient name is missing.
  */
-export function getContactNamesByAddress(
-  provider: string,
-): Map<string, string> {
+export function getContactNamesByAddress(provider: string): Map<string, string> {
   const d = getDb();
   const rows = d
     .prepare(
@@ -481,7 +503,7 @@ export function getContactNamesByAddress(
       WHERE provider = ? AND direction = 'in'
         AND json_extract(from_json, '$.name') IS NOT NULL
         AND json_extract(from_json, '$.name') != ''
-        AND json_extract(from_json, '$.address') NOT LIKE 'group:%'`
+        AND json_extract(from_json, '$.address') NOT LIKE 'group:%'`,
     )
     .all(provider) as Array<{ address: string; name: string }>;
 
@@ -500,7 +522,7 @@ export function getContacts(
 ): Array<{ address: string; name: string; messageCount: number; lastSeen: string }> {
   const d = getDb();
   const conditions = ["c.provider = ?"];
-  const params: any[] = [provider];
+  const params: (string | number)[] = [provider];
 
   if (opts?.search) {
     conditions.push("c.name LIKE ?");
@@ -531,5 +553,10 @@ export function getContacts(
     LIMIT ?
   `;
 
-  return d.prepare(sql).all(provider, ...params, limit) as any[];
+  return d.prepare(sql).all(provider, ...params, limit) as {
+    address: string;
+    name: string;
+    messageCount: number;
+    lastSeen: string;
+  }[];
 }

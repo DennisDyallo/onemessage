@@ -1,8 +1,8 @@
-import { registerProvider } from "../registry.ts";
 import { loadConfig } from "../config.ts";
+import { registerProvider } from "../registry.ts";
 import * as store from "../store.ts";
-import { cliExists, runCli, readFromCacheOrFail, cacheSentMessage } from "./shared.ts";
-import type { MessagingProvider, MessageFull } from "../types.ts";
+import type { MessageFull, MessagingProvider } from "../types.ts";
+import { cacheSentMessage, cliExists, readFromCacheOrFail, runCli } from "./shared.ts";
 
 // ---------------------------------------------------------------------------
 // Config
@@ -76,8 +76,12 @@ function toSmsMessage(opts: {
   return {
     id,
     provider: "sms",
-    from: direction === "in" ? { name: contactName, address: contact } : { name: "me", address: "me" },
-    to: direction === "in" ? [{ name: "me", address: "me" }] : [{ name: contactName, address: contact }],
+    from:
+      direction === "in" ? { name: contactName, address: contact } : { name: "me", address: "me" },
+    to:
+      direction === "in"
+        ? [{ name: "me", address: "me" }]
+        : [{ name: contactName, address: contact }],
     preview: body.slice(0, 100),
     body,
     bodyFormat: "text",
@@ -89,7 +93,11 @@ function toSmsMessage(opts: {
   };
 }
 
-function fetchSmsConversations(opts?: { unread?: boolean; fresh?: boolean; from?: string }): MessageFull[] {
+function fetchSmsConversations(opts?: {
+  unread?: boolean;
+  fresh?: boolean;
+  from?: string;
+}): MessageFull[] {
   const args: string[] = ["--json"];
   if (opts?.unread) args.push("--unread");
   if (opts?.fresh) args.push("--refresh");
@@ -110,15 +118,17 @@ function fetchSmsConversations(opts?: { unread?: boolean; fresh?: boolean; from?
   try {
     const contactNames = store.getContactNamesByAddress("sms");
     const convs: SmsConversation[] = JSON.parse(result.stdout);
-    return convs.map((c) => toSmsMessage({
-      id: String(c.thread_id),
-      contact: c.contact,
-      body: c.preview,
-      timestamp: c.timestamp,
-      direction: c.direction,
-      read: c.read,
-      contactNames,
-    }));
+    return convs.map((c) =>
+      toSmsMessage({
+        id: String(c.thread_id),
+        contact: c.contact,
+        body: c.preview,
+        timestamp: c.timestamp,
+        direction: c.direction,
+        read: c.read,
+        contactNames,
+      }),
+    );
   } catch {
     process.stderr.write("[sms] Failed to parse kdeconnect-read-sms output\n");
     return [];
@@ -147,15 +157,17 @@ function fetchThreadHistory(threadId: number): MessageFull[] {
     if (!history.messages || history.messages.length === 0) return [];
 
     const contactNames = store.getContactNamesByAddress("sms");
-    return history.messages.map((m) => toSmsMessage({
-      id: `${history.thread_id}:${m.sub_id}`,
-      contact: history.contact,
-      body: m.body,
-      timestamp: m.timestamp,
-      direction: m.direction,
-      read: m.read,
-      contactNames,
-    }));
+    return history.messages.map((m) =>
+      toSmsMessage({
+        id: `${history.thread_id}:${m.sub_id}`,
+        contact: history.contact,
+        body: m.body,
+        timestamp: m.timestamp,
+        direction: m.direction,
+        read: m.read,
+        contactNames,
+      }),
+    );
   } catch {
     process.stderr.write("[sms] Failed to parse thread history output\n");
     return [];
@@ -173,7 +185,8 @@ function fetchThreadHistory(threadId: number): MessageFull[] {
 function threadToFullMessage(messages: MessageFull[], threadId: string): MessageFull {
   // Determine the contact from the first incoming message, or first message at all
   const firstIncoming = messages.find((m) => m.direction === "in");
-  const contact = firstIncoming?.from ?? messages[0]?.to?.[0] ?? { name: "unknown", address: "unknown" };
+  const contact = firstIncoming?.from ??
+    messages[0]?.to?.[0] ?? { name: "unknown", address: "unknown" };
 
   const body = messages
     .map((m) => {
@@ -232,14 +245,15 @@ const smsProvider: MessagingProvider = {
   async send(recipientId, body, opts) {
     const settings = resolveSettings(opts?.providerFlags);
     if (!settings) {
-      return { ok: false, provider: "sms", recipientId, error: "SMS not configured. Run: onemessage auth sms" };
+      return {
+        ok: false,
+        provider: "sms",
+        recipientId,
+        error: "SMS not configured. Run: onemessage auth sms",
+      };
     }
 
-    const args = [
-      "--name", settings.device,
-      "--send-sms", body,
-      "--destination", recipientId,
-    ];
+    const args = ["--name", settings.device, "--send-sms", body, "--destination", recipientId];
 
     if (opts?.attachments) {
       for (const attachment of opts.attachments) {
@@ -259,7 +273,8 @@ const smsProvider: MessagingProvider = {
       });
       return { ok: true, provider: "sms", recipientId };
     } else {
-      const error = result.stderr || result.stdout || `kdeconnect-cli exited with code ${result.exitCode}`;
+      const error =
+        result.stderr || result.stdout || `kdeconnect-cli exited with code ${result.exitCode}`;
       return { ok: false, provider: "sms", recipientId, error };
     }
   },
@@ -295,7 +310,7 @@ const smsProvider: MessagingProvider = {
     // If it's a plain number, it's a thread_id — fetch full thread history
     if (!messageId.includes(":") && cliExists("kdeconnect-read-sms")) {
       const threadId = parseInt(messageId, 10);
-      if (!isNaN(threadId)) {
+      if (!Number.isNaN(threadId)) {
         // Check cache first (unless fresh requested)
         if (!opts?.fresh) {
           const cached = store.getThreadMessages("sms", messageId);
@@ -312,7 +327,9 @@ const smsProvider: MessagingProvider = {
           const outgoing = messages.filter((m) => m.direction === "out");
           if (incoming.length > 0) store.upsertFullMessages(incoming, messageId);
           if (outgoing.length > 0) store.upsertFullMessages(outgoing, messageId);
-          console.error(`[sms] Stored ${incoming.length} in + ${outgoing.length} out messages (thread ${threadId})`);
+          console.error(
+            `[sms] Stored ${incoming.length} in + ${outgoing.length} out messages (thread ${threadId})`,
+          );
           return threadToFullMessage(messages, messageId);
         }
       }

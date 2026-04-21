@@ -11,7 +11,7 @@
  * 2. The --fresh branch calls fetchThreadMessages and upserts results
  * 3. Edge cases (media-only, no text)
  */
-import { describe, test, expect } from "bun:test";
+import { describe, expect, test } from "bun:test";
 import type { MessageFull } from "../types.ts";
 
 // ---------------------------------------------------------------------------
@@ -197,14 +197,22 @@ describe("Instagram read() --fresh path", () => {
       fetchedIds.push(id);
       return [
         readMessageToFull(
-          { id: "sub-001", itemType: "text", text: "Hi", userId: "u1", username: "alice", timestamp: NOW, isOutgoing: false },
+          {
+            id: "sub-001",
+            itemType: "text",
+            text: "Hi",
+            userId: "u1",
+            username: "alice",
+            timestamp: NOW,
+            isOutgoing: false,
+          },
           id,
           "alice",
         ),
       ];
     };
 
-    const upsertFullMessages = (msgs: MessageFull[], dir: "in" | "out", threadId: string) => {
+    const upsertFullMessages = (msgs: MessageFull[], dir: "in" | "out", _threadId: string) => {
       if (dir === "in") upsertedIn.push(...msgs);
       else upsertedOut.push(...msgs);
     };
@@ -224,14 +232,22 @@ describe("Instagram read() --fresh path", () => {
     const fetchThreadMessages = async (id: string): Promise<MessageFull[]> => {
       return [
         readMessageToFull(
-          { id: "out-001", itemType: "text", text: "Sent by me", userId: "self", username: "me", timestamp: NOW, isOutgoing: true },
+          {
+            id: "out-001",
+            itemType: "text",
+            text: "Sent by me",
+            userId: "self",
+            username: "me",
+            timestamp: NOW,
+            isOutgoing: true,
+          },
           id,
           "alice",
         ),
       ];
     };
 
-    const upsertFullMessages = (msgs: MessageFull[], dir: "in" | "out", threadId: string) => {
+    const upsertFullMessages = (msgs: MessageFull[], dir: "in" | "out", _threadId: string) => {
       if (dir === "in") upsertedIn.push(...msgs);
       else upsertedOut.push(...msgs);
     };
@@ -240,7 +256,7 @@ describe("Instagram read() --fresh path", () => {
 
     expect(upsertedIn).toHaveLength(0);
     expect(upsertedOut).toHaveLength(1);
-    expect(upsertedOut[0]!.direction).toBe("out");
+    expect(upsertedOut[0]?.direction).toBe("out");
   });
 
   test("empty fetch result does not upsert anything", async () => {
@@ -248,7 +264,7 @@ describe("Instagram read() --fresh path", () => {
     const upsertedOut: MessageFull[] = [];
 
     const fetchThreadMessages = async (_id: string): Promise<MessageFull[]> => [];
-    const upsertFullMessages = (msgs: MessageFull[], dir: "in" | "out", threadId: string) => {
+    const upsertFullMessages = (msgs: MessageFull[], dir: "in" | "out", _threadId: string) => {
       if (dir === "in") upsertedIn.push(...msgs);
       else upsertedOut.push(...msgs);
     };
@@ -266,17 +282,35 @@ describe("Instagram read() --fresh path", () => {
     const fetchThreadMessages = async (id: string): Promise<MessageFull[]> => {
       return [
         readMessageToFull(
-          { id: "mix-in-1", itemType: "text", text: "Incoming", userId: "u1", username: "alice", timestamp: NOW, isOutgoing: false },
-          id, "alice",
+          {
+            id: "mix-in-1",
+            itemType: "text",
+            text: "Incoming",
+            userId: "u1",
+            username: "alice",
+            timestamp: NOW,
+            isOutgoing: false,
+          },
+          id,
+          "alice",
         ),
         readMessageToFull(
-          { id: "mix-out-1", itemType: "text", text: "Outgoing", userId: "self", username: "me", timestamp: NOW, isOutgoing: true },
-          id, "alice",
+          {
+            id: "mix-out-1",
+            itemType: "text",
+            text: "Outgoing",
+            userId: "self",
+            username: "me",
+            timestamp: NOW,
+            isOutgoing: true,
+          },
+          id,
+          "alice",
         ),
       ];
     };
 
-    const upsertFullMessages = (msgs: MessageFull[], dir: "in" | "out", threadId: string) => {
+    const upsertFullMessages = (msgs: MessageFull[], dir: "in" | "out", _threadId: string) => {
       if (dir === "in") upsertedIn.push(...msgs);
       else upsertedOut.push(...msgs);
     };
@@ -285,7 +319,7 @@ describe("Instagram read() --fresh path", () => {
 
     expect(upsertedIn).toHaveLength(1);
     expect(upsertedOut).toHaveLength(1);
-    expect(upsertedIn[0]!.direction).toBe("in");
-    expect(upsertedOut[0]!.direction).toBe("out");
+    expect(upsertedIn[0]?.direction).toBe("in");
+    expect(upsertedOut[0]?.direction).toBe("out");
   });
 });

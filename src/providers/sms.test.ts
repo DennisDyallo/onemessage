@@ -8,7 +8,7 @@
  * These tests verify the mapping and that from/to contacts are
  * set correctly for each direction.
  */
-import { describe, test, expect } from "bun:test";
+import { describe, expect, test } from "bun:test";
 import type { MessageFull } from "../types.ts";
 
 // ---------------------------------------------------------------------------
@@ -29,12 +29,12 @@ function toSmsMessage(opts: {
   return {
     id,
     provider: "sms",
-    from: direction === "in"
-      ? { name: contactName, address: contact }
-      : { name: "me", address: "me" },
-    to: direction === "in"
-      ? [{ name: "me", address: "me" }]
-      : [{ name: contactName, address: contact }],
+    from:
+      direction === "in" ? { name: contactName, address: contact } : { name: "me", address: "me" },
+    to:
+      direction === "in"
+        ? [{ name: "me", address: "me" }]
+        : [{ name: contactName, address: contact }],
     preview: body.slice(0, 100),
     body,
     bodyFormat: "text",

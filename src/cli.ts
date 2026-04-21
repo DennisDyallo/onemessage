@@ -4,8 +4,8 @@ import { Command } from "commander";
 // Import providers — each self-registers via registerProvider()
 import "./providers/index.ts";
 
-import { getProviderOrExit, getAllProviders } from "./registry.ts";
-import { loadConfig, getConfigPath } from "./config.ts";
+import { getConfigPath, loadConfig } from "./config.ts";
+import { getAllProviders, getProviderOrExit } from "./registry.ts";
 import { getCachedMessage, getContacts, getPreviousOutboundRecipient } from "./store.ts";
 import type { MessageEnvelope, MessageFull } from "./types.ts";
 
@@ -30,7 +30,7 @@ function formatDate(iso: string): string {
 
 function truncate(s: string, max: number): string {
   const clean = s.replace(/\n/g, " ");
-  return clean.length <= max ? clean : clean.slice(0, max - 1) + "…";
+  return clean.length <= max ? clean : `${clean.slice(0, max - 1)}…`;
 }
 
 function pad(s: string, len: number): string {
@@ -39,7 +39,7 @@ function pad(s: string, len: number): string {
 
 function printEnvelopes(messages: MessageEnvelope[], json: boolean): void {
   if (json) {
-    process.stdout.write(JSON.stringify(messages, null, 2) + "\n");
+    process.stdout.write(`${JSON.stringify(messages, null, 2)}\n`);
     return;
   }
   if (messages.length === 0) {
@@ -58,7 +58,7 @@ function printEnvelopes(messages: MessageEnvelope[], json: boolean): void {
 
 function printMessage(msg: MessageFull, json: boolean): void {
   if (json) {
-    process.stdout.write(JSON.stringify(msg, null, 2) + "\n");
+    process.stdout.write(`${JSON.stringify(msg, null, 2)}\n`);
     return;
   }
   console.log();
@@ -78,7 +78,7 @@ function printMessage(msg: MessageFull, json: boolean): void {
  * Collect provider-specific CLI flags into a providerFlags object.
  * Only includes keys that were actually passed (not undefined).
  */
-function collectProviderFlags(opts: any): Record<string, unknown> | undefined {
+function collectProviderFlags(opts: Record<string, unknown>): Record<string, unknown> | undefined {
   const flags: Record<string, unknown> = {};
   if (opts.password !== undefined) flags.password = opts.password;
   if (opts.sender !== undefined) flags.from = opts.sender;
@@ -134,7 +134,7 @@ addProviderFlags(
     .option("--bcc <addresses...>", "BCC recipients (email)")
     .option("--reply-to <address>", "Reply-To address (email)")
     .option("--account <id>", "Sender account (overrides default)")
-    .option("--json", "Output JSON", false)
+    .option("--json", "Output JSON", false),
 ).action(async (providerName, recipientId, body, opts) => {
   const provider = getProviderOrExit(providerName);
 
@@ -156,9 +156,11 @@ addProviderFlags(
   });
 
   if (opts.json) {
-    process.stdout.write(JSON.stringify(result, null, 2) + "\n");
+    process.stdout.write(`${JSON.stringify(result, null, 2)}\n`);
   } else if (result.ok) {
-    console.log(`  ✓ sent via ${result.provider} → ${result.recipientId}${result.messageId ? ` (${result.messageId})` : ""}`);
+    console.log(
+      `  ✓ sent via ${result.provider} → ${result.recipientId}${result.messageId ? ` (${result.messageId})` : ""}`,
+    );
   } else {
     console.error(`  ✗ failed: ${result.error}`);
     process.exit(1);
@@ -176,7 +178,9 @@ program
     const me = config.me;
     if (!me) {
       console.error('  ✗ "me" not configured. Add to config.json:');
-      console.error('    { "me": { "provider": "telegram-bot", "recipientId": "<your_chat_id>" } }');
+      console.error(
+        '    { "me": { "provider": "telegram-bot", "recipientId": "<your_chat_id>" } }',
+      );
       process.exit(1);
     }
 
@@ -213,7 +217,7 @@ addProviderFlags(
     .option("--html", "Treat body as HTML", false)
     .option("-a, --attach <files...>", "Attach file(s)")
     .option("--account <id>", "Sender account (overrides default)")
-    .option("--json", "Output JSON", false)
+    .option("--json", "Output JSON", false),
 ).action(async (providerName, messageId, body, opts) => {
   const provider = getProviderOrExit(providerName);
 
@@ -248,7 +252,9 @@ addProviderFlags(
     replyTo = senderAddress;
     const emailCfg = loadConfig()?.email;
     const ownAccounts: string[] = emailCfg?.accounts ?? [];
-    const previousAlias = subject ? getPreviousOutboundRecipient("email", subject, ownAccounts) : null;
+    const previousAlias = subject
+      ? getPreviousOutboundRecipient("email", subject, ownAccounts)
+      : null;
     if (previousAlias) recipient = previousAlias;
   }
 
@@ -264,9 +270,11 @@ addProviderFlags(
   });
 
   if (opts.json) {
-    process.stdout.write(JSON.stringify(result, null, 2) + "\n");
+    process.stdout.write(`${JSON.stringify(result, null, 2)}\n`);
   } else if (result.ok) {
-    console.log(`  ✓ replied via ${result.provider} → ${recipient}${result.messageId ? ` (${result.messageId})` : ""}`);
+    console.log(
+      `  ✓ replied via ${result.provider} → ${recipient}${result.messageId ? ` (${result.messageId})` : ""}`,
+    );
   } else {
     console.error(`  ✗ reply failed: ${result.error}`);
     process.exit(1);
@@ -287,7 +295,7 @@ addProviderFlags(
     .option("--account <id>", "Specific account")
     .option("--fresh", "Force re-fetch from source (bypass cache)", false)
     .option("--all", "Include secondary-account emails", false)
-    .option("--json", "Output JSON", false)
+    .option("--json", "Output JSON", false),
 ).action(async (providerName, opts) => {
   const limit = parseInt(opts.limit, 10) || 10;
   const providerFlags = collectProviderFlags(opts);
@@ -305,14 +313,20 @@ addProviderFlags(
   for (const provider of providers) {
     try {
       const messages = await provider.inbox({
-        limit, unread: opts.unread, since: opts.since,
-        from: opts.from, folder: opts.folder, account: opts.account,
-        fresh: opts.fresh, all: opts.all,
+        limit,
+        unread: opts.unread,
+        since: opts.since,
+        from: opts.from,
+        folder: opts.folder,
+        account: opts.account,
+        fresh: opts.fresh,
+        all: opts.all,
         providerFlags,
       });
       allMessages.push(...messages);
-    } catch (err: any) {
-      process.stderr.write(`[${provider.name}] Error: ${err.message}\n`);
+    } catch (err: unknown) {
+      const message = err instanceof Error ? err.message : String(err);
+      process.stderr.write(`[${provider.name}] Error: ${message}\n`);
     }
   }
 
@@ -347,7 +361,7 @@ addProviderFlags(
     .option("--attachments", "Include attachment data", false)
     .option("--fresh", "Force re-fetch from source (bypass cache)", false)
     .option("--thread", "Return all sub-messages for a thread ID", false)
-    .option("--json", "Output JSON", false)
+    .option("--json", "Output JSON", false),
 ).action(async (providerName, messageId, opts) => {
   const provider = getProviderOrExit(providerName);
 
@@ -375,7 +389,10 @@ addProviderFlags(
     providerFlags: collectProviderFlags(opts),
   });
 
-  if (!msg) { console.error(`Message "${messageId}" not found.`); process.exit(1); }
+  if (!msg) {
+    console.error(`Message "${messageId}" not found.`);
+    process.exit(1);
+  }
   printMessage(msg, opts.json);
 });
 
@@ -390,7 +407,7 @@ addProviderFlags(
     .option("--account <id>", "Specific account")
     .option("--since <date>", "Messages since date")
     .option("--fresh", "Force re-fetch from source (bypass cache)", false)
-    .option("--json", "Output JSON", false)
+    .option("--json", "Output JSON", false),
 ).action(async (providerNameOrQuery, queryOrUndefined, opts) => {
   let providerName: string | undefined;
   let query: string;
@@ -413,12 +430,19 @@ addProviderFlags(
   for (const provider of providers) {
     if (!provider.search) continue;
     try {
-      allMessages.push(...await provider.search(query, {
-        limit, folder: opts.folder, account: opts.account, since: opts.since,
-        fresh: opts.fresh, providerFlags,
-      }));
-    } catch (err: any) {
-      process.stderr.write(`[${provider.name}] Search error: ${err.message}\n`);
+      allMessages.push(
+        ...(await provider.search(query, {
+          limit,
+          folder: opts.folder,
+          account: opts.account,
+          since: opts.since,
+          fresh: opts.fresh,
+          providerFlags,
+        })),
+      );
+    } catch (err: unknown) {
+      const message = err instanceof Error ? err.message : String(err);
+      process.stderr.write(`[${provider.name}] Search error: ${message}\n`);
     }
   }
 
@@ -439,6 +463,7 @@ program
 
     if (provider.isConfigured()) {
       console.log(`  ✓ ${providerName} is configured.`);
+      // biome-ignore lint/suspicious/noExplicitAny: dynamic provider key access on config
       const providerConfig = (config as any)[providerName];
       if (providerConfig?.accounts) {
         const accounts: string[] = providerConfig.accounts;
@@ -478,11 +503,19 @@ program
           console.log(`      "telegramBot": {`);
           console.log(`        "botToken": "123456:ABC-your-token"`);
           console.log(`      },`);
-          console.log(`      "me": { "provider": "telegram-bot", "recipientId": "<your_chat_id>" }`);
+          console.log(
+            `      "me": { "provider": "telegram-bot", "recipientId": "<your_chat_id>" }`,
+          );
           console.log(`    }\n`);
-          console.log(`  Or pass per-call: onemessage send telegram-bot <chat_id> "hi" --bot-token "123456:ABC..."\n`);
-          console.log(`  Find your chat_id: message your bot, then run: onemessage inbox telegram-bot\n`);
-          console.log(`  Once "me" is set: onemessage me "hello"  (send to yourself via any provider)\n`);
+          console.log(
+            `  Or pass per-call: onemessage send telegram-bot <chat_id> "hi" --bot-token "123456:ABC..."\n`,
+          );
+          console.log(
+            `  Find your chat_id: message your bot, then run: onemessage inbox telegram-bot\n`,
+          );
+          console.log(
+            `  Once "me" is set: onemessage me "hello"  (send to yourself via any provider)\n`,
+          );
           break;
         case "sms":
           console.log(`  Requires kdeconnect-cli and a paired Android phone.\n`);
@@ -536,20 +569,22 @@ program
         name: p.name,
         displayName: p.displayName,
         configured: p.isConfigured(),
+        // biome-ignore lint/suspicious/noExplicitAny: dynamic provider key access on config
         accounts: ((config as any)[p.name]?.accounts as string[]) ?? [],
       }));
-      process.stdout.write(JSON.stringify(data, null, 2) + "\n");
+      process.stdout.write(`${JSON.stringify(data, null, 2)}\n`);
       return;
     }
 
     console.log();
     for (const p of providers) {
       const icon = p.isConfigured() ? "✓" : "·";
+      // biome-ignore lint/suspicious/noExplicitAny: dynamic provider key access on config
       const providerConfig = (config as any)[p.name];
       if (providerConfig?.accounts && Array.isArray(providerConfig.accounts)) {
         const defaultAcct = providerConfig.default;
         const summary = providerConfig.accounts
-          .map((a: string) => a === defaultAcct ? `${a} (default)` : a)
+          .map((a: string) => (a === defaultAcct ? `${a} (default)` : a))
           .join(", ");
         console.log(`  ${pad(p.name, 12)} ${icon}  ${summary}`);
       } else if (p.isConfigured()) {
@@ -579,7 +614,7 @@ program
     });
 
     if (opts.json) {
-      process.stdout.write(JSON.stringify(contacts, null, 2) + "\n");
+      process.stdout.write(`${JSON.stringify(contacts, null, 2)}\n`);
       return;
     }
 
@@ -601,9 +636,7 @@ program
 
 // ---- daemon ---------------------------------------------------------------
 
-const daemonCmd = program
-  .command("daemon")
-  .description("Manage the onemessage background daemon");
+const daemonCmd = program.command("daemon").description("Manage the onemessage background daemon");
 
 daemonCmd
   .command("start")
@@ -619,7 +652,7 @@ daemonCmd
   .description("Stop the running daemon")
   .action(async () => {
     const { DAEMON_PID } = await import("./daemon-shared.ts");
-    const { existsSync, readFileSync, unlinkSync } = await import("fs");
+    const { existsSync, readFileSync, unlinkSync } = await import("node:fs");
 
     if (!existsSync(DAEMON_PID)) {
       console.log("  Daemon is not running (no PID file).");
@@ -628,7 +661,7 @@ daemonCmd
 
     const pidStr = readFileSync(DAEMON_PID, "utf-8").trim();
     const pid = parseInt(pidStr, 10);
-    if (isNaN(pid)) {
+    if (Number.isNaN(pid)) {
       console.error("  Invalid PID file. Removing.");
       unlinkSync(DAEMON_PID);
       return;
@@ -640,7 +673,9 @@ daemonCmd
       console.log(`  Sent SIGTERM to daemon (pid=${pid}).`);
     } catch {
       console.log("  Daemon is not running. Cleaning up stale PID file.");
-      try { unlinkSync(DAEMON_PID); } catch {}
+      try {
+        unlinkSync(DAEMON_PID);
+      } catch {}
     }
   });
 
@@ -649,7 +684,7 @@ daemonCmd
   .description("Restart the daemon (launchctl if managed, otherwise stop + start)")
   .action(async () => {
     const PLIST = `${process.env.HOME}/Library/LaunchAgents/com.onemessage.daemon.plist`;
-    const { existsSync } = await import("fs");
+    const { existsSync } = await import("node:fs");
     const { DAEMON_SOCK, isDaemonRunning } = await import("./daemon-shared.ts");
 
     if (existsSync(PLIST)) {
@@ -674,27 +709,37 @@ daemonCmd
 
     // Not managed by launchd — stop + spawn manually
     const { DAEMON_PID } = await import("./daemon-shared.ts");
-    const { readFileSync, unlinkSync } = await import("fs");
+    const { readFileSync, unlinkSync } = await import("node:fs");
     if (existsSync(DAEMON_PID)) {
       const pid = parseInt(readFileSync(DAEMON_PID, "utf-8").trim(), 10);
-      if (!isNaN(pid)) {
-        try { process.kill(pid, "SIGTERM"); console.log(`  Sent SIGTERM to daemon (pid=${pid}).`); } catch {}
+      if (!Number.isNaN(pid)) {
+        try {
+          process.kill(pid, "SIGTERM");
+          console.log(`  Sent SIGTERM to daemon (pid=${pid}).`);
+        } catch {}
       }
     }
     const deadline = Date.now() + 5000;
     while (isDaemonRunning() && Date.now() < deadline) {
       await new Promise((r) => setTimeout(r, 200));
     }
-    try { if (existsSync(DAEMON_SOCK)) unlinkSync(DAEMON_SOCK); } catch {}
-    const { join, dirname } = await import("path");
+    try {
+      if (existsSync(DAEMON_SOCK)) unlinkSync(DAEMON_SOCK);
+    } catch {}
+    const { join, dirname } = await import("node:path");
     const PROJECT_ROOT = join(dirname(new URL(import.meta.url).pathname), "..");
     const proc = Bun.spawn(["bun", "run", "src/daemon.ts"], {
-      cwd: PROJECT_ROOT, stdio: ["ignore", "ignore", "ignore"], detached: true,
+      cwd: PROJECT_ROOT,
+      stdio: ["ignore", "ignore", "ignore"],
+      detached: true,
     });
     proc.unref();
     let waited2 = 0;
     while (waited2 < 10_000) {
-      if (existsSync(DAEMON_SOCK) && isDaemonRunning()) { console.log("  Daemon restarted."); return; }
+      if (existsSync(DAEMON_SOCK) && isDaemonRunning()) {
+        console.log("  Daemon restarted.");
+        return;
+      }
       await new Promise((r) => setTimeout(r, 200));
       waited2 += 200;
     }
@@ -710,7 +755,7 @@ daemonCmd
 
     if (!isDaemonRunning()) {
       if (opts.json) {
-        process.stdout.write(JSON.stringify({ running: false }) + "\n");
+        process.stdout.write(`${JSON.stringify({ running: false })}\n`);
       } else {
         console.log("  Daemon is not running.");
       }
@@ -720,11 +765,16 @@ daemonCmd
     try {
       const res = await daemonRequest({ type: "status" });
       if (opts.json) {
-        process.stdout.write(JSON.stringify(res.data, null, 2) + "\n");
+        process.stdout.write(`${JSON.stringify(res.data, null, 2)}\n`);
         return;
       }
 
-      const d = res.data as any;
+      const d = res.data as {
+        pid: number;
+        uptime: number;
+        whatsapp: { connected: boolean; groups: number; queuedMessages: number };
+        polling: Record<string, { lastPoll: string | null; enabled: boolean }>;
+      };
       console.log();
       console.log(`  Daemon running (pid=${d.pid}, uptime=${d.uptime}s)`);
       console.log();
@@ -732,21 +782,24 @@ daemonCmd
       // WhatsApp
       const wa = d.whatsapp;
       const waIcon = wa.connected ? "+" : "-";
-      console.log(`  ${waIcon} whatsapp: ${wa.connected ? "connected" : "disconnected"} (${wa.groups} groups, ${wa.queuedMessages} queued)`);
+      console.log(
+        `  ${waIcon} whatsapp: ${wa.connected ? "connected" : "disconnected"} (${wa.groups} groups, ${wa.queuedMessages} queued)`,
+      );
 
       // Polling providers
-      const polling = d.polling as Record<string, { lastPoll: string | null; enabled: boolean }>;
+      const polling = d.polling;
       for (const [name, info] of Object.entries(polling)) {
         const icon = info.enabled ? "+" : "-";
         const last = info.lastPoll ? `last: ${info.lastPoll}` : "never polled";
         console.log(`  ${icon} ${name}: ${info.enabled ? "enabled" : "disabled"} (${last})`);
       }
       console.log();
-    } catch (err: any) {
+    } catch (err: unknown) {
+      const message = err instanceof Error ? err.message : String(err);
       if (opts.json) {
-        process.stdout.write(JSON.stringify({ running: true, error: err.message }) + "\n");
+        process.stdout.write(`${JSON.stringify({ running: true, error: message })}\n`);
       } else {
-        console.error(`  Daemon is running but not responding: ${err.message}`);
+        console.error(`  Daemon is running but not responding: ${message}`);
       }
     }
   });

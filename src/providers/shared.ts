@@ -58,11 +58,7 @@ export interface RunCliOptions {
  *
  * Used by signal-cli, kdeconnect-cli, and future CLI-based providers.
  */
-export function runCli(
-  cmd: string,
-  args: string[],
-  opts?: RunCliOptions,
-): CliResult {
+export function runCli(cmd: string, args: string[], opts?: RunCliOptions): CliResult {
   const result = Bun.spawnSync([cmd, ...args], {
     stdout: "pipe",
     stderr: "pipe",
@@ -75,7 +71,7 @@ export function runCli(
       .split("\n")
       .filter((line) => {
         if (!line.trim()) return false;
-        return !opts.stderrFilters!.some((fn) => fn(line));
+        return !opts.stderrFilters?.some((fn) => fn(line));
       })
       .join("\n")
       .trim();
@@ -124,7 +120,7 @@ export async function runCliAsync(
       .split("\n")
       .filter((line) => {
         if (!line.trim()) return false;
-        return !opts.stderrFilters!.some((fn) => fn(line));
+        return !opts.stderrFilters?.some((fn) => fn(line));
       })
       .join("\n")
       .trim();
@@ -149,10 +145,7 @@ export async function runCliAsync(
  * and return null. Used by providers that have no random-access read API
  * (signal, sms, and likely telegram/whatsapp).
  */
-export function readFromCacheOrFail(
-  providerName: string,
-  messageId: string,
-): MessageFull | null {
+export function readFromCacheOrFail(providerName: string, messageId: string): MessageFull | null {
   const cached = store.getCachedMessage(providerName, messageId);
   if (cached) return cached;
 
@@ -184,9 +177,10 @@ export function cacheSentMessage(opts: {
     from: { name: "", address: opts.fromAddress },
     to: [{ name: "", address: opts.recipientId }],
     preview: opts.body.slice(0, 100),
-    date: opts.messageId && /^\d+$/.test(opts.messageId)
-      ? new Date(Number(opts.messageId)).toISOString()
-      : new Date().toISOString(),
+    date:
+      opts.messageId && /^\d+$/.test(opts.messageId)
+        ? new Date(Number(opts.messageId)).toISOString()
+        : new Date().toISOString(),
     unread: false,
     hasAttachments: opts.hasAttachments ?? false,
   };

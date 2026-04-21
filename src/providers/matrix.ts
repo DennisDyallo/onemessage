@@ -1,13 +1,10 @@
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
+import { getConfigDir, loadConfig, saveConfig } from "../config.ts";
 import { registerProvider } from "../registry.ts";
-import { loadConfig, saveConfig, getConfigDir } from "../config.ts";
 import * as store from "../store.ts";
-import { readFromCacheOrFail, cacheSentMessage } from "./shared.ts";
-import type {
-  MessagingProvider,
-  MessageEnvelope,
-} from "../types.ts";
-import { join } from "path";
-import { existsSync, readFileSync, writeFileSync, mkdirSync } from "fs";
+import type { MessageEnvelope, MessagingProvider } from "../types.ts";
+import { cacheSentMessage, readFromCacheOrFail } from "./shared.ts";
 
 // ---------------------------------------------------------------------------
 // Config
@@ -19,15 +16,11 @@ interface MatrixSettings {
   accessToken: string;
 }
 
-function resolveSettings(
-  cliOverrides?: Record<string, unknown>,
-): MatrixSettings | null {
+function resolveSettings(cliOverrides?: Record<string, unknown>): MatrixSettings | null {
   const cfg = loadConfig().matrix;
-  const homeserver =
-    (cliOverrides?.homeserver as string) ?? cfg?.homeserver;
+  const homeserver = (cliOverrides?.homeserver as string) ?? cfg?.homeserver;
   const userId = (cliOverrides?.userId as string) ?? cfg?.userId;
-  const accessToken =
-    (cliOverrides?.accessToken as string) ?? cfg?.accessToken;
+  const accessToken = (cliOverrides?.accessToken as string) ?? cfg?.accessToken;
   if (!homeserver || !userId || !accessToken) return null;
   return { homeserver: homeserver.replace(/\/$/, ""), userId, accessToken };
 }
@@ -41,6 +34,7 @@ async function matrixApi(
   path: string,
   settings: MatrixSettings,
   body?: unknown,
+  // biome-ignore lint/suspicious/noExplicitAny: Matrix API returns varying JSON shapes
 ): Promise<any> {
   const url = `${settings.homeserver}/_matrix/client/v3${path}`;
   const headers: Record<string, string> = {
@@ -63,10 +57,7 @@ async function matrixApi(
 // Recipient resolution
 // ---------------------------------------------------------------------------
 
-async function resolveRoomId(
-  recipient: string,
-  settings: MatrixSettings,
-): Promise<string> {
+async function resolveRoomId(recipient: string, settings: MatrixSettings): Promise<string> {
   if (recipient.startsWith("!")) return recipient;
 
   if (recipient.startsWith("#")) {
@@ -120,10 +111,7 @@ async function resolveRoomId(
   );
 }
 
-async function findExistingDm(
-  userId: string,
-  settings: MatrixSettings,
-): Promise<string | null> {
+async function findExistingDm(userId: string, settings: MatrixSettings): Promise<string | null> {
   try {
     const data = await matrixApi(
       "GET",
@@ -131,7 +119,7 @@ async function findExistingDm(
       settings,
     );
     const rooms = data[userId] as string[] | undefined;
-    if (rooms && rooms.length > 0) return rooms[0]!;
+    if (rooms && rooms.length > 0) return rooms[0] ?? null;
   } catch {
     // No m.direct data or 404 — no existing DMs
   }
@@ -142,10 +130,7 @@ async function findExistingDm(
 // Room metadata helpers
 // ---------------------------------------------------------------------------
 
-async function getRoomName(
-  roomId: string,
-  settings: MatrixSettings,
-): Promise<string> {
+async function getRoomName(roomId: string, settings: MatrixSettings): Promise<string> {
   try {
     const state = await matrixApi(
       "GET",
@@ -159,10 +144,7 @@ async function getRoomName(
   return roomId;
 }
 
-async function getRoomMemberCount(
-  roomId: string,
-  settings: MatrixSettings,
-): Promise<number> {
+async function getRoomMemberCount(roomId: string, settings: MatrixSettings): Promise<number> {
   try {
     const data = await matrixApi(
       "GET",
@@ -188,7 +170,9 @@ function getSyncTokenPath(settings: MatrixSettings): string {
   mkdirSync(configDir, { recursive: true });
   // Use homeserver and userId hash to support multiple accounts
   const hashValue = Bun.hash(`${settings.homeserver}:${settings.userId}`);
-  const hash = (typeof hashValue === 'bigint' ? Number(hashValue & 0xFFFFFFFFn) : hashValue >>> 0).toString(36);
+  const hash = (
+    typeof hashValue === "bigint" ? Number(hashValue & 0xffffffffn) : hashValue >>> 0
+  ).toString(36);
   return join(configDir, `matrix-sync-${hash}.token`);
 }
 
@@ -207,7 +191,9 @@ function saveSyncToken(settings: MatrixSettings, token: string): void {
     const path = getSyncTokenPath(settings);
     writeFileSync(path, token, "utf-8");
   } catch (err) {
-    console.error(`[matrix] Failed to save sync token: ${err instanceof Error ? err.message : err}`);
+    console.error(
+      `[matrix] Failed to save sync token: ${err instanceof Error ? err.message : err}`,
+    );
   }
 }
 
@@ -215,9 +201,7 @@ function saveSyncToken(settings: MatrixSettings, token: string): void {
 // Fetch and cache
 // ---------------------------------------------------------------------------
 
-export async function fetchMatrixMessages(
-  settings: MatrixSettings,
-): Promise<void> {
+export async function fetchMatrixMessages(settings: MatrixSettings): Promise<void> {
   const params = new URLSearchParams({
     timeout: "0",
     filter: JSON.stringify({
@@ -233,11 +217,7 @@ export async function fetchMatrixMessages(
     params.set("since", syncToken);
   }
 
-  const data = await matrixApi(
-    "GET",
-    `/sync?${params}`,
-    settings,
-  );
+  const data = await matrixApi("GET", `/sync?${params}`, settings);
 
   if (data.next_batch) {
     saveSyncToken(settings, data.next_batch);
@@ -251,11 +231,12 @@ export async function fetchMatrixMessages(
 
   const envelopes: MessageEnvelope[] = [];
 
-  for (const [roomId, roomData] of Object.entries(
-    joinedRooms as Record<string, any>,
-  )) {
+  // biome-ignore lint/suspicious/noExplicitAny: Matrix sync response rooms are untyped
+  for (const [roomId, roomData] of Object.entries(joinedRooms as Record<string, any>)) {
+    // biome-ignore lint/suspicious/noExplicitAny: Matrix sync response timeline is untyped
     const events = (roomData as any).timeline?.events ?? [];
     const messageEvents = events.filter(
+      // biome-ignore lint/suspicious/noExplicitAny: Matrix event objects are untyped
       (e: any) =>
         e.type === "m.room.message" &&
         e.content?.body &&
@@ -399,15 +380,14 @@ const matrixProvider: MessagingProvider = {
       return;
     }
 
-    const readline = await import("readline");
-    const { Writable } = await import("stream");
+    const readline = await import("node:readline");
+    const { Writable } = await import("node:stream");
 
     const rl = readline.createInterface({
       input: process.stdin,
       output: process.stdout,
     });
-    const ask = (q: string): Promise<string> =>
-      new Promise((resolve) => rl.question(q, resolve));
+    const ask = (q: string): Promise<string> => new Promise((resolve) => rl.question(q, resolve));
 
     const homeserver = (await ask("Homeserver URL (e.g. https://matrix.org): ")).trim();
     const userId = (await ask("User ID (e.g. @you:matrix.org): ")).trim();
@@ -429,18 +409,15 @@ const matrixProvider: MessagingProvider = {
       }),
     );
 
-    const res = await fetch(
-      `${homeserver.replace(/\/$/, "")}/_matrix/client/v3/login`,
-      {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          type: "m.login.password",
-          identifier: { type: "m.id.user", user: userId },
-          password,
-        }),
-      },
-    );
+    const res = await fetch(`${homeserver.replace(/\/$/, "")}/_matrix/client/v3/login`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        type: "m.login.password",
+        identifier: { type: "m.id.user", user: userId },
+        password,
+      }),
+    });
 
     if (!res.ok) {
       const text = await res.text().catch(() => "");

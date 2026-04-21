@@ -1,7 +1,7 @@
 import { loadConfig } from "./config.ts";
+import type { DaemonOrchestrator, ProviderAdapter } from "./daemon-adapter.ts";
 import { fetchInstagramInbox } from "./providers/instagram.ts";
 import { cliExists } from "./providers/shared.ts";
-import type { ProviderAdapter, DaemonOrchestrator } from "./daemon-adapter.ts";
 
 export class InstagramAdapter implements ProviderAdapter {
   readonly name = "instagram";
@@ -17,12 +17,10 @@ export class InstagramAdapter implements ProviderAdapter {
     if (!enabled) return;
 
     const interval =
-      config.daemon?.providers?.instagram?.pollIntervalMs ??
-      orchestrator.defaultPollInterval();
+      config.daemon?.providers?.instagram?.pollIntervalMs ?? orchestrator.defaultPollInterval();
 
-    orchestrator.schedulePoll("instagram", interval, () =>
-      fetchInstagramInbox(this.username!),
-    );
+    const username = this.username;
+    orchestrator.schedulePoll("instagram", interval, () => fetchInstagramInbox(username));
   }
 
   async fetch(): Promise<void> {

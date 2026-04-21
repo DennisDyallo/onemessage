@@ -1,7 +1,7 @@
 import { loadConfig } from "./config.ts";
-import { fetchSmsInbox } from "./providers/sms.ts";
+import type { DaemonOrchestrator, ProviderAdapter } from "./daemon-adapter.ts";
 import { cliExists } from "./providers/shared.ts";
-import type { ProviderAdapter, DaemonOrchestrator } from "./daemon-adapter.ts";
+import { fetchSmsInbox } from "./providers/sms.ts";
 
 export class SmsAdapter implements ProviderAdapter {
   readonly name = "sms";
@@ -15,8 +15,7 @@ export class SmsAdapter implements ProviderAdapter {
     if (!enabled) return;
 
     const interval =
-      config.daemon?.providers?.sms?.pollIntervalMs ??
-      orchestrator.defaultPollInterval();
+      config.daemon?.providers?.sms?.pollIntervalMs ?? orchestrator.defaultPollInterval();
 
     orchestrator.schedulePoll("sms", interval, async () => {
       await fetchSmsInbox();

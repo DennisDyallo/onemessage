@@ -10,9 +10,13 @@
   },
   "scripts": {
     "start": "bun run src/cli.ts",
-    "check": "tsc --noEmit"
+    "check": "tsc --noEmit",
+    "lint": "bunx biome check .",
+    "lint:fix": "bunx biome check --write .",
+    "format": "bunx biome format --write ."
   },
   "devDependencies": {
+    "@biomejs/biome": "2.4.12",
     "@types/bun": "latest",
     "@types/mailparser": "^3.4.6",
     "@types/mime-types": "^3.0.1",

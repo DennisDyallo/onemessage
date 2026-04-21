@@ -17,7 +17,9 @@ export function getAllProviders(): MessagingProvider[] {
 export function getProviderOrExit(name: string): MessagingProvider {
   const provider = getProvider(name);
   if (!provider) {
-    const available = getAllProviders().map((p) => p.name).join(", ");
+    const available = getAllProviders()
+      .map((p) => p.name)
+      .join(", ");
     console.error(`Unknown provider: "${name}"`);
     console.error(`Available: ${available || "(none)"}`);
     process.exit(1);

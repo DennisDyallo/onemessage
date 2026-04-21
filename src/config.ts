@@ -1,6 +1,6 @@
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "fs";
-import { join } from "path";
-import { homedir } from "os";
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { homedir } from "node:os";
+import { join } from "node:path";
 
 // ---------------------------------------------------------------------------
 // Config shape — flat and slim
@@ -50,10 +50,10 @@ export interface EmailProviderConfig {
   // Defaults to "INBOX" for standard IMAP compatibility.
   defaultFolder?: string;
   // Overrides — only needed if not using standard Proton Bridge
-  host?: string;       // default: 127.0.0.1
-  smtpPort?: number;   // default: 1025
-  imapPort?: number;   // default: 1143
-  security?: string;   // default: STARTTLS
+  host?: string; // default: 127.0.0.1
+  smtpPort?: number; // default: 1025
+  imapPort?: number; // default: 1143
+  security?: string; // default: STARTTLS
 }
 
 export interface TelegramBotProviderConfig {
@@ -70,7 +70,7 @@ export interface SignalProviderConfig {
 
 export interface SmsProviderConfig {
   device: string;
-  cli?: string;   // default: kdeconnect-cli
+  cli?: string; // default: kdeconnect-cli
 }
 
 export interface WhatsAppProviderConfig {
@@ -128,10 +128,9 @@ export function loadConfig(): OneMessageConfig {
     const raw = readFileSync(CONFIG_PATH, "utf-8");
     cached = JSON.parse(raw) as OneMessageConfig;
     return cached;
-  } catch (err: any) {
-    process.stderr.write(
-      `[config] Warning: could not parse ${CONFIG_PATH}: ${err.message}\n`
-    );
+  } catch (err: unknown) {
+    const message = err instanceof Error ? err.message : String(err);
+    process.stderr.write(`[config] Warning: could not parse ${CONFIG_PATH}: ${message}\n`);
     cached = {};
     return cached;
   }
@@ -139,6 +138,6 @@ export function loadConfig(): OneMessageConfig {
 
 export function saveConfig(config: OneMessageConfig): void {
   mkdirSync(CONFIG_DIR, { recursive: true });
-  writeFileSync(CONFIG_PATH, JSON.stringify(config, null, 2) + "\n", "utf-8");
+  writeFileSync(CONFIG_PATH, `${JSON.stringify(config, null, 2)}\n`, "utf-8");
   cached = config;
 }

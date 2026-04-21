@@ -1,6 +1,6 @@
 import { loadConfig } from "./config.ts";
+import type { DaemonOrchestrator, ProviderAdapter } from "./daemon-adapter.ts";
 import { fetchTelegramBotUpdates } from "./providers/telegram-bot.ts";
-import type { ProviderAdapter, DaemonOrchestrator } from "./daemon-adapter.ts";
 
 export class TelegramBotAdapter implements ProviderAdapter {
   readonly name = "telegram-bot";
@@ -19,9 +19,8 @@ export class TelegramBotAdapter implements ProviderAdapter {
       config.daemon?.providers?.["telegram-bot"]?.pollIntervalMs ??
       orchestrator.defaultPollInterval();
 
-    orchestrator.schedulePoll("telegram-bot", interval, () =>
-      fetchTelegramBotUpdates(this.botToken!),
-    );
+    const botToken = this.botToken;
+    orchestrator.schedulePoll("telegram-bot", interval, () => fetchTelegramBotUpdates(botToken));
   }
 
   async fetch(): Promise<void> {

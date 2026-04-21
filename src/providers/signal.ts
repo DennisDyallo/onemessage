@@ -1,8 +1,8 @@
-import { registerProvider } from "../registry.ts";
 import { loadConfig } from "../config.ts";
+import { registerProvider } from "../registry.ts";
 import * as store from "../store.ts";
-import { cliExists, runCli, runCliAsync, readFromCacheOrFail, cacheSentMessage } from "./shared.ts";
-import type { MessagingProvider, MessageFull } from "../types.ts";
+import type { MessageFull, MessagingProvider } from "../types.ts";
+import { cacheSentMessage, cliExists, readFromCacheOrFail, runCli, runCliAsync } from "./shared.ts";
 
 // ---------------------------------------------------------------------------
 // Config
@@ -55,7 +55,7 @@ const GROUP_CACHE_TTL_MS = 5 * 60 * 1000; // 5 minutes
 let groupCache: GroupCache | null = null;
 
 function isBase64GroupId(value: string): boolean {
-  return value.length > 20 && /[=\/+]/.test(value);
+  return value.length > 20 && /[=/+]/.test(value);
 }
 
 function fetchGroups(account: string): SignalGroup[] {
@@ -86,9 +86,14 @@ function fetchGroups(account: string): SignalGroup[] {
     throw new Error("Expected JSON array from signal-cli listGroups");
   }
 
-  const groups: SignalGroup[] = (parsed as any[])
-    .filter((g) => g && typeof g.id === "string" && typeof g.name === "string")
-    .map((g) => ({ id: g.id as string, name: g.name as string, isMember: !!g.isMember }));
+  const groups: SignalGroup[] = (parsed as unknown[])
+    .filter(
+      (g): g is { id: string; name: string; isMember?: boolean } =>
+        !!g &&
+        typeof (g as Record<string, unknown>).id === "string" &&
+        typeof (g as Record<string, unknown>).name === "string",
+    )
+    .map((g) => ({ id: g.id, name: g.name, isMember: !!g.isMember }));
 
   groupCache = { groups, account, timestamp: Date.now() };
   return groups;
@@ -109,12 +114,10 @@ function resolveGroupId(name: string, account: string): string {
 
   if (matches.length > 1) {
     const ambiguous = matches.map((g) => `  - ${g.name}`).join("\n");
-    throw new Error(
-      `Ambiguous group name "${name}" — ${matches.length} matches:\n${ambiguous}`,
-    );
+    throw new Error(`Ambiguous group name "${name}" — ${matches.length} matches:\n${ambiguous}`);
   }
 
-  return matches[0]!.id;
+  return matches[0]?.id ?? "";
 }
 
 // ---------------------------------------------------------------------------
@@ -143,7 +146,7 @@ interface SignalJsonMessage {
         message?: string;
         destination?: string;
         destinationNumber?: string;
-        attachments?: any[];
+        attachments?: unknown[];
       };
     };
   };
@@ -182,8 +185,7 @@ function parseSignalMessages(jsonLines: string, account?: string): MessageFull[]
       const source = env.sourceNumber ?? env.source ?? "";
       const sourceName = env.sourceName ?? "";
       const hasAttachments =
-        (dataMsg?.attachments?.length ?? 0) > 0 ||
-        (syncMsg?.attachments?.length ?? 0) > 0;
+        (dataMsg?.attachments?.length ?? 0) > 0 || (syncMsg?.attachments?.length ?? 0) > 0;
 
       // Detect group messages
       const groupId = dataMsg?.groupInfo?.groupId;
@@ -200,7 +202,12 @@ function parseSignalMessages(jsonLines: string, account?: string): MessageFull[]
           ? { name: `${sourceName} [${groupName}]`, address: `group:${groupId}` }
           : { name: sourceName, address: source },
         to: syncMsg?.destinationNumber
-          ? [{ name: contactNames.get(syncMsg.destinationNumber) ?? "", address: syncMsg.destinationNumber }]
+          ? [
+              {
+                name: contactNames.get(syncMsg.destinationNumber) ?? "",
+                address: syncMsg.destinationNumber,
+              },
+            ]
           : [],
         subject: groupName,
         preview: content.slice(0, 100),
@@ -237,7 +244,10 @@ function parseSignalMessages(jsonLines: string, account?: string): MessageFull[]
  * are outgoing. The direction split by account address is the authoritative
  * source, so we override msg.direction before upsert.
  */
-export function processSignalMessages(messages: MessageFull[], account: string): { incoming: number; outgoing: number } {
+export function processSignalMessages(
+  messages: MessageFull[],
+  account: string,
+): { incoming: number; outgoing: number } {
   if (messages.length === 0) return { incoming: 0, outgoing: 0 };
 
   const incoming = messages.filter((m) => m.from?.address !== account);
@@ -257,7 +267,16 @@ export function processSignalMessages(messages: MessageFull[], account: string):
 // ---------------------------------------------------------------------------
 
 export function fetchSignalInbox(account: string): void {
-  const result = runSignalCli(["-a", account, "-o", "json", "receive", "-t", "5", "--send-read-receipts"]);
+  const result = runSignalCli([
+    "-a",
+    account,
+    "-o",
+    "json",
+    "receive",
+    "-t",
+    "5",
+    "--send-read-receipts",
+  ]);
 
   if (result.stdout) {
     const freshMessages = parseSignalMessages(result.stdout, account);
@@ -277,10 +296,14 @@ export function fetchSignalInbox(account: string): void {
  * Used by the daemon so polling Signal doesn't stall other providers.
  */
 export async function fetchSignalInboxAsync(account: string): Promise<void> {
-  const result = await runCliAsync("signal-cli", ["-a", account, "-o", "json", "receive", "-t", "5", "--send-read-receipts"], {
-    stderrFilters: SIGNAL_STDERR_FILTERS,
-    timeoutMs: 30_000,
-  });
+  const result = await runCliAsync(
+    "signal-cli",
+    ["-a", account, "-o", "json", "receive", "-t", "5", "--send-read-receipts"],
+    {
+      stderrFilters: SIGNAL_STDERR_FILTERS,
+      timeoutMs: 30_000,
+    },
+  );
 
   if (result.stdout) {
     const freshMessages = parseSignalMessages(result.stdout, account);
@@ -356,8 +379,11 @@ export function startSignalDaemon(opts: {
           buffer += decoder.decode(value, { stream: true });
 
           // Process complete lines
-          let newlineIdx: number;
-          while ((newlineIdx = buffer.indexOf("\n")) !== -1) {
+          for (
+            let newlineIdx = buffer.indexOf("\n");
+            newlineIdx !== -1;
+            newlineIdx = buffer.indexOf("\n")
+          ) {
             const line = buffer.slice(0, newlineIdx).trim();
             buffer = buffer.slice(newlineIdx + 1);
 
@@ -389,8 +415,11 @@ export function startSignalDaemon(opts: {
           if (done) break;
           buffer += decoder.decode(value, { stream: true });
 
-          let newlineIdx: number;
-          while ((newlineIdx = buffer.indexOf("\n")) !== -1) {
+          for (
+            let newlineIdx = buffer.indexOf("\n");
+            newlineIdx !== -1;
+            newlineIdx = buffer.indexOf("\n")
+          ) {
             const line = buffer.slice(0, newlineIdx).trim();
             buffer = buffer.slice(newlineIdx + 1);
             if (!line) continue;
@@ -458,7 +487,9 @@ const signalProvider: MessagingProvider = {
     const { getConfigPath } = await import("../config.ts");
     const configPath = getConfigPath();
     const proc = Bun.spawnSync(["signal-cli", "link", "-n", "onemessage"], {
-      stdin: "inherit", stdout: "inherit", stderr: "inherit",
+      stdin: "inherit",
+      stdout: "inherit",
+      stderr: "inherit",
     });
     if (proc.exitCode === 0) {
       console.log("\n  Signal linked successfully.\n");
@@ -475,11 +506,21 @@ const signalProvider: MessagingProvider = {
   async send(recipientId, body, opts) {
     const settings = resolveSettings(opts?.providerFlags);
     if (!settings) {
-      return { ok: false, provider: "signal", recipientId, error: "Signal not configured. Run: onemessage auth signal" };
+      return {
+        ok: false,
+        provider: "signal",
+        recipientId,
+        error: "Signal not configured. Run: onemessage auth signal",
+      };
     }
 
     if (!cliExists("signal-cli")) {
-      return { ok: false, provider: "signal", recipientId, error: "signal-cli not found. Install: brew install signal-cli" };
+      return {
+        ok: false,
+        provider: "signal",
+        recipientId,
+        error: "signal-cli not found. Install: brew install signal-cli",
+      };
     }
 
     const args = ["-a", settings.account, "send", "-m", body];
@@ -524,7 +565,12 @@ const signalProvider: MessagingProvider = {
       }
       return { ok: true, provider: "signal", recipientId, messageId };
     } else {
-      return { ok: false, provider: "signal", recipientId, error: result.stderr || result.stdout || `Exit code ${result.exitCode}` };
+      return {
+        ok: false,
+        provider: "signal",
+        recipientId,
+        error: result.stderr || result.stdout || `Exit code ${result.exitCode}`,
+      };
     }
   },
 

@@ -7,16 +7,16 @@
  *   - WhatsApp directory path constants
  */
 
-import { join } from "path";
+import { join } from "node:path";
 import makeWASocket, {
-  Browsers,
   type AuthenticationCreds,
-  type WASocket,
-  type WAMessage,
+  Browsers,
   fetchLatestWaWebVersion,
   makeCacheableSignalKeyStore,
   normalizeMessageContent,
   useMultiFileAuthState,
+  type WAMessage,
+  type WASocket,
 } from "@whiskeysockets/baileys";
 
 import { getConfigDir } from "./config.ts";
@@ -73,10 +73,12 @@ export async function createBaileysSocket(authDir: string): Promise<CreateSocket
     version,
     auth: {
       creds: state.creds,
+      // biome-ignore lint/suspicious/noExplicitAny: Baileys expects pino-compatible logger, our silent logger is compatible
       keys: makeCacheableSignalKeyStore(state.keys, silentLogger as any),
     },
     printQRInTerminal: false,
     browser: Browsers.macOS("Chrome"),
+    // biome-ignore lint/suspicious/noExplicitAny: Baileys expects pino-compatible logger, our silent logger is compatible
     logger: silentLogger as any,
   });
 
@@ -108,8 +110,7 @@ async function translateJid(
 
   if (sock) {
     try {
-      const pn =
-        await sock.signalRepository?.lidMapping?.getPNForLID(jid);
+      const pn = await sock.signalRepository?.lidMapping?.getPNForLID(jid);
       if (pn) {
         const phoneJid = `${(pn.split("@")[0] || pn).split(":")[0] || pn}@s.whatsapp.net`;
         lidCache?.set(lidUser, phoneJid);
@@ -167,8 +168,7 @@ export async function parseAndStoreWAMessage(
     if (msg.key.participant) {
       senderJid = await translateJid(msg.key.participant, sock, lidCache);
     }
-    const senderName =
-      msg.pushName || senderJid.split("@")[0] || senderJid;
+    const senderName = msg.pushName || senderJid.split("@")[0] || senderJid;
     const senderAddress = senderJid.split("@")[0] || senderJid;
 
     // Determine direction and build contacts
@@ -213,9 +213,7 @@ export async function parseAndStoreWAMessage(
     store.upsertFullMessages([full]);
     return true;
   } catch (err) {
-    process.stderr.write(
-      `[whatsapp] error processing message: ${err}\n`,
-    );
+    process.stderr.write(`[whatsapp] error processing message: ${err}\n`);
     return false;
   }
 }

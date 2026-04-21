@@ -1,4 +1,4 @@
-import { describe, test, expect } from "bun:test";
+import { describe, expect, test } from "bun:test";
 
 // Test the isOutgoingEmail pattern
 describe("email direction detection", () => {
@@ -6,7 +6,7 @@ describe("email direction detection", () => {
 
   function isOutgoing(fromAddr: string | undefined, ownAccounts: string[]): boolean {
     if (!fromAddr) return false;
-    return ownAccounts.some(own => stripTag(own) === stripTag(fromAddr));
+    return ownAccounts.some((own) => stripTag(own) === stripTag(fromAddr));
   }
 
   test("matches exact account address", () => {

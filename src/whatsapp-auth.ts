@@ -6,13 +6,11 @@
  * - Pairing code mode (phone provided): displays 8-digit code
  */
 
-import { mkdirSync } from "fs";
-import { join } from "path";
-
-// @ts-ignore — qrcode-terminal has no type declarations
-import qrcode from "qrcode-terminal";
-
+import { mkdirSync } from "node:fs";
+import { join } from "node:path";
 import { DisconnectReason } from "@whiskeysockets/baileys";
+// @ts-expect-error — qrcode-terminal has no type declarations
+import qrcode from "qrcode-terminal";
 
 import { getConfigDir } from "./config.ts";
 import * as store from "./store.ts";
@@ -64,8 +62,11 @@ async function connectSocket(
         console.log("  2. Tap Settings > Linked Devices > Link a Device");
         console.log('  3. Tap "Link with phone number instead"');
         console.log(`  4. Enter this code: ${code}\n`);
-      } catch (err: any) {
-        console.error("Failed to request pairing code:", err.message);
+      } catch (err: unknown) {
+        console.error(
+          "Failed to request pairing code:",
+          err instanceof Error ? err.message : String(err),
+        );
       }
     }, 3000);
   }
@@ -87,9 +88,7 @@ async function connectSocket(
       if (idleTimer) clearTimeout(idleTimer);
 
       if (totalStored > 0) {
-        console.log(
-          `\nHistory sync complete. Stored ${totalStored} messages from your chats.`,
-        );
+        console.log(`\nHistory sync complete. Stored ${totalStored} messages from your chats.`);
       } else {
         console.log("\nHistory sync complete. No new messages to store.");
       }
@@ -106,30 +105,25 @@ async function connectSocket(
     sock.ev.on("creds.update", saveCreds);
 
     // ---- History sync handler (captures batches during auth) ----
-    sock.ev.on(
-      "messaging-history.set",
-      async ({ messages }) => {
-        if (historySyncDone) return;
+    sock.ev.on("messaging-history.set", async ({ messages }) => {
+      if (historySyncDone) return;
 
-        batchCount++;
-        const contactNames = store.getContactNamesByAddress("whatsapp");
-        let stored = 0;
-        for (const msg of messages) {
-          const ok = await parseAndStoreWAMessage(msg, sock, lidCache, undefined, contactNames);
-          if (ok) stored++;
-        }
-        totalStored += stored;
+      batchCount++;
+      const contactNames = store.getContactNamesByAddress("whatsapp");
+      let stored = 0;
+      for (const msg of messages) {
+        const ok = await parseAndStoreWAMessage(msg, sock, lidCache, undefined, contactNames);
+        if (ok) stored++;
+      }
+      totalStored += stored;
 
-        if (messages.length > 0) {
-          console.log(
-            `  [batch ${batchCount}] stored ${stored}/${messages.length} messages`,
-          );
-        }
+      if (messages.length > 0) {
+        console.log(`  [batch ${batchCount}] stored ${stored}/${messages.length} messages`);
+      }
 
-        // Reset idle timer — wait for more batches
-        resetIdleTimer();
-      },
-    );
+      // Reset idle timer — wait for more batches
+      resetIdleTimer();
+    });
 
     sock.ev.on("connection.update", (update) => {
       const { connection, lastDisconnect, qr } = update;
@@ -144,9 +138,7 @@ async function connectSocket(
 
       if (connection === "open") {
         console.log("\nConnected! WhatsApp credentials saved.");
-        console.log(
-          "Syncing message history... (this may take up to 30 seconds)",
-        );
+        console.log("Syncing message history... (this may take up to 30 seconds)");
 
         // Start the 30s max wait and initial 5s idle timer
         maxTimer = setTimeout(finishHistorySync, 30_000);
@@ -154,6 +146,7 @@ async function connectSocket(
       }
 
       if (connection === "close") {
+        // biome-ignore lint/suspicious/noExplicitAny: Baileys error shape includes non-standard output.statusCode
         const statusCode = (lastDisconnect?.error as any)?.output?.statusCode;
 
         if (statusCode === 515) {

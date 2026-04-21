@@ -1,5 +1,5 @@
-import { describe, test, expect } from "bun:test";
-import { upsertMessages, getCachedInbox, upsertFullMessages, getCachedMessage } from "./store";
+import { describe, expect, test } from "bun:test";
+import { getCachedInbox, getCachedMessage, upsertFullMessages, upsertMessages } from "./store";
 
 describe("direction field", () => {
   const testProvider = "__test_direction__";
@@ -17,7 +17,7 @@ describe("direction field", () => {
     };
     upsertMessages([msg], "in");
     const results = getCachedInbox(testProvider, { limit: 10 });
-    const found = results.find(m => m.id === "test-dir-in-1");
+    const found = results.find((m) => m.id === "test-dir-in-1");
     expect(found).toBeDefined();
     expect(found?.direction).toBe("in");
   });
@@ -35,7 +35,7 @@ describe("direction field", () => {
     };
     upsertMessages([msg], "out");
     const results = getCachedInbox(testProvider, { limit: 10 });
-    const found = results.find(m => m.id === "test-dir-out-1");
+    const found = results.find((m) => m.id === "test-dir-out-1");
     expect(found).toBeDefined();
     expect(found?.direction).toBe("out");
   });

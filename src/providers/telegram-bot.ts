@@ -1,8 +1,8 @@
-import { registerProvider } from "../registry.ts";
 import { loadConfig } from "../config.ts";
+import { registerProvider } from "../registry.ts";
 import * as store from "../store.ts";
-import { readFromCacheOrFail, cacheSentMessage } from "./shared.ts";
-import type { MessagingProvider, MessageEnvelope, MessageFull } from "../types.ts";
+import type { MessageEnvelope, MessageFull, MessagingProvider } from "../types.ts";
+import { cacheSentMessage, readFromCacheOrFail } from "./shared.ts";
 
 // ---------------------------------------------------------------------------
 // Config
@@ -72,7 +72,14 @@ interface TelegramUpdate {
 interface TelegramMessage {
   message_id: number;
   date: number;
-  chat: { id: number; type: string; title?: string; first_name?: string; last_name?: string; username?: string };
+  chat: {
+    id: number;
+    type: string;
+    title?: string;
+    first_name?: string;
+    last_name?: string;
+    username?: string;
+  };
   from?: { id: number; first_name?: string; last_name?: string; username?: string };
   text?: string;
   caption?: string;
@@ -92,7 +99,9 @@ function senderName(msg: TelegramMessage): string {
 
 function chatName(msg: TelegramMessage): string {
   const c = msg.chat;
-  return c.title ?? ([c.first_name, c.last_name].filter(Boolean).join(" ") || c.username || String(c.id));
+  return (
+    c.title ?? ([c.first_name, c.last_name].filter(Boolean).join(" ") || c.username || String(c.id))
+  );
 }
 
 function updateToEnvelope(update: TelegramUpdate): MessageEnvelope | null {
@@ -121,7 +130,8 @@ function updateToEnvelope(update: TelegramUpdate): MessageEnvelope | null {
 function updateToFull(update: TelegramUpdate): MessageFull | null {
   const envelope = updateToEnvelope(update);
   if (!envelope) return null;
-  const msg = update.message ?? update.channel_post!;
+  const msg = update.message ?? update.channel_post;
+  if (!msg) return null;
   const body = msg.text ?? msg.caption ?? "";
 
   return {
@@ -142,8 +152,8 @@ function nextOffset(): number | undefined {
   // to only return newer updates. Returns undefined on first run (no offset).
   const recent = store.getCachedInbox("telegram-bot", { limit: 1 });
   if (recent.length === 0) return undefined;
-  const latestId = Number(recent[0]!.id);
-  if (isNaN(latestId)) return undefined;
+  const latestId = Number(recent[0]?.id);
+  if (Number.isNaN(latestId)) return undefined;
   return latestId + 1;
 }
 
@@ -240,7 +250,9 @@ const telegramBotProvider: MessagingProvider = {
     try {
       await fetchTelegramBotUpdates(settings.botToken);
     } catch (err) {
-      console.error(`[telegram-bot] Failed to fetch updates: ${err instanceof Error ? err.message : err}`);
+      console.error(
+        `[telegram-bot] Failed to fetch updates: ${err instanceof Error ? err.message : err}`,
+      );
     }
 
     return store.getCachedInbox("telegram-bot", {

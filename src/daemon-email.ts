@@ -1,9 +1,6 @@
 import { loadConfig } from "./config.ts";
-import {
-  fetchEmailInbox,
-  resolveSettings as resolveEmailSettings,
-} from "./providers/email.ts";
-import type { ProviderAdapter, DaemonOrchestrator } from "./daemon-adapter.ts";
+import type { DaemonOrchestrator, ProviderAdapter } from "./daemon-adapter.ts";
+import { fetchEmailInbox, resolveSettings as resolveEmailSettings } from "./providers/email.ts";
 
 export class EmailAdapter implements ProviderAdapter {
   readonly name = "email";
@@ -24,8 +21,7 @@ export class EmailAdapter implements ProviderAdapter {
     if (!enabled) return;
 
     const interval =
-      config.daemon?.providers?.email?.pollIntervalMs ??
-      orchestrator.defaultPollInterval();
+      config.daemon?.providers?.email?.pollIntervalMs ?? orchestrator.defaultPollInterval();
 
     orchestrator.schedulePoll("email", interval, async () => {
       const settings = resolveEmailSettings();
