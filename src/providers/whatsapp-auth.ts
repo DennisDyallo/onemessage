@@ -12,8 +12,8 @@ import { DisconnectReason } from "@whiskeysockets/baileys";
 // @ts-expect-error — qrcode-terminal has no type declarations
 import qrcode from "qrcode-terminal";
 
-import { getConfigDir } from "./config.ts";
-import * as store from "./store.ts";
+import { getConfigDir } from "../config.ts";
+import * as store from "../store.ts";
 import { createBaileysSocket, parseAndStoreWAMessage } from "./whatsapp-shared.ts";
 
 // ---------------------------------------------------------------------------

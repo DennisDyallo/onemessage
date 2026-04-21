@@ -5,15 +5,15 @@
  * cleanup. The UnifiedDaemon only calls the adapter's interface methods.
  */
 
-import { loadConfig } from "./config.ts";
-import type { DaemonOrchestrator, ProviderAdapter } from "./daemon-adapter.ts";
+import { loadConfig } from "../config.ts";
 import {
   fetchSignalInboxAsync,
   processSignalMessages,
   type SignalDaemonHandle,
   startSignalDaemon,
-} from "./providers/signal.ts";
-import * as store from "./store.ts";
+} from "../providers/signal.ts";
+import * as store from "../store.ts";
+import type { DaemonOrchestrator, ProviderAdapter } from "./adapter.ts";
 
 // ---------------------------------------------------------------------------
 // Signal adapter

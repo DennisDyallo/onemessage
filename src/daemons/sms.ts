@@ -1,7 +1,7 @@
-import { loadConfig } from "./config.ts";
-import type { DaemonOrchestrator, ProviderAdapter } from "./daemon-adapter.ts";
-import { cliExists } from "./providers/shared.ts";
-import { fetchSmsInbox } from "./providers/sms.ts";
+import { loadConfig } from "../config.ts";
+import { cliExists } from "../providers/shared.ts";
+import { fetchSmsInbox } from "../providers/sms.ts";
+import type { DaemonOrchestrator, ProviderAdapter } from "./adapter.ts";
 
 export class SmsAdapter implements ProviderAdapter {
   readonly name = "sms";

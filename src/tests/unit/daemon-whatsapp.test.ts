@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { type GroupCacheEntry, resolveGroup } from "../../daemon-whatsapp.ts";
+import { type GroupCacheEntry, resolveGroup } from "../../daemons/whatsapp.ts";
 
 function makeCache(
   entries: Array<{

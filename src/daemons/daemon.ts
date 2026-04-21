@@ -11,17 +11,17 @@
 
 import { existsSync, mkdirSync, unlinkSync, writeFileSync } from "node:fs";
 
-import { loadConfig } from "./config.ts";
-import type { DaemonOrchestrator, DaemonResponse, ProviderAdapter } from "./daemon-adapter.ts";
-import { isIpcCapable } from "./daemon-adapter.ts";
-import { EmailAdapter } from "./daemon-email.ts";
-import { InstagramAdapter } from "./daemon-instagram.ts";
-import { MatrixAdapter } from "./daemon-matrix.ts";
-import { DAEMON_PID, DAEMON_SOCK } from "./daemon-shared.ts";
-import { SignalAdapter } from "./daemon-signal.ts";
-import { SmsAdapter } from "./daemon-sms.ts";
-import { TelegramBotAdapter } from "./daemon-telegram-bot.ts";
-import { WhatsAppAdapter } from "./daemon-whatsapp.ts";
+import { loadConfig } from "../config.ts";
+import type { DaemonOrchestrator, DaemonResponse, ProviderAdapter } from "./adapter.ts";
+import { isIpcCapable } from "./adapter.ts";
+import { EmailAdapter } from "./email.ts";
+import { InstagramAdapter } from "./instagram.ts";
+import { MatrixAdapter } from "./matrix.ts";
+import { DAEMON_PID, DAEMON_SOCK } from "./shared.ts";
+import { SignalAdapter } from "./signal.ts";
+import { SmsAdapter } from "./sms.ts";
+import { TelegramBotAdapter } from "./telegram-bot.ts";
+import { WhatsAppAdapter } from "./whatsapp.ts";
 
 // ---------------------------------------------------------------------------
 // IPC types

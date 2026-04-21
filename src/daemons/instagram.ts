@@ -1,7 +1,7 @@
-import { loadConfig } from "./config.ts";
-import type { DaemonOrchestrator, ProviderAdapter } from "./daemon-adapter.ts";
-import { fetchInstagramInbox } from "./providers/instagram.ts";
-import { cliExists } from "./providers/shared.ts";
+import { loadConfig } from "../config.ts";
+import { fetchInstagramInbox } from "../providers/instagram.ts";
+import { cliExists } from "../providers/shared.ts";
+import type { DaemonOrchestrator, ProviderAdapter } from "./adapter.ts";
 
 export class InstagramAdapter implements ProviderAdapter {
   readonly name = "instagram";

@@ -1,11 +1,11 @@
 import { existsSync } from "node:fs";
 import { join } from "node:path";
-import { daemonRequest, ensureDaemon } from "../daemon-shared.ts";
+import { daemonRequest, ensureDaemon } from "../daemons/shared.ts";
 import { registerProvider } from "../registry.ts";
 import * as store from "../store.ts";
 import type { MessagingProvider } from "../types.ts";
-import { AUTH_DIR } from "../whatsapp-shared.ts";
 import { cacheSentMessage, readFromCacheOrFail } from "./shared.ts";
+import { AUTH_DIR } from "./whatsapp-shared.ts";
 
 // ---------------------------------------------------------------------------
 // Recipient resolution
@@ -50,7 +50,7 @@ const whatsappProvider: MessagingProvider = {
   },
 
   async authenticate(opts) {
-    const { runWhatsAppAuth } = await import("../whatsapp-auth.ts");
+    const { runWhatsAppAuth } = await import("./whatsapp-auth.ts");
     await runWhatsAppAuth({ phone: opts?.phone });
   },
 

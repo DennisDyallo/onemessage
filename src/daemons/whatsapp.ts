@@ -1,10 +1,14 @@
 import { existsSync, mkdirSync } from "node:fs";
 import { DisconnectReason, type WAMessage, type WASocket } from "@whiskeysockets/baileys";
-import { loadConfig } from "./config.ts";
-import type { DaemonOrchestrator, DaemonResponse, IpcCapableAdapter } from "./daemon-adapter.ts";
-import * as store from "./store.ts";
-import type { MessageFull } from "./types.ts";
-import { AUTH_DIR, createBaileysSocket, parseAndStoreWAMessage } from "./whatsapp-shared.ts";
+import { loadConfig } from "../config.ts";
+import {
+  AUTH_DIR,
+  createBaileysSocket,
+  parseAndStoreWAMessage,
+} from "../providers/whatsapp-shared.ts";
+import * as store from "../store.ts";
+import type { MessageFull } from "../types.ts";
+import type { DaemonOrchestrator, DaemonResponse, IpcCapableAdapter } from "./adapter.ts";
 
 export class WhatsAppAdapter implements IpcCapableAdapter {
   readonly name = "whatsapp";

@@ -8,7 +8,7 @@
 import { existsSync, readFileSync } from "node:fs";
 import { connect } from "node:net";
 import { dirname, join } from "node:path";
-import { getConfigDir } from "./config.ts";
+import { getConfigDir } from "../config.ts";
 
 // ---------------------------------------------------------------------------
 // Paths
@@ -81,7 +81,7 @@ const PROJECT_ROOT = join(dirname(new URL(import.meta.url).pathname), "..");
 export async function ensureDaemon(): Promise<void> {
   if (isDaemonRunning() && existsSync(DAEMON_SOCK)) return;
 
-  const proc = Bun.spawn(["bun", "run", "src/daemon.ts"], {
+  const proc = Bun.spawn(["bun", "run", "src/daemons/daemon.ts"], {
     cwd: PROJECT_ROOT,
     stdio: ["ignore", "ignore", "ignore"],
     detached: true,

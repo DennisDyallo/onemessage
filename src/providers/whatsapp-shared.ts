@@ -19,9 +19,9 @@ import makeWASocket, {
   type WASocket,
 } from "@whiskeysockets/baileys";
 
-import { getConfigDir } from "./config.ts";
-import * as store from "./store.ts";
-import type { MessageFull } from "./types.ts";
+import { getConfigDir } from "../config.ts";
+import * as store from "../store.ts";
+import type { MessageFull } from "../types.ts";
 
 // ---------------------------------------------------------------------------
 // Paths

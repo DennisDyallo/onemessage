@@ -1,6 +1,6 @@
-import { loadConfig } from "./config.ts";
-import type { DaemonOrchestrator, ProviderAdapter } from "./daemon-adapter.ts";
-import { fetchTelegramBotUpdates } from "./providers/telegram-bot.ts";
+import { loadConfig } from "../config.ts";
+import { fetchTelegramBotUpdates } from "../providers/telegram-bot.ts";
+import type { DaemonOrchestrator, ProviderAdapter } from "./adapter.ts";
 
 export class TelegramBotAdapter implements ProviderAdapter {
   readonly name = "telegram-bot";

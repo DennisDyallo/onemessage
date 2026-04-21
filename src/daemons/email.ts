@@ -1,6 +1,6 @@
-import { loadConfig } from "./config.ts";
-import type { DaemonOrchestrator, ProviderAdapter } from "./daemon-adapter.ts";
-import { fetchEmailInbox, resolveSettings as resolveEmailSettings } from "./providers/email.ts";
+import { loadConfig } from "../config.ts";
+import { fetchEmailInbox, resolveSettings as resolveEmailSettings } from "../providers/email.ts";
+import type { DaemonOrchestrator, ProviderAdapter } from "./adapter.ts";
 
 export class EmailAdapter implements ProviderAdapter {
   readonly name = "email";

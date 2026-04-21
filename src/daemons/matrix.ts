@@ -1,6 +1,6 @@
-import { loadConfig } from "./config.ts";
-import type { DaemonOrchestrator, ProviderAdapter } from "./daemon-adapter.ts";
-import { fetchMatrixMessages } from "./providers/matrix.ts";
+import { loadConfig } from "../config.ts";
+import { fetchMatrixMessages } from "../providers/matrix.ts";
+import type { DaemonOrchestrator, ProviderAdapter } from "./adapter.ts";
 
 // ---------------------------------------------------------------------------
 // Settings resolution (mirrors providers/matrix.ts resolveSettings)

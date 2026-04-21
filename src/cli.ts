@@ -642,7 +642,7 @@ daemonCmd
   .command("start")
   .description("Start the unified daemon in foreground")
   .action(async () => {
-    const { UnifiedDaemon } = await import("./daemon.ts");
+    const { UnifiedDaemon } = await import("./daemons/daemon.ts");
     const daemon = new UnifiedDaemon();
     await daemon.start();
   });
@@ -651,7 +651,7 @@ daemonCmd
   .command("stop")
   .description("Stop the running daemon")
   .action(async () => {
-    const { DAEMON_PID } = await import("./daemon-shared.ts");
+    const { DAEMON_PID } = await import("./daemons/shared.ts");
     const { existsSync, readFileSync, unlinkSync } = await import("node:fs");
 
     if (!existsSync(DAEMON_PID)) {
@@ -685,7 +685,7 @@ daemonCmd
   .action(async () => {
     const PLIST = `${process.env.HOME}/Library/LaunchAgents/com.onemessage.daemon.plist`;
     const { existsSync } = await import("node:fs");
-    const { DAEMON_SOCK, isDaemonRunning } = await import("./daemon-shared.ts");
+    const { DAEMON_SOCK, isDaemonRunning } = await import("./daemons/shared.ts");
 
     if (existsSync(PLIST)) {
       // Managed by launchd — unload/load so launchd owns the restart (no competing spawns)
@@ -708,7 +708,7 @@ daemonCmd
     }
 
     // Not managed by launchd — stop + spawn manually
-    const { DAEMON_PID } = await import("./daemon-shared.ts");
+    const { DAEMON_PID } = await import("./daemons/shared.ts");
     const { readFileSync, unlinkSync } = await import("node:fs");
     if (existsSync(DAEMON_PID)) {
       const pid = parseInt(readFileSync(DAEMON_PID, "utf-8").trim(), 10);
@@ -728,7 +728,7 @@ daemonCmd
     } catch {}
     const { join, dirname } = await import("node:path");
     const PROJECT_ROOT = join(dirname(new URL(import.meta.url).pathname), "..");
-    const proc = Bun.spawn(["bun", "run", "src/daemon.ts"], {
+    const proc = Bun.spawn(["bun", "run", "src/daemons/daemon.ts"], {
       cwd: PROJECT_ROOT,
       stdio: ["ignore", "ignore", "ignore"],
       detached: true,
@@ -751,7 +751,7 @@ daemonCmd
   .description("Show daemon status")
   .option("--json", "Output JSON", false)
   .action(async (opts) => {
-    const { isDaemonRunning, daemonRequest } = await import("./daemon-shared.ts");
+    const { isDaemonRunning, daemonRequest } = await import("./daemons/shared.ts");
 
     if (!isDaemonRunning()) {
       if (opts.json) {
