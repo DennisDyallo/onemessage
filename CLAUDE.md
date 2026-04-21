@@ -40,14 +40,28 @@ Two provider styles exist:
 - **Shell providers** (Signal, SMS): use `runCli`/`runCliAsync` from `src/providers/shared.ts` to invoke external CLIs, parse their JSON/text output
 - **Library providers** (Email, WhatsApp): use npm packages directly
 
-### Dual daemon architecture
+### Daemon adapter architecture
 
-WhatsApp requires a persistent WebSocket connection, so the project has a **unified daemon** (`src/daemon.ts`) that:
-1. Maintains the WhatsApp Baileys connection (real-time message reception)
-2. Polls Signal and Email on configurable intervals
-3. Exposes a Unix domain socket IPC server at `~/.config/onemessage/daemon.sock`
+The **unified daemon** (`src/daemon.ts`) is a thin orchestrator (~350 LOC) that delegates all provider-specific logic to **adapter classes** implementing the `ProviderAdapter` interface from `src/daemon-adapter.ts`.
 
-The WhatsApp CLI provider (`src/providers/whatsapp.ts`) is a thin IPC client — it calls `ensureDaemon()` from `src/daemon-shared.ts` to auto-start the daemon, then sends requests over the Unix socket. The daemon does all actual WhatsApp work.
+| Adapter | File | Mode | Notes |
+|---------|------|------|-------|
+| WhatsApp | `daemon-whatsapp.ts` | Real-time | Baileys WebSocket, implements `IpcCapableAdapter` for send/resolve-group/list-groups |
+| Signal | `daemon-signal.ts` | Poll or daemon | signal-cli subprocess (daemon mode) or polling |
+| Email | `daemon-email.ts` | Polling | IMAP via imapflow |
+| SMS | `daemon-sms.ts` | Polling | KDE Connect CLI |
+| Telegram | `daemon-telegram-bot.ts` | Polling | Bot API |
+| Instagram | `daemon-instagram.ts` | Polling | instagram-cli |
+| Matrix | `daemon-matrix.ts` | Polling | Matrix CS API /sync |
+
+**Key interfaces:**
+- `ProviderAdapter` — base interface: `start()`, `fetch()`, `isActive()`, `statusInfo()`, `cleanup()`, `readonly polling: boolean`
+- `IpcCapableAdapter` extends `ProviderAdapter` — adds `handleIpc()` for provider-specific IPC commands (only WhatsApp uses this)
+- `DaemonOrchestrator` — callback interface passed to `start()` for scheduling polls
+
+The daemon has **zero provider-name string literals** — all dispatch is via adapter iteration. Adapters self-classify as real-time (`polling = false`) or polling (`polling = true`).
+
+The WhatsApp CLI provider (`src/providers/whatsapp.ts`) is a thin IPC client — it calls `ensureDaemon()` from `src/daemon-shared.ts` to auto-start the daemon, then sends requests over the Unix socket.
 
 Baileys socket creation is shared between auth and daemon via `src/whatsapp-shared.ts`.
 
@@ -187,6 +201,9 @@ Before adding any feature, run it through this filter:
 4. Add import to `src/providers/index.ts`
 5. Add config interface to `src/config.ts`
 6. Add auth instructions to the `auth` command switch in `src/cli.ts`
+7. Create `src/daemon-<name>.ts` implementing `ProviderAdapter` (use `daemon-email.ts` as template)
+8. Add the adapter to the `adapters` array in `daemon.ts` `startAdapters()`
+9. Add `<name>?: { enabled?: boolean; pollIntervalMs?: number }` to `DaemonConfig.providers` in `config.ts`
 
 ## Async vs Sync CLI calls
 
