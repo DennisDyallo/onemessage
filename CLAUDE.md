@@ -5,7 +5,11 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 ## Build & Dev Commands
 
 ```bash
-bun run check          # Type-check (tsc --noEmit) — no test suite yet
+bun run check          # Type-check (tsc --noEmit)
+bun run lint           # Lint (Biome, strict recommended rules)
+bun run lint:fix       # Lint and auto-fix
+bun run format         # Format (Biome)
+bun test               # Run tests (56 tests across 6 files)
 bun run start          # Run CLI directly (same as: bun src/cli.ts)
 bun link               # Make `onemessage` available globally
 onemessage status      # Verify providers are configured
