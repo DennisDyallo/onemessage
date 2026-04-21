@@ -241,6 +241,7 @@ Instagram aggressively detects bot-like behaviour. The Instagram provider must b
 - **Thread reads rotate naturally** — most recently active threads get priority. Over multiple sync cycles, all threads eventually get fetched.
 - **If Instagram auth expires or rate-limits**, the sync daemon gracefully skips it and continues with other providers.
 - **`read()` with `--fresh` re-fetches the thread** — Unlike other cache-only providers, Instagram threads may have uncached sub-messages (because `MAX_THREADS_PER_SYNC` limits how many threads are fetched per cycle). The `--fresh` flag on `read()` calls `fetchThreadMessages()` to backfill before returning from cache. This is intentional and does not violate the `readFromCacheOrFail` convention — it extends it with a targeted pre-fetch.
+- **NEVER hit Instagram endpoints in tests or automated scripts.** Instagram's bot detection is aggressive and will ban the account. All Instagram tests must use mock data or cached responses only — never call `instagram-cli` or fetch from Instagram's API. The configured account (`ddyallo`) is a real account that must not be put at risk.
 
 ## Maintenance
 
