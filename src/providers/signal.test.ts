@@ -107,8 +107,8 @@ describe("processSignalMessages", () => {
 
     expect(result.incoming).toBe(0);
     expect(result.outgoing).toBe(2);
-    expect(messages[0].direction).toBe("out");
-    expect(messages[1].direction).toBe("out");
+    expect(messages[0]!.direction).toBe("out");
+    expect(messages[1]!.direction).toBe("out");
   });
 
   test("all incoming batch — no direction mutation", () => {
