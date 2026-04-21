@@ -9,7 +9,7 @@ bun run check          # Type-check (tsc --noEmit)
 bun run lint           # Lint (Biome, strict recommended rules)
 bun run lint:fix       # Lint and auto-fix
 bun run format         # Format (Biome)
-bun test               # Run tests (56 tests across 6 files)
+bun test               # Run tests (121 tests across 10 files)
 bun run start          # Run CLI directly (same as: bun src/cli.ts)
 bun link               # Make `onemessage` available globally
 onemessage status      # Verify providers are configured
@@ -242,6 +242,28 @@ Instagram aggressively detects bot-like behaviour. The Instagram provider must b
 - **If Instagram auth expires or rate-limits**, the sync daemon gracefully skips it and continues with other providers.
 - **`read()` with `--fresh` re-fetches the thread** — Unlike other cache-only providers, Instagram threads may have uncached sub-messages (because `MAX_THREADS_PER_SYNC` limits how many threads are fetched per cycle). The `--fresh` flag on `read()` calls `fetchThreadMessages()` to backfill before returning from cache. This is intentional and does not violate the `readFromCacheOrFail` convention — it extends it with a targeted pre-fetch.
 - **NEVER hit Instagram endpoints in tests or automated scripts.** Instagram's bot detection is aggressive and will ban the account. All Instagram tests must use mock data or cached responses only — never call `instagram-cli` or fetch from Instagram's API. The configured account (`ddyallo`) is a real account that must not be put at risk.
+
+## Test Structure
+
+Tests live in `src/tests/` organized by type:
+
+```
+src/tests/
+  unit/              # Pure functions — no DB, no I/O, no mocking needed
+    direction.test.ts        # isOutgoingEmail
+    telegram-bot.test.ts     # updateToEnvelope, updateToFull
+    daemon-whatsapp.test.ts  # resolveGroup (pure Map logic)
+    daemon.test.ts           # IPC dispatch (stub adapters)
+  integration/       # Real SQLite round-trips via store
+    store.test.ts            # search, inbox filters, contacts, freshness
+    signal.test.ts           # processSignalMessages + DB
+    sms.test.ts              # toSmsMessage + contact enrichment
+    whatsapp.test.ts         # parseAndStoreWAMessage + contact enrichment
+    instagram.test.ts        # readMessageToFull + direction
+    shared.test.ts           # readFromCacheOrFail, cacheSentMessage
+```
+
+**Conventions:** Use `bun:test` imports, test real exported functions (not inline replicas), use unique provider prefixes (`__test_*__`) for DB isolation, no mocking framework.
 
 ## Maintenance
 
