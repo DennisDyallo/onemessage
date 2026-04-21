@@ -63,13 +63,13 @@ async function apiGet(
 // Update parsing
 // ---------------------------------------------------------------------------
 
-interface TelegramUpdate {
+export interface TelegramUpdate {
   update_id: number;
   message?: TelegramMessage;
   channel_post?: TelegramMessage;
 }
 
-interface TelegramMessage {
+export interface TelegramMessage {
   message_id: number;
   date: number;
   chat: {
@@ -104,7 +104,7 @@ function chatName(msg: TelegramMessage): string {
   );
 }
 
-function updateToEnvelope(update: TelegramUpdate): MessageEnvelope | null {
+export function updateToEnvelope(update: TelegramUpdate): MessageEnvelope | null {
   const msg = update.message ?? update.channel_post;
   if (!msg) return null;
 
@@ -127,7 +127,7 @@ function updateToEnvelope(update: TelegramUpdate): MessageEnvelope | null {
   };
 }
 
-function updateToFull(update: TelegramUpdate): MessageFull | null {
+export function updateToFull(update: TelegramUpdate): MessageFull | null {
   const envelope = updateToEnvelope(update);
   if (!envelope) return null;
   const msg = update.message ?? update.channel_post;
