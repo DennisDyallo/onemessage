@@ -16,6 +16,7 @@ import type { DaemonOrchestrator, DaemonResponse, ProviderAdapter } from "./daem
 import { isIpcCapable } from "./daemon-adapter.ts";
 import { EmailAdapter } from "./daemon-email.ts";
 import { InstagramAdapter } from "./daemon-instagram.ts";
+import { MatrixAdapter } from "./daemon-matrix.ts";
 import { DAEMON_PID, DAEMON_SOCK } from "./daemon-shared.ts";
 import { SignalAdapter } from "./daemon-signal.ts";
 import { SmsAdapter } from "./daemon-sms.ts";
@@ -109,6 +110,7 @@ export class UnifiedDaemon {
       new SmsAdapter(),
       new TelegramBotAdapter(),
       new InstagramAdapter(),
+      new MatrixAdapter(),
     ];
 
     for (const adapter of this.adapters) {
