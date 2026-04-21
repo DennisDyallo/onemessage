@@ -69,13 +69,15 @@ function toSmsMessage(opts: {
   timestamp: string;
   direction: "in" | "out";
   read: boolean;
+  contactNames?: Map<string, string>;
 }): MessageFull {
-  const { id, contact, body, timestamp, direction, read } = opts;
+  const { id, contact, body, timestamp, direction, read, contactNames } = opts;
+  const contactName = contactNames?.get(contact) ?? contact;
   return {
     id,
     provider: "sms",
-    from: direction === "in" ? { name: contact, address: contact } : { name: "me", address: "me" },
-    to: direction === "in" ? [{ name: "me", address: "me" }] : [{ name: contact, address: contact }],
+    from: direction === "in" ? { name: contactName, address: contact } : { name: "me", address: "me" },
+    to: direction === "in" ? [{ name: "me", address: "me" }] : [{ name: contactName, address: contact }],
     preview: body.slice(0, 100),
     body,
     bodyFormat: "text",
@@ -106,6 +108,7 @@ function fetchSmsConversations(opts?: { unread?: boolean; fresh?: boolean; from?
   if (!result.stdout || result.stdout === "[]") return [];
 
   try {
+    const contactNames = store.getContactNamesByAddress("sms");
     const convs: SmsConversation[] = JSON.parse(result.stdout);
     return convs.map((c) => toSmsMessage({
       id: String(c.thread_id),
@@ -114,6 +117,7 @@ function fetchSmsConversations(opts?: { unread?: boolean; fresh?: boolean; from?
       timestamp: c.timestamp,
       direction: c.direction,
       read: c.read,
+      contactNames,
     }));
   } catch {
     process.stderr.write("[sms] Failed to parse kdeconnect-read-sms output\n");
@@ -142,6 +146,7 @@ function fetchThreadHistory(threadId: number): MessageFull[] {
     const history: SmsThreadHistory = JSON.parse(result.stdout);
     if (!history.messages || history.messages.length === 0) return [];
 
+    const contactNames = store.getContactNamesByAddress("sms");
     return history.messages.map((m) => toSmsMessage({
       id: `${history.thread_id}:${m.sub_id}`,
       contact: history.contact,
@@ -149,6 +154,7 @@ function fetchThreadHistory(threadId: number): MessageFull[] {
       timestamp: m.timestamp,
       direction: m.direction,
       read: m.read,
+      contactNames,
     }));
   } catch {
     process.stderr.write("[sms] Failed to parse thread history output\n");

@@ -139,6 +139,7 @@ export async function parseAndStoreWAMessage(
   sock?: WASocket,
   lidCache?: Map<string, string>,
   groupName?: string,
+  contactNames?: Map<string, string>,
 ): Promise<boolean> {
   try {
     if (!msg.message) return false;
@@ -178,10 +179,11 @@ export async function parseAndStoreWAMessage(
     };
 
     // For outgoing messages, the "to" is the chat; for incoming, "to" is self
+    const recipientAddress = chatJid.split("@")[0] || chatJid;
     const toContact = fromMe
       ? {
-          name: chatJid.split("@")[0] || chatJid,
-          address: chatJid.split("@")[0] || chatJid,
+          name: contactNames?.get(recipientAddress) ?? recipientAddress,
+          address: recipientAddress,
         }
       : { name: "me", address: "me" };
 

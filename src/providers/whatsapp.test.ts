@@ -1,11 +1,16 @@
 /**
- * Unit tests for WhatsApp direction detection.
+ * Unit tests for WhatsApp direction detection and contact name enrichment.
  *
  * WhatsApp messages processed in whatsapp-shared.ts use the Baileys
  * `fromMe` flag to determine direction. When fromMe=true:
  * - direction is "out"
  * - from is the contact (not "me"), matching the convention that
  *   the `from` field carries the conversation partner's identity
+ *
+ * Contact name enrichment: outgoing messages look up the recipient's
+ * human-readable name from a contact name map (built from the store's
+ * contacts table). Falls back to the raw phone number when no contact
+ * name is found.
  *
  * These tests exercise the direction and from-address logic using
  * mock Baileys-shaped message data, without touching the real
@@ -26,7 +31,9 @@ import type { MessageFull } from "../types.ts";
 //   const senderName = msg.pushName || senderJid.split("@")[0] || senderJid;
 //   const senderAddress = senderJid.split("@")[0] || senderJid;
 //   const fromContact = { name: senderName, address: senderAddress };  // always the sender's identity
-//   const toContact = fromMe ? { name: chatJid.split("@")[0], address: chatJid.split("@")[0] }
+//   const recipientAddress = chatJid.split("@")[0] || chatJid;
+//   const recipientName = contactNames?.get(recipientAddress) ?? recipientAddress;
+//   const toContact = fromMe ? { name: recipientName, address: recipientAddress }
 //                            : { name: "me", address: "me" };
 //
 // NOTE: For outgoing messages (fromMe=true) without a participant field, senderJid == chatJid,
@@ -48,7 +55,7 @@ interface MockBaileysMsg {
   message?: { conversation?: string; extendedTextMessage?: { text?: string } } | null;
 }
 
-function processWhatsAppMsg(msg: MockBaileysMsg): MessageFull {
+function processWhatsAppMsg(msg: MockBaileysMsg, contactNames?: Map<string, string>): MessageFull {
   const fromMe = msg.key.fromMe ?? false;
   const direction: "in" | "out" = fromMe ? "out" : "in";
   const chatJid = msg.key.remoteJid ?? "";
@@ -62,8 +69,12 @@ function processWhatsAppMsg(msg: MockBaileysMsg): MessageFull {
   // For outgoing 1:1 messages (fromMe=true, no participant), senderJid == chatJid,
   // so from.address is the contact's phone number (not "me").
   const fromContact = { name: senderName, address: senderAddress };
+
+  // For outgoing messages, look up recipient name from contact names map
+  const recipientAddress = chatJid.split("@")[0] || chatJid;
+  const recipientName = contactNames?.get(recipientAddress) ?? recipientAddress;
   const toContact = fromMe
-    ? { name: chatJid.split("@")[0] || chatJid, address: chatJid.split("@")[0] || chatJid }
+    ? { name: recipientName, address: recipientAddress }
     : { name: "me", address: "me" };
 
   const content =
@@ -197,5 +208,87 @@ describe("WhatsApp direction detection", () => {
       message: { conversation: "No fromMe field" },
     });
     expect(msg.direction).toBe("in");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Contact name enrichment for outgoing messages
+// ---------------------------------------------------------------------------
+
+describe("WhatsApp outgoing contact name enrichment", () => {
+  test("outgoing message uses contact name from lookup when available", () => {
+    const contactNames = new Map([["46728418689", "John (tenant)"]]);
+    const msg = processWhatsAppMsg(
+      {
+        key: { remoteJid: "46728418689@s.whatsapp.net", fromMe: true, id: "msg-name-001" },
+        messageTimestamp: TS,
+        message: { conversation: "Hey John" },
+      },
+      contactNames,
+    );
+    expect(msg.to[0]?.name).toBe("John (tenant)");
+    expect(msg.to[0]?.address).toBe("46728418689");
+    expect(msg.direction).toBe("out");
+  });
+
+  test("outgoing message falls back to phone number when no contact exists", () => {
+    const contactNames = new Map<string, string>(); // empty map
+    const msg = processWhatsAppMsg(
+      {
+        key: { remoteJid: "46799999999@s.whatsapp.net", fromMe: true, id: "msg-name-002" },
+        messageTimestamp: TS,
+        message: { conversation: "Hello stranger" },
+      },
+      contactNames,
+    );
+    expect(msg.to[0]?.name).toBe("46799999999");
+    expect(msg.to[0]?.address).toBe("46799999999");
+  });
+
+  test("outgoing message falls back to phone number when contactNames is undefined", () => {
+    const msg = processWhatsAppMsg(
+      {
+        key: { remoteJid: "46799999999@s.whatsapp.net", fromMe: true, id: "msg-name-003" },
+        messageTimestamp: TS,
+        message: { conversation: "No contact map" },
+      },
+      undefined,
+    );
+    expect(msg.to[0]?.name).toBe("46799999999");
+    expect(msg.to[0]?.address).toBe("46799999999");
+  });
+
+  test("incoming messages are unaffected by contact name lookup", () => {
+    const contactNames = new Map([["46728418689", "John (tenant)"]]);
+    const msg = processWhatsAppMsg(
+      {
+        key: { remoteJid: "46728418689@s.whatsapp.net", fromMe: false, id: "msg-name-004" },
+        messageTimestamp: TS,
+        pushName: "John",
+        message: { conversation: "Message from John" },
+      },
+      contactNames,
+    );
+    // Incoming: to should be "me", not the contact name
+    expect(msg.to[0]?.name).toBe("me");
+    expect(msg.to[0]?.address).toBe("me");
+    expect(msg.from?.name).toBe("John");
+    expect(msg.direction).toBe("in");
+  });
+
+  test("group outgoing messages use contact name for group address", () => {
+    const contactNames = new Map([["1234567890", "Family Group"]]);
+    const msg = processWhatsAppMsg(
+      {
+        key: { remoteJid: "1234567890@g.us", fromMe: true, id: "msg-name-005" },
+        messageTimestamp: TS,
+        message: { conversation: "Group message" },
+      },
+      contactNames,
+    );
+    expect(msg.isGroup).toBe(true);
+    expect(msg.direction).toBe("out");
+    // Group messages: to address is the group JID prefix
+    expect(msg.to[0]?.address).toBe("1234567890");
   });
 });

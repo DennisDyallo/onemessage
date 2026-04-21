@@ -15,6 +15,7 @@ import qrcode from "qrcode-terminal";
 import { DisconnectReason } from "@whiskeysockets/baileys";
 
 import { getConfigDir } from "./config.ts";
+import * as store from "./store.ts";
 import { createBaileysSocket, parseAndStoreWAMessage } from "./whatsapp-shared.ts";
 
 // ---------------------------------------------------------------------------
@@ -111,9 +112,10 @@ async function connectSocket(
         if (historySyncDone) return;
 
         batchCount++;
+        const contactNames = store.getContactNamesByAddress("whatsapp");
         let stored = 0;
         for (const msg of messages) {
-          const ok = await parseAndStoreWAMessage(msg, sock, lidCache);
+          const ok = await parseAndStoreWAMessage(msg, sock, lidCache, undefined, contactNames);
           if (ok) stored++;
         }
         totalStored += stored;

@@ -22,17 +22,19 @@ function toSmsMessage(opts: {
   timestamp: string;
   direction: "in" | "out";
   read: boolean;
+  contactNames?: Map<string, string>;
 }): MessageFull {
-  const { id, contact, body, timestamp, direction, read } = opts;
+  const { id, contact, body, timestamp, direction, read, contactNames } = opts;
+  const contactName = contactNames?.get(contact) ?? contact;
   return {
     id,
     provider: "sms",
     from: direction === "in"
-      ? { name: contact, address: contact }
+      ? { name: contactName, address: contact }
       : { name: "me", address: "me" },
     to: direction === "in"
       ? [{ name: "me", address: "me" }]
-      : [{ name: contact, address: contact }],
+      : [{ name: contactName, address: contact }],
     preview: body.slice(0, 100),
     body,
     bodyFormat: "text",
@@ -149,5 +151,70 @@ describe("SMS toSmsMessage direction", () => {
       read: true,
     });
     expect(msg.provider).toBe("sms");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Contact name enrichment
+// ---------------------------------------------------------------------------
+
+describe("SMS contact name enrichment", () => {
+  test("outgoing SMS uses contact name from lookup when available", () => {
+    const contactNames = new Map([["+46711111111", "Alice"]]);
+    const msg = toSmsMessage({
+      id: "2001",
+      contact: "+46711111111",
+      body: "Hey Alice",
+      timestamp: NOW,
+      direction: "out",
+      read: true,
+      contactNames,
+    });
+    expect(msg.to[0]?.name).toBe("Alice");
+    expect(msg.to[0]?.address).toBe("+46711111111");
+  });
+
+  test("outgoing SMS falls back to raw contact when no name exists", () => {
+    const contactNames = new Map<string, string>();
+    const msg = toSmsMessage({
+      id: "2002",
+      contact: "+46799999999",
+      body: "Hello",
+      timestamp: NOW,
+      direction: "out",
+      read: true,
+      contactNames,
+    });
+    expect(msg.to[0]?.name).toBe("+46799999999");
+    expect(msg.to[0]?.address).toBe("+46799999999");
+  });
+
+  test("incoming SMS uses contact name for from field", () => {
+    const contactNames = new Map([["+46711111111", "Alice"]]);
+    const msg = toSmsMessage({
+      id: "2003",
+      contact: "+46711111111",
+      body: "Hello from Alice",
+      timestamp: NOW,
+      direction: "in",
+      read: false,
+      contactNames,
+    });
+    expect(msg.from?.name).toBe("Alice");
+    expect(msg.from?.address).toBe("+46711111111");
+    expect(msg.to[0]?.name).toBe("me");
+  });
+
+  test("incoming SMS without contact name falls back to raw contact", () => {
+    const msg = toSmsMessage({
+      id: "2004",
+      contact: "+46799999999",
+      body: "Unknown sender",
+      timestamp: NOW,
+      direction: "in",
+      read: false,
+    });
+    expect(msg.from?.name).toBe("+46799999999");
+    expect(msg.from?.address).toBe("+46799999999");
   });
 });
