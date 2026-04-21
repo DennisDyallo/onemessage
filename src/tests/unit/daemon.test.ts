@@ -1,11 +1,11 @@
 import { describe, expect, test } from "bun:test";
-import { UnifiedDaemon } from "./daemon.ts";
+import { UnifiedDaemon } from "../../daemon.ts";
 import type {
   DaemonOrchestrator,
   DaemonResponse,
   IpcCapableAdapter,
   ProviderAdapter,
-} from "./daemon-adapter.ts";
+} from "../../daemon-adapter.ts";
 
 // ---------------------------------------------------------------------------
 // Stub adapters

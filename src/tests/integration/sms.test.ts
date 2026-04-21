@@ -9,7 +9,7 @@
  * set correctly for each direction.
  */
 import { describe, expect, test } from "bun:test";
-import type { MessageFull } from "../types.ts";
+import type { MessageFull } from "../../types.ts";
 
 // ---------------------------------------------------------------------------
 // Inline replica of toSmsMessage() from sms.ts

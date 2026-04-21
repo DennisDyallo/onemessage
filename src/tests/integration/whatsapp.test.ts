@@ -17,7 +17,7 @@
  * WhatsApp daemon or socket.
  */
 import { describe, expect, test } from "bun:test";
-import type { MessageFull } from "../types.ts";
+import type { MessageFull } from "../../types.ts";
 
 // ---------------------------------------------------------------------------
 // Inline replica of the WhatsApp message-to-full mapping from whatsapp-shared.ts

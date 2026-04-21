@@ -11,7 +11,7 @@ import {
   upsertContacts,
   upsertFullMessages,
   upsertMessages,
-} from "./store";
+} from "../../store.ts";
 
 describe("direction field", () => {
   const testProvider = "__test_direction__";

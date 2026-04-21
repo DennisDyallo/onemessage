@@ -12,7 +12,7 @@
  * 3. Edge cases (media-only, no text)
  */
 import { describe, expect, test } from "bun:test";
-import type { MessageFull } from "../types.ts";
+import type { MessageFull } from "../../types.ts";
 
 // ---------------------------------------------------------------------------
 // Inline replica of readMessageToFull() from instagram.ts

@@ -5,9 +5,9 @@
  * Integration tests use a __test__ provider prefix to avoid polluting real data.
  */
 import { beforeEach, describe, expect, test } from "bun:test";
-import * as store from "../store.ts";
-import type { MessageFull } from "../types.ts";
-import { processSignalMessages } from "./signal.ts";
+import { processSignalMessages } from "../../providers/signal.ts";
+import * as store from "../../store.ts";
+import type { MessageFull } from "../../types.ts";
 
 // ---------------------------------------------------------------------------
 // Helpers

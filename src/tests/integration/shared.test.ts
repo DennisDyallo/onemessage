@@ -5,9 +5,9 @@
  * Uses a unique provider name to avoid collisions with real data.
  */
 import { describe, expect, test } from "bun:test";
-import * as store from "../store.ts";
-import type { MessageFull } from "../types.ts";
-import { cacheSentMessage, readFromCacheOrFail } from "./shared.ts";
+import { cacheSentMessage, readFromCacheOrFail } from "../../providers/shared.ts";
+import * as store from "../../store.ts";
+import type { MessageFull } from "../../types.ts";
 
 // ---------------------------------------------------------------------------
 // Helpers

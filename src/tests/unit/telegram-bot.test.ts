@@ -4,8 +4,8 @@
  * Tests the REAL updateToEnvelope and updateToFull functions — not replicas.
  */
 import { describe, expect, test } from "bun:test";
-import type { TelegramMessage, TelegramUpdate } from "./telegram-bot.ts";
-import { updateToEnvelope, updateToFull } from "./telegram-bot.ts";
+import type { TelegramMessage, TelegramUpdate } from "../../providers/telegram-bot.ts";
+import { updateToEnvelope, updateToFull } from "../../providers/telegram-bot.ts";
 
 // ---------------------------------------------------------------------------
 // Helpers
