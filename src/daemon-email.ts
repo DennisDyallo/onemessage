@@ -7,11 +7,17 @@ import type { ProviderAdapter, DaemonOrchestrator } from "./daemon-adapter.ts";
 
 export class EmailAdapter implements ProviderAdapter {
   readonly name = "email";
-  private settings: ReturnType<typeof resolveEmailSettings> | null = null;
+  readonly polling = true;
+  private active = false;
 
   start(orchestrator: DaemonOrchestrator): void {
-    this.settings = resolveEmailSettings();
-    if (!this.settings) return;
+    // Check if email is configured at startup (for isActive reporting),
+    // but resolve settings inside each poll so config changes take effect
+    // without a daemon restart.
+    const initialSettings = resolveEmailSettings();
+    if (!initialSettings) return;
+
+    this.active = true;
 
     const config = loadConfig();
     const enabled = config.daemon?.providers?.email?.enabled !== false;
@@ -22,17 +28,20 @@ export class EmailAdapter implements ProviderAdapter {
       orchestrator.defaultPollInterval();
 
     orchestrator.schedulePoll("email", interval, async () => {
-      await fetchEmailInbox(this.settings!, this.settings!.accounts, "INBOX");
+      const settings = resolveEmailSettings();
+      if (!settings) return;
+      await fetchEmailInbox(settings, settings.accounts, "INBOX");
     });
   }
 
   async fetch(): Promise<void> {
-    if (!this.settings) throw new Error("Email not configured");
-    await fetchEmailInbox(this.settings, this.settings.accounts, "INBOX");
+    const settings = resolveEmailSettings();
+    if (!settings) throw new Error("Email not configured");
+    await fetchEmailInbox(settings, settings.accounts, "INBOX");
   }
 
   isActive(): boolean {
-    return this.settings !== null;
+    return this.active;
   }
 
   statusInfo(): Record<string, unknown> {

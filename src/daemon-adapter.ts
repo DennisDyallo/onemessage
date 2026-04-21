@@ -22,6 +22,9 @@ export interface ProviderAdapter {
   /** Unique provider name (e.g., "email", "signal", "whatsapp"). */
   readonly name: string;
 
+  /** Whether this provider uses polling (true) or real-time connections (false). */
+  readonly polling: boolean;
+
   /**
    * Start the provider.
    * - Polling providers: call orchestrator.schedulePoll()

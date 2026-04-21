@@ -5,6 +5,7 @@ import type { ProviderAdapter, DaemonOrchestrator } from "./daemon-adapter.ts";
 
 export class InstagramAdapter implements ProviderAdapter {
   readonly name = "instagram";
+  readonly polling = true;
   private username: string | null = null;
 
   start(orchestrator: DaemonOrchestrator): void {

@@ -30,6 +30,7 @@ export interface MeConfig {
 export interface DaemonConfig {
   pollIntervalMs?: number;
   providers?: {
+    whatsapp?: { enabled?: boolean };
     signal?: { enabled?: boolean; pollIntervalMs?: number; mode?: "daemon" | "poll" };
     email?: { enabled?: boolean; pollIntervalMs?: number };
     sms?: { enabled?: boolean; pollIntervalMs?: number };

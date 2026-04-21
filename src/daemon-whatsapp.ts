@@ -9,10 +9,12 @@ import {
 import * as store from "./store.ts";
 import type { MessageFull } from "./types.ts";
 import { AUTH_DIR, createBaileysSocket, parseAndStoreWAMessage } from "./whatsapp-shared.ts";
+import { loadConfig } from "./config.ts";
 import type { IpcCapableAdapter, DaemonOrchestrator, DaemonResponse } from "./daemon-adapter.ts";
 
 export class WhatsAppAdapter implements IpcCapableAdapter {
   readonly name = "whatsapp";
+  readonly polling = false;
 
   private sock: WASocket | null = null;
   private connected = false;
@@ -32,6 +34,12 @@ export class WhatsAppAdapter implements IpcCapableAdapter {
   private flushing = false;
 
   async start(_orchestrator: DaemonOrchestrator): Promise<void> {
+    const config = loadConfig();
+    if (config.daemon?.providers?.whatsapp?.enabled === false) {
+      process.stderr.write("[daemon] WhatsApp disabled in config — skipping\n");
+      return;
+    }
+
     if (existsSync(AUTH_DIR)) {
       await this.connectWhatsApp();
     } else {
@@ -398,7 +406,8 @@ export class WhatsAppAdapter implements IpcCapableAdapter {
     const resolvedGroupName = remoteJid?.endsWith("@g.us")
       ? this.groupCache.get(remoteJid)?.subject
       : undefined;
-    return parseAndStoreWAMessage(msg, this.sock ?? undefined, this.lidToPhoneMap, resolvedGroupName);
+    const contactNames = store.getContactNamesByAddress("whatsapp");
+    return parseAndStoreWAMessage(msg, this.sock ?? undefined, this.lidToPhoneMap, resolvedGroupName, contactNames);
   }
 
   private async syncGroupMetadata(): Promise<void> {

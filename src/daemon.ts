@@ -13,7 +13,7 @@ import { existsSync, mkdirSync, writeFileSync, unlinkSync } from "fs";
 
 import { loadConfig } from "./config.ts";
 import { DAEMON_PID, DAEMON_SOCK } from "./daemon-shared.ts";
-import type { ProviderAdapter, DaemonOrchestrator } from "./daemon-adapter.ts";
+import type { ProviderAdapter, DaemonOrchestrator, DaemonResponse } from "./daemon-adapter.ts";
 import { isIpcCapable } from "./daemon-adapter.ts";
 import { SignalAdapter } from "./daemon-signal.ts";
 import { EmailAdapter } from "./daemon-email.ts";
@@ -27,17 +27,11 @@ import { WhatsAppAdapter } from "./daemon-whatsapp.ts";
 // ---------------------------------------------------------------------------
 
 type DaemonRequest =
-  | { type: "send"; jid: string; text: string }
   | { type: "status" }
-  | { type: "resolve-group"; name: string }
-  | { type: "list-groups" }
   | { type: "ping" }
   | { type: "fetch"; provider?: string }
-  | { type: "providers" };
-
-type DaemonResponse =
-  | { ok: true; data?: unknown }
-  | { ok: false; error: string };
+  | { type: "providers" }
+  | { type: string; [key: string]: unknown }; // adapter-delegated types
 
 // ---------------------------------------------------------------------------
 // UnifiedDaemon
@@ -239,9 +233,15 @@ export class UnifiedDaemon {
           string,
           { lastPoll: string | null; enabled: boolean; mode?: string }
         > = {};
+        const realtimeStatus: Record<string, Record<string, unknown>> = {};
+
         for (const name of this.polledProviderNames()) {
-          if (name === "whatsapp") continue;
           const adapter = this.adapterMap.get(name);
+          if (adapter && !adapter.polling) {
+            // Real-time adapter — report separately
+            realtimeStatus[name] = adapter.statusInfo();
+            continue;
+          }
           const lastMs = this.lastPoll.get(name);
           pollingStatus[name] = {
             lastPoll: lastMs ? new Date(lastMs).toISOString() : null,
@@ -250,21 +250,19 @@ export class UnifiedDaemon {
           };
         }
 
-        const waAdapter = this.adapterMap.get("whatsapp");
-
         return {
           ok: true,
           data: {
             pid: process.pid,
             uptime: Math.floor((Date.now() - this.startTime) / 1000),
-            whatsapp: waAdapter?.statusInfo() ?? { connected: false, groups: 0, queuedMessages: 0 },
+            ...realtimeStatus,
             polling: pollingStatus,
           },
         };
       }
 
       case "fetch": {
-        const provider = req.provider;
+        const provider = req.provider as string | undefined;
 
         if (provider) {
           const adapter = this.adapterMap.get(provider);

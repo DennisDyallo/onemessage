@@ -4,6 +4,7 @@ import type { ProviderAdapter, DaemonOrchestrator } from "./daemon-adapter.ts";
 
 export class TelegramBotAdapter implements ProviderAdapter {
   readonly name = "telegram-bot";
+  readonly polling = true;
   private botToken: string | null = null;
 
   start(orchestrator: DaemonOrchestrator): void {

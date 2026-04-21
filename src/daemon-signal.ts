@@ -21,6 +21,7 @@ import type { ProviderAdapter, DaemonOrchestrator } from "./daemon-adapter.ts";
 
 export class SignalAdapter implements ProviderAdapter {
   readonly name = "signal";
+  readonly polling = true;
   private daemonHandle: SignalDaemonHandle | null = null;
   private phone: string | null = null;
 

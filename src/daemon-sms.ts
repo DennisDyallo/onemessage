@@ -5,6 +5,7 @@ import type { ProviderAdapter, DaemonOrchestrator } from "./daemon-adapter.ts";
 
 export class SmsAdapter implements ProviderAdapter {
   readonly name = "sms";
+  readonly polling = true;
 
   start(orchestrator: DaemonOrchestrator): void {
     if (!cliExists("kdeconnect-read-sms")) return;
