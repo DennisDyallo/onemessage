@@ -43,12 +43,13 @@ export interface Contact {
  * Attachment metadata for a message.
  *
  * Invariant when attachments are requested:
- *   - Exactly one of `data` or `path` must be set
+ *   - Exactly one of `data`, `path`, or `unavailable` must be set
  *   - `data` is set for email (base64-encoded in-memory bytes)
  *   - `path` is set for signal/whatsapp (absolute filesystem path)
+ *   - `unavailable` is set when attachment bytes cannot be fetched (reason code provided)
  *
  * When attachments are NOT requested (inbox-light mode):
- *   - Neither `data` nor `path` should be set
+ *   - None of `data`, `path`, or `unavailable` should be set
  */
 export interface Attachment {
   filename: string;
@@ -58,6 +59,8 @@ export interface Attachment {
   data?: string;
   /** absolute filesystem path to attachment (signal/whatsapp) */
   path?: string;
+  /** reason why attachment bytes are unavailable (e.g., "no-id", "file-missing", "path-traversal-rejected") */
+  unavailable?: string;
 }
 
 // ---------------------------------------------------------------------------

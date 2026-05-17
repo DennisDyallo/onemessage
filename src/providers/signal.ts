@@ -1,8 +1,8 @@
-import path from "node:path";
 import { loadConfig } from "../config.ts";
 import { registerProvider } from "../registry.ts";
 import { getSignalAttachmentDir } from "../shared/attachment-paths.ts";
 import { validateAttachment } from "../shared/attachment-validation.ts";
+import { constructSafeSignalAttachmentPath } from "../shared/signal-attachment-security.ts";
 import * as store from "../store.ts";
 import type { Attachment, MessageFull, MessagingProvider } from "../types.ts";
 import { cacheSentMessage, cliExists, readFromCacheOrFail, runCli, runCliAsync } from "./shared.ts";
@@ -632,15 +632,27 @@ const signalProvider: MessagingProvider = {
       msg.attachments = msg.attachments.map((att) => {
         // Type-cast to access the internal id field we stored at parse time
         const attWithId = att as Attachment & { id?: string };
-        const enriched: Attachment = {
-          ...att,
-          ...(attWithId.id ? { path: path.join(attachmentDir, attWithId.id) } : {}),
-        };
+
+        // Construct a safe path using security validation
+        const safePath = constructSafeSignalAttachmentPath(attachmentDir, attWithId.id);
+
+        let enriched: Attachment;
+        if (safePath) {
+          // Valid ID → set path
+          enriched = { ...att, path: safePath };
+        } else if (!attWithId.id) {
+          // No ID available → mark as unavailable
+          enriched = { ...att, unavailable: "no-id" };
+        } else {
+          // ID exists but failed validation (path traversal, etc.) → reject
+          enriched = { ...att, unavailable: "path-traversal-rejected" };
+        }
+
         validateAttachment(enriched, { attachmentsRequested: includeAttachments });
         return enriched;
       });
     } else {
-      // Inbox-light mode: verify no data/path is set
+      // Inbox-light mode: verify no data/path/unavailable is set
       msg.attachments.forEach((att) => {
         validateAttachment(att, { attachmentsRequested: includeAttachments });
       });
