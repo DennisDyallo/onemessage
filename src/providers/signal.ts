@@ -161,7 +161,7 @@ interface SignalJsonMessage {
   };
 }
 
-function parseSignalMessages(jsonLines: string, account?: string): MessageFull[] {
+export function parseSignalMessages(jsonLines: string, account?: string): MessageFull[] {
   const messages: MessageFull[] = [];
   // Build group name lookup from cache (best-effort, may be empty on first run)
   const groupNames = new Map<string, string>();
