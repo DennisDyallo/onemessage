@@ -162,13 +162,6 @@ interface SignalJsonMessage {
 }
 
 function parseSignalMessages(jsonLines: string, account?: string): MessageFull[] {
-  // [TEMP-DIAGNOSTIC P1.5] dump raw input to /tmp/signal-debug.jsonl for parser shape investigation
-  try {
-    const fs = require("node:fs");
-    if (jsonLines.trim()) {
-      fs.appendFileSync("/tmp/signal-debug.jsonl", `${jsonLines}\n--- BOUNDARY ---\n`);
-    }
-  } catch {}
   const messages: MessageFull[] = [];
   // Build group name lookup from cache (best-effort, may be empty on first run)
   const groupNames = new Map<string, string>();
