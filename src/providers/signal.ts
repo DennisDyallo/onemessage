@@ -408,6 +408,11 @@ export function startSignalDaemon(opts: {
             buffer = buffer.slice(newlineIdx + 1);
 
             if (!line) continue;
+            // [TEMP-DIAGNOSTIC P1.5] dump every raw line for parser shape investigation
+            try {
+              const fs = await import("node:fs/promises");
+              await fs.appendFile("/tmp/signal-debug.jsonl", `${line}\n`);
+            } catch {}
             const messages = parseSignalMessages(line, opts.account);
             if (messages.length > 0) {
               opts.onMessage(messages);
