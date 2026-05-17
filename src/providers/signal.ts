@@ -1,7 +1,10 @@
+import path from "node:path";
 import { loadConfig } from "../config.ts";
 import { registerProvider } from "../registry.ts";
+import { getSignalAttachmentDir } from "../shared/attachment-paths.ts";
+import { validateAttachment } from "../shared/attachment-validation.ts";
 import * as store from "../store.ts";
-import type { MessageFull, MessagingProvider } from "../types.ts";
+import type { Attachment, MessageFull, MessagingProvider } from "../types.ts";
 import { cacheSentMessage, cliExists, readFromCacheOrFail, runCli, runCliAsync } from "./shared.ts";
 
 // ---------------------------------------------------------------------------
@@ -138,6 +141,7 @@ interface SignalJsonMessage {
         contentType?: string;
         filename?: string;
         size?: number;
+        id?: string;
       }[];
     };
     syncMessage?: {
@@ -146,7 +150,12 @@ interface SignalJsonMessage {
         message?: string;
         destination?: string;
         destinationNumber?: string;
-        attachments?: unknown[];
+        attachments?: {
+          contentType?: string;
+          filename?: string;
+          size?: number;
+          id?: string;
+        }[];
       };
     };
   };
@@ -191,6 +200,17 @@ function parseSignalMessages(jsonLines: string, account?: string): MessageFull[]
       const groupId = dataMsg?.groupInfo?.groupId;
       const groupName = groupId ? (groupNames.get(groupId) ?? groupId) : undefined;
 
+      // Parse attachment metadata (filename, size, type, id)
+      // Note: path is NOT populated here — it's added during read() when --attachments is requested
+      const rawAttachments = dataMsg?.attachments ?? syncMsg?.attachments ?? [];
+      const attachments = rawAttachments.map((att) => ({
+        filename: att.filename ?? "unknown",
+        contentType: att.contentType ?? "application/octet-stream",
+        size: att.size ?? 0,
+        // Store the id so read() can construct the path later
+        ...(att.id ? { id: att.id } : {}),
+      }));
+
       // NOTE: isSync is unreliable for direction — DataMessages from own
       // account have isSync=false but are outgoing. processSignalMessages
       // overrides direction based on from.address vs account before upserting.
@@ -213,7 +233,7 @@ function parseSignalMessages(jsonLines: string, account?: string): MessageFull[]
         preview: content.slice(0, 100),
         body: content,
         bodyFormat: "text",
-        attachments: [],
+        attachments: attachments as Attachment[],
         date: timestamp ? new Date(timestamp).toISOString() : "",
         unread: true,
         hasAttachments,
@@ -600,8 +620,33 @@ const signalProvider: MessagingProvider = {
     });
   },
 
-  async read(messageId, _opts) {
-    return readFromCacheOrFail("signal", messageId);
+  async read(messageId, opts) {
+    const msg = readFromCacheOrFail("signal", messageId);
+    if (!msg) return null;
+
+    const includeAttachments = opts?.includeAttachments ?? false;
+
+    // Enrich attachments with filesystem paths when --attachments is requested
+    if (includeAttachments && msg.attachments.length > 0) {
+      const attachmentDir = getSignalAttachmentDir();
+      msg.attachments = msg.attachments.map((att) => {
+        // Type-cast to access the internal id field we stored at parse time
+        const attWithId = att as Attachment & { id?: string };
+        const enriched: Attachment = {
+          ...att,
+          ...(attWithId.id ? { path: path.join(attachmentDir, attWithId.id) } : {}),
+        };
+        validateAttachment(enriched, { attachmentsRequested: includeAttachments });
+        return enriched;
+      });
+    } else {
+      // Inbox-light mode: verify no data/path is set
+      msg.attachments.forEach((att) => {
+        validateAttachment(att, { attachmentsRequested: includeAttachments });
+      });
+    }
+
+    return msg;
   },
 
   async search(query, opts) {

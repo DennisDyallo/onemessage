@@ -39,11 +39,25 @@ export interface Contact {
   address: string;
 }
 
+/**
+ * Attachment metadata for a message.
+ *
+ * Invariant when attachments are requested:
+ *   - Exactly one of `data` or `path` must be set
+ *   - `data` is set for email (base64-encoded in-memory bytes)
+ *   - `path` is set for signal/whatsapp (absolute filesystem path)
+ *
+ * When attachments are NOT requested (inbox-light mode):
+ *   - Neither `data` nor `path` should be set
+ */
 export interface Attachment {
   filename: string;
   contentType: string;
   size: number;
-  data?: string; // base64
+  /** base64-encoded attachment data (email only) */
+  data?: string;
+  /** absolute filesystem path to attachment (signal/whatsapp) */
+  path?: string;
 }
 
 // ---------------------------------------------------------------------------

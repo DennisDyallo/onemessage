@@ -6,6 +6,7 @@ import { lookup } from "mime-types";
 import nodemailer from "nodemailer";
 import { EMAIL_DEFAULTS, loadConfig } from "../config.ts";
 import { registerProvider } from "../registry.ts";
+import { validateAttachment } from "../shared/attachment-validation.ts";
 import * as store from "../store.ts";
 import type { MessageEnvelope, MessageFull, MessagingProvider } from "../types.ts";
 
@@ -241,12 +242,16 @@ async function fetchFullMessage(
         hasAttachments: (parsed.attachments || []).length > 0,
         body,
         bodyFormat,
-        attachments: (parsed.attachments || []).map((att) => ({
-          filename: att.filename || "unnamed",
-          contentType: att.contentType || "application/octet-stream",
-          size: att.size || 0,
-          ...(includeAttachments ? { data: att.content.toString("base64") } : {}),
-        })),
+        attachments: (parsed.attachments || []).map((att) => {
+          const attachment = {
+            filename: att.filename || "unnamed",
+            contentType: att.contentType || "application/octet-stream",
+            size: att.size || 0,
+            ...(includeAttachments ? { data: att.content.toString("base64") } : {}),
+          };
+          validateAttachment(attachment, { attachmentsRequested: includeAttachments });
+          return attachment;
+        }),
         ...(parsed.messageId ? { rfcMessageId: parsed.messageId } : {}),
         direction: isOutgoingEmail(fromAddr, s) ? "out" : "in",
       };
