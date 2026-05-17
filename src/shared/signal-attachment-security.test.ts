@@ -69,15 +69,8 @@ describe("isValidSignalAttachmentId", () => {
   });
 });
 
-describe("constructSafeSignalAttachmentPath", () => {
+describe("constructSafeSignalAttachmentPath (charset validation only)", () => {
   const baseDir = "/tmp/signal-attachments";
-
-  it("should construct path for valid ID", () => {
-    const result = constructSafeSignalAttachmentPath(baseDir, "abc123");
-    expect(result).not.toBeNull();
-    expect(result).toContain("abc123");
-    expect(result).toStartWith(baseDir);
-  });
 
   it("should return null for invalid ID (path traversal)", () => {
     expect(constructSafeSignalAttachmentPath(baseDir, "../foo")).toBeNull();
@@ -96,19 +89,94 @@ describe("constructSafeSignalAttachmentPath", () => {
     expect(constructSafeSignalAttachmentPath(baseDir, undefined)).toBeNull();
   });
 
-  it("should ensure resolved path stays within base directory", () => {
-    // Even if ID validation passes, the resolved path must be within baseDir
-    const result = constructSafeSignalAttachmentPath(baseDir, "abc123");
-    expect(result).not.toBeNull();
-    if (result) {
-      const resolved = path.resolve(result);
-      const resolvedBase = path.resolve(baseDir);
-      expect(resolved.startsWith(resolvedBase)).toBe(true);
+  it("should reject IDs with path separators", () => {
+    expect(constructSafeSignalAttachmentPath(baseDir, "foo/bar")).toBeNull();
+  });
+
+  it("should return null for valid ID when directory/file doesn't exist", () => {
+    // Valid charset but no matching file on disk
+    const result = constructSafeSignalAttachmentPath("/nonexistent/dir", "abc123");
+    expect(result).toBeNull();
+  });
+});
+
+describe("constructSafeSignalAttachmentPath with real file resolution", () => {
+  const fs = require("node:fs");
+  const os = require("node:os");
+
+  it("should resolve <id>.<ext> when file exists", () => {
+    // Create a temp directory
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "signal-test-"));
+
+    try {
+      // Create a file with extension
+      const testFile = path.join(tmpDir, "testid123.aac");
+      fs.writeFileSync(testFile, "dummy content");
+
+      // Should find and return the file
+      const result = constructSafeSignalAttachmentPath(tmpDir, "testid123");
+      expect(result).not.toBeNull();
+      expect(result).toBe(path.resolve(testFile));
+    } finally {
+      // Cleanup
+      fs.rmSync(tmpDir, { recursive: true, force: true });
     }
   });
 
-  it("should reject IDs with path separators even if other checks pass", () => {
-    // This should fail at the validation step
-    expect(constructSafeSignalAttachmentPath(baseDir, "foo/bar")).toBeNull();
+  it("should return null when no matching file exists", () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "signal-test-"));
+
+    try {
+      // Empty directory
+      const result = constructSafeSignalAttachmentPath(tmpDir, "nonexistent");
+      expect(result).toBeNull();
+    } finally {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+
+  it("should return null when multiple files match (ambiguous)", () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "signal-test-"));
+
+    try {
+      // Create two files with same ID but different extensions
+      fs.writeFileSync(path.join(tmpDir, "ambiguous.aac"), "audio");
+      fs.writeFileSync(path.join(tmpDir, "ambiguous.m4a"), "audio2");
+
+      const result = constructSafeSignalAttachmentPath(tmpDir, "ambiguous");
+      expect(result).toBeNull();
+    } finally {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+
+  it("should not access filesystem for malicious IDs (charset check first)", () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "signal-test-"));
+
+    try {
+      // Create a file that would be vulnerable to traversal
+      fs.writeFileSync(path.join(tmpDir, "foo.txt"), "content");
+
+      // Malicious ID should be rejected without filesystem access
+      const result = constructSafeSignalAttachmentPath(tmpDir, "../foo");
+      expect(result).toBeNull();
+    } finally {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+
+  it("should handle bare-id files (no extension) as not found", () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "signal-test-"));
+
+    try {
+      // Create a file without extension
+      fs.writeFileSync(path.join(tmpDir, "bareid"), "content");
+
+      // Should NOT match (spec says signal-cli always writes with extension)
+      const result = constructSafeSignalAttachmentPath(tmpDir, "bareid");
+      expect(result).toBeNull();
+    } finally {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
   });
 });

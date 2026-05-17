@@ -54,7 +54,7 @@ describe("Signal attachment path enrichment via provider.read()", () => {
   const provider = getProvider(TEST_PROVIDER);
   if (!provider) throw new Error("Signal provider not registered");
 
-  it("should include path when attachmentsRequested=true AND id is valid", async () => {
+  it("should set unavailable='file-missing' when file doesn't exist on disk", async () => {
     const msg = makeMsgWithAttachments([{ filename: "voice.ogg", id: "abc123" }]);
     store.upsertFullMessage(msg);
 
@@ -63,9 +63,9 @@ describe("Signal attachment path enrichment via provider.read()", () => {
     if (!result) return;
 
     expect(result.attachments).toHaveLength(1);
-    expect(result.attachments[0]?.path).toBeDefined();
-    expect(result.attachments[0]?.path).toContain("abc123");
-    expect(result.attachments[0]?.unavailable).toBeUndefined();
+    // File doesn't exist on disk, so should be marked as unavailable
+    expect(result.attachments[0]?.unavailable).toBe("file-missing");
+    expect(result.attachments[0]?.path).toBeUndefined();
     expect(result.attachments[0]?.data).toBeUndefined();
   });
 
@@ -162,16 +162,17 @@ describe("Signal attachment path enrichment via provider.read()", () => {
     expect(result.attachments[0]?.data).toBeUndefined();
   });
 
-  it("should construct correct OS-aware path on macOS", () => {
+  it("should use XDG path on macOS (not Apple convention)", () => {
     if (process.platform !== "darwin") {
       return; // Skip on non-macOS
     }
 
     const attachmentDir = getSignalAttachmentDir();
-    expect(attachmentDir).toContain("Library/Application Support/signal-cli/attachments");
+    expect(attachmentDir).toContain(".local/share/signal-cli/attachments");
+    expect(attachmentDir).not.toContain("Library/Application Support");
   });
 
-  it("should construct correct OS-aware path on Linux", () => {
+  it("should use XDG path on Linux", () => {
     if (process.platform === "darwin") {
       return; // Skip on macOS
     }
@@ -194,10 +195,9 @@ describe("Signal attachment path enrichment via provider.read()", () => {
 
     expect(result.attachments).toHaveLength(3);
 
-    // First: valid path
-    expect(result.attachments[0]?.path).toBeDefined();
-    expect(result.attachments[0]?.path).toContain("valid123");
-    expect(result.attachments[0]?.unavailable).toBeUndefined();
+    // First: valid ID but file doesn't exist
+    expect(result.attachments[0]?.unavailable).toBe("file-missing");
+    expect(result.attachments[0]?.path).toBeUndefined();
 
     // Second: no id
     expect(result.attachments[1]?.unavailable).toBe("no-id");
@@ -208,7 +208,7 @@ describe("Signal attachment path enrichment via provider.read()", () => {
     expect(result.attachments[2]?.path).toBeUndefined();
   });
 
-  it("should accept base64-like IDs with padding", async () => {
+  it("should accept base64-like IDs with padding (even if file missing)", async () => {
     const msg = makeMsgWithAttachments([{ filename: "voice.ogg", id: "abc123XYZ==" }]);
     store.upsertFullMessage(msg);
 
@@ -217,8 +217,11 @@ describe("Signal attachment path enrichment via provider.read()", () => {
     if (!result) return;
 
     expect(result.attachments).toHaveLength(1);
-    expect(result.attachments[0]?.path).toBeDefined();
-    expect(result.attachments[0]?.path).toContain("abc123XYZ==");
-    expect(result.attachments[0]?.unavailable).toBeUndefined();
+    // ID is valid charset-wise, but file doesn't exist
+    expect(result.attachments[0]?.unavailable).toBe("file-missing");
+    expect(result.attachments[0]?.path).toBeUndefined();
   });
+
+  // Note: file-ambiguous case is covered by unit tests in signal-attachment-security.test.ts
+  // Testing it here would require mocking getSignalAttachmentDir which is complex
 });
