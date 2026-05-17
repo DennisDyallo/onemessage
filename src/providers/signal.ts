@@ -202,7 +202,13 @@ function parseSignalMessages(jsonLines: string, account?: string): MessageFull[]
 
       // Parse attachment metadata (filename, size, type, id)
       // Note: path is NOT populated here — it's added during read() when --attachments is requested
-      const rawAttachments = dataMsg?.attachments ?? syncMsg?.attachments ?? [];
+      // Prefer whichever side has content. `??` would pick dataMsg.attachments even if empty,
+      // which would drop attachments that only appear in syncMessage (e.g. quote-with-attachment
+      // edge cases where both data and sync are present but only one carries the bytes).
+      const rawAttachments =
+        (dataMsg?.attachments?.length ?? 0) > 0
+          ? (dataMsg?.attachments ?? [])
+          : (syncMsg?.attachments ?? []);
       const attachments = rawAttachments.map((att) => ({
         filename: att.filename ?? "unknown",
         contentType: att.contentType ?? "application/octet-stream",
