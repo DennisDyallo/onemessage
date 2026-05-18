@@ -9,6 +9,14 @@ import type { Attachment } from "../types";
  *   - `path`: absolute filesystem path (signal/whatsapp)
  *   - `unavailable`: reason code when bytes cannot be fetched
  *
+ * Known `unavailable` reason codes:
+ *   - "no-id": signal-cli attachment has no ID field
+ *   - "file-missing": signal-cli attachment file doesn't exist on disk
+ *   - "path-traversal-rejected": signal-cli attachment path contains ".."
+ *   - "size-exceeded": attachment exceeds size cap (10 MB for WhatsApp audio)
+ *   - "download-failed": download attempt threw an error (network/auth/etc)
+ *   - "history-sync-skipped": WhatsApp history sync - downloads disabled to prevent flood
+ *
  * When attachmentsRequested is false (inbox-light mode):
  *   - None of `data`, `path`, or `unavailable` should be set
  *

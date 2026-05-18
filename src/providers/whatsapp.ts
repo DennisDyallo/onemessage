@@ -2,6 +2,7 @@ import { existsSync } from "node:fs";
 import { join } from "node:path";
 import { daemonRequest, ensureDaemon } from "../daemons/shared.ts";
 import { registerProvider } from "../registry.ts";
+import { validateAttachment } from "../shared/attachment-validation.ts";
 import * as store from "../store.ts";
 import type { MessagingProvider } from "../types.ts";
 import { cacheSentMessage, readFromCacheOrFail } from "./shared.ts";
@@ -108,8 +109,34 @@ const whatsappProvider: MessagingProvider = {
     });
   },
 
-  async read(messageId, _opts) {
-    return readFromCacheOrFail("whatsapp", messageId);
+  async read(messageId, opts) {
+    const msg = readFromCacheOrFail("whatsapp", messageId);
+    if (!msg) return null;
+
+    const includeAttachments = opts?.includeAttachments ?? false;
+
+    // For WhatsApp, attachments are eagerly downloaded at parse time,
+    // so they already have paths/unavailable populated in the cache.
+    //
+    // When attachments are NOT requested (inbox-light mode), we need to
+    // strip the path/unavailable fields to maintain the three-state invariant.
+    if (msg.attachments.length > 0 && !includeAttachments) {
+      msg.attachments = msg.attachments.map((att) => ({
+        filename: att.filename,
+        contentType: att.contentType,
+        size: att.size,
+        // Explicitly omit data, path, and unavailable for inbox-light mode
+      }));
+    }
+
+    // Validate that attachments now match the requested state
+    if (msg.attachments.length > 0) {
+      for (const att of msg.attachments) {
+        validateAttachment(att, { attachmentsRequested: includeAttachments });
+      }
+    }
+
+    return msg;
   },
 
   async search(query, opts) {

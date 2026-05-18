@@ -18,6 +18,7 @@ export class WhatsAppAdapter implements IpcCapableAdapter {
   private connected = false;
   private reconnecting = false;
   private groupsSynced = false;
+  private historySyncComplete = false;
   private lidToPhoneMap = new Map<string, string>();
   private groupCache = new Map<
     string,
@@ -192,20 +193,28 @@ export class WhatsAppAdapter implements IpcCapableAdapter {
 
     this.sock.ev.on("messages.upsert", async ({ messages }) => {
       for (const msg of messages) {
-        await this.parseAndStoreMessage(msg);
+        // Only download eagerly when history sync is complete
+        await this.parseAndStoreMessage(msg, false);
       }
     });
 
     this.sock.ev.on("messaging-history.set", async ({ messages, contacts: syncContacts }) => {
       let stored = 0;
       for (const msg of messages) {
-        const ok = await this.parseAndStoreMessage(msg);
+        // History sync - skip eager downloads
+        const ok = await this.parseAndStoreMessage(msg, true);
         if (ok) stored++;
       }
       if (messages.length > 0) {
         process.stderr.write(
           `[daemon] history sync: stored ${stored}/${messages.length} messages\n`,
         );
+      }
+
+      // Mark history sync as complete after processing this batch
+      if (!this.historySyncComplete) {
+        this.historySyncComplete = true;
+        process.stderr.write("[daemon] WhatsApp history sync complete — eager downloads enabled\n");
       }
 
       if (syncContacts && syncContacts.length > 0) {
@@ -285,7 +294,7 @@ export class WhatsAppAdapter implements IpcCapableAdapter {
     });
   }
 
-  private async parseAndStoreMessage(msg: WAMessage): Promise<boolean> {
+  private async parseAndStoreMessage(msg: WAMessage, isHistorySync: boolean): Promise<boolean> {
     const remoteJid = msg.key.remoteJid;
     const resolvedGroupName = remoteJid?.endsWith("@g.us")
       ? this.groupCache.get(remoteJid)?.subject
@@ -297,6 +306,7 @@ export class WhatsAppAdapter implements IpcCapableAdapter {
       this.lidToPhoneMap,
       resolvedGroupName,
       contactNames,
+      isHistorySync,
     );
   }
 
