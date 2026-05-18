@@ -255,21 +255,35 @@ export async function parseAndStoreWAMessage(
             // Attempt download
             try {
               const bytes = await downloadMediaMessage(msg, "buffer", {});
-              const msgId = msg.key.id || `wa-${Date.now()}`;
 
-              // writeMedia will throw if msgId contains path traversal attempts
-              const path = await writeMedia("whatsapp", msgId, "ogg", bytes);
+              // Check for 0-byte download (network blip, expired URL, decryption failure)
+              if (bytes.length === 0) {
+                process.stderr.write(
+                  `[whatsapp] 0-byte download for ${msg.key.id} - marking unavailable\n`,
+                );
+                attachments.push({
+                  filename: `${msg.key.id}.ogg`,
+                  contentType: "audio/ogg",
+                  size: fileLength,
+                  unavailable: "download-empty",
+                });
+              } else {
+                const msgId = msg.key.id || `wa-${Date.now()}`;
 
-              const attachment: Attachment = {
-                filename: `${msgId}.ogg`,
-                contentType: "audio/ogg",
-                size: bytes.length,
-                path,
-              };
+                // writeMedia will throw if msgId contains path traversal attempts
+                const path = await writeMedia("whatsapp", msgId, "ogg", bytes);
 
-              // Validate the attachment follows the three-state invariant
-              validateAttachment(attachment, { attachmentsRequested: true });
-              attachments.push(attachment);
+                const attachment: Attachment = {
+                  filename: `${msgId}.ogg`,
+                  contentType: "audio/ogg",
+                  size: bytes.length,
+                  path,
+                };
+
+                // Validate the attachment follows the three-state invariant
+                validateAttachment(attachment, { attachmentsRequested: true });
+                attachments.push(attachment);
+              }
             } catch (err) {
               // Download failed OR invalid msgId (path traversal attempt)
               const errorMsg = err instanceof Error ? err.message : String(err);

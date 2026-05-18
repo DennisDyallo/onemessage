@@ -15,6 +15,7 @@ import type { Attachment } from "../types";
  *   - "path-traversal-rejected": signal-cli attachment path contains ".."
  *   - "invalid-msg-id": message ID contains path traversal attempts or invalid characters
  *   - "size-exceeded": attachment exceeds size cap (10 MB for WhatsApp audio)
+ *   - "download-empty": download returned 0 bytes (network blip, expired URL, decryption failure)
  *   - "download-failed": download attempt threw an error (network/auth/etc)
  *   - "history-sync-skipped": WhatsApp history sync - downloads disabled to prevent flood
  *
