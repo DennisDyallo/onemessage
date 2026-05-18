@@ -1,7 +1,8 @@
 import { mkdirSync, writeFileSync } from "node:fs";
-import { join, resolve, sep } from "node:path";
+import { join, resolve } from "node:path";
 import { getConfigDir } from "../config.ts";
 import { isValidMediaId } from "./media-id-validation.ts";
+import { ensureWithinDir } from "./path-safety.ts";
 
 /**
  * Write media bytes into the per-provider media tree.
@@ -48,18 +49,15 @@ export async function writeMedia(
   const fullPath = join(mediaDir, filename);
 
   // Defensive: verify the resolved path is within mediaDir
-  const resolvedPath = resolve(fullPath);
-  const resolvedMediaDir = resolve(mediaDir);
-
-  if (!resolvedPath.startsWith(resolvedMediaDir + sep) && resolvedPath !== resolvedMediaDir) {
+  if (!ensureWithinDir(fullPath, mediaDir)) {
     throw new Error(
-      `Path traversal detected: resolved path "${resolvedPath}" is outside media directory "${resolvedMediaDir}"`,
+      `Path traversal detected: resolved path is outside media directory "${resolve(mediaDir)}"`,
     );
   }
 
   writeFileSync(fullPath, bytes);
 
-  return fullPath;
+  return resolve(fullPath);
 }
 
 /**

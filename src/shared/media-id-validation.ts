@@ -1,3 +1,5 @@
+import { isSafeFilesystemId } from "./path-safety.ts";
+
 /**
  * Validate that a message ID is safe for filesystem path construction.
  *
@@ -9,16 +11,6 @@
  * @returns true if the ID is safe for use in filesystem paths, false otherwise
  */
 export function isValidMediaId(id: string | undefined): boolean {
-  if (!id) return false;
-  if (typeof id !== "string") return false;
-  if (id.length === 0) return false;
-  if (id.length > 256) return false; // Reasonable upper bound
-
-  // Allow: letters, numbers, hyphens, underscores only
-  // Disallow: path separators (/ \), dots (. to prevent .. traversal),
-  //           null bytes, whitespace, and all other special characters
-  const safePattern = /^[A-Za-z0-9_-]+$/;
-  if (!safePattern.test(id)) return false;
-
-  return true;
+  // Delegate to shared validator (no base64 padding for media IDs)
+  return isSafeFilesystemId(id);
 }

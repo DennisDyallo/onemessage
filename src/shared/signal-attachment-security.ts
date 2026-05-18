@@ -1,5 +1,6 @@
 import fs from "node:fs";
 import path from "node:path";
+import { ensureWithinDir, isSafeFilesystemId } from "./path-safety.ts";
 
 /**
  * Validate that a signal-cli attachment ID is safe for filesystem path construction.
@@ -11,18 +12,8 @@ import path from "node:path";
  * @returns true if the ID is safe, false otherwise
  */
 export function isValidSignalAttachmentId(id: string | undefined): boolean {
-  if (!id) return false;
-  if (typeof id !== "string") return false;
-  if (id.length === 0) return false;
-  if (id.length > 256) return false; // Reasonable upper bound
-
-  // Signal-cli IDs are typically base64-like or UUID-like
-  // Allow: letters, numbers, hyphens, underscores, equals (for base64 padding)
-  // Disallow: path separators, null bytes, dots (to prevent .. traversal)
-  const safePattern = /^[A-Za-z0-9_-]+=*$/;
-  if (!safePattern.test(id)) return false;
-
-  return true;
+  // Delegate to shared validator with base64 padding allowed (signal-cli uses base64-like IDs)
+  return isSafeFilesystemId(id, { allowBase64Padding: true });
 }
 
 export type AttachmentPathResult =
@@ -85,15 +76,13 @@ export function constructSafeSignalAttachmentPathWithReason(
   }
 
   const candidate = path.join(baseDir, matchedFile);
-  const resolved = path.resolve(candidate);
-  const resolvedBase = path.resolve(baseDir);
 
   // Ensure the resolved path is within the base directory
-  if (!resolved.startsWith(resolvedBase + path.sep) && resolved !== resolvedBase) {
+  if (!ensureWithinDir(candidate, baseDir)) {
     return { success: false, reason: "path-traversal-rejected" };
   }
 
-  return { success: true, path: resolved };
+  return { success: true, path: path.resolve(candidate) };
 }
 
 /**
