@@ -43,7 +43,7 @@ function makeEnvelope(opts: {
 describe("parseSignalMessages attachment preference", () => {
   it("uses dataMessage.attachments when populated and syncMessage absent", () => {
     const line = makeEnvelope({
-      dataAttachments: [{ id: "abc123", contentType: "audio/aac", filename: null, size: 100 }],
+      dataAttachments: [{ id: "abc123", contentType: "audio/aac", size: 100 }],
     });
     const messages = parseSignalMessages(line);
     expect(messages).toHaveLength(1);
@@ -54,7 +54,7 @@ describe("parseSignalMessages attachment preference", () => {
 
   it("uses syncMessage.attachments when dataMessage absent", () => {
     const line = makeEnvelope({
-      syncAttachments: [{ id: "sync456", contentType: "audio/aac", filename: null, size: 200 }],
+      syncAttachments: [{ id: "sync456", contentType: "audio/aac", size: 200 }],
     });
     const messages = parseSignalMessages(line);
     expect(messages).toHaveLength(1);
