@@ -79,4 +79,91 @@ describe("writeMedia", () => {
     expect(existsSync(whatsappPath)).toBe(true);
     expect(existsSync(signalPath)).toBe(true);
   });
+
+  describe("path traversal protection", () => {
+    test("rejects msgId with .. (parent directory traversal)", async () => {
+      const bytes = Buffer.from("malicious", "utf-8");
+
+      await expect(
+        writeMedia("whatsapp", "../etc/passwd", "ogg", bytes, TEST_BASE),
+      ).rejects.toThrow("Invalid message ID");
+
+      await expect(writeMedia("whatsapp", "../../foo", "ogg", bytes, TEST_BASE)).rejects.toThrow(
+        "Invalid message ID",
+      );
+    });
+
+    test("rejects msgId with absolute path", async () => {
+      const bytes = Buffer.from("malicious", "utf-8");
+
+      await expect(writeMedia("whatsapp", "/etc/passwd", "ogg", bytes, TEST_BASE)).rejects.toThrow(
+        "Invalid message ID",
+      );
+    });
+
+    test("rejects msgId with dots", async () => {
+      const bytes = Buffer.from("malicious", "utf-8");
+
+      await expect(writeMedia("whatsapp", "foo.bar", "ogg", bytes, TEST_BASE)).rejects.toThrow(
+        "Invalid message ID",
+      );
+
+      await expect(writeMedia("whatsapp", "..", "ogg", bytes, TEST_BASE)).rejects.toThrow(
+        "Invalid message ID",
+      );
+
+      await expect(writeMedia("whatsapp", ".", "ogg", bytes, TEST_BASE)).rejects.toThrow(
+        "Invalid message ID",
+      );
+    });
+
+    test("rejects msgId with slashes", async () => {
+      const bytes = Buffer.from("malicious", "utf-8");
+
+      await expect(writeMedia("whatsapp", "foo/bar", "ogg", bytes, TEST_BASE)).rejects.toThrow(
+        "Invalid message ID",
+      );
+
+      await expect(writeMedia("whatsapp", "foo\\bar", "ogg", bytes, TEST_BASE)).rejects.toThrow(
+        "Invalid message ID",
+      );
+    });
+
+    test("rejects empty msgId", async () => {
+      const bytes = Buffer.from("test", "utf-8");
+
+      await expect(writeMedia("whatsapp", "", "ogg", bytes, TEST_BASE)).rejects.toThrow(
+        "Invalid message ID",
+      );
+    });
+
+    test("rejects overly long msgId (>256 chars)", async () => {
+      const bytes = Buffer.from("test", "utf-8");
+      const longId = "a".repeat(257);
+
+      await expect(writeMedia("whatsapp", longId, "ogg", bytes, TEST_BASE)).rejects.toThrow(
+        "Invalid message ID",
+      );
+    });
+
+    test("rejects msgId with whitespace", async () => {
+      const bytes = Buffer.from("test", "utf-8");
+
+      await expect(writeMedia("whatsapp", "foo bar", "ogg", bytes, TEST_BASE)).rejects.toThrow(
+        "Invalid message ID",
+      );
+    });
+
+    test("rejects msgId with special characters", async () => {
+      const bytes = Buffer.from("test", "utf-8");
+
+      await expect(writeMedia("whatsapp", "foo@bar", "ogg", bytes, TEST_BASE)).rejects.toThrow(
+        "Invalid message ID",
+      );
+
+      await expect(writeMedia("whatsapp", "foo$bar", "ogg", bytes, TEST_BASE)).rejects.toThrow(
+        "Invalid message ID",
+      );
+    });
+  });
 });

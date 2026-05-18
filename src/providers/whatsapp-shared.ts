@@ -256,6 +256,8 @@ export async function parseAndStoreWAMessage(
             try {
               const bytes = await downloadMediaMessage(msg, "buffer", {});
               const msgId = msg.key.id || `wa-${Date.now()}`;
+
+              // writeMedia will throw if msgId contains path traversal attempts
               const path = await writeMedia("whatsapp", msgId, "ogg", bytes);
 
               const attachment: Attachment = {
@@ -269,13 +271,22 @@ export async function parseAndStoreWAMessage(
               validateAttachment(attachment, { attachmentsRequested: true });
               attachments.push(attachment);
             } catch (err) {
-              // Download failed - mark as unavailable
-              process.stderr.write(`[whatsapp] audio download failed for ${msg.key.id}: ${err}\n`);
+              // Download failed OR invalid msgId (path traversal attempt)
+              const errorMsg = err instanceof Error ? err.message : String(err);
+              process.stderr.write(
+                `[whatsapp] audio download failed for ${msg.key.id}: ${errorMsg}\n`,
+              );
+
+              // Distinguish between invalid-msg-id and general download failure
+              const unavailableReason = errorMsg.includes("Invalid message ID")
+                ? "invalid-msg-id"
+                : "download-failed";
+
               attachments.push({
                 filename: `${msg.key.id}.ogg`,
                 contentType: "audio/ogg",
                 size: fileLength,
-                unavailable: "download-failed",
+                unavailable: unavailableReason,
               });
             }
           }

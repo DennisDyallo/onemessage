@@ -1,5 +1,6 @@
 import { mkdirSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
+import { join, resolve, sep } from "node:path";
+import { isValidMediaId } from "./media-id-validation.ts";
 
 /**
  * Write media bytes into the per-provider media tree.
@@ -8,12 +9,15 @@ import { join } from "node:path";
  *
  * Creates directories as needed. Overwrites existing files (idempotent).
  *
+ * Security: validates msgId against path traversal attacks before filesystem access.
+ *
  * @param provider Provider name (e.g., "whatsapp", "signal")
- * @param msgId Message ID (used as filename base)
+ * @param msgId Message ID (used as filename base) - must be alphanumeric+hyphens/underscores only
  * @param ext File extension (e.g., "ogg", "m4a")
  * @param bytes Media bytes to write
  * @param baseDir Base directory for media storage (defaults to provider-specific default)
  * @returns Absolute path to the written file
+ * @throws {Error} If msgId contains path traversal attempts or invalid characters
  */
 export async function writeMedia(
   provider: string,
@@ -22,6 +26,13 @@ export async function writeMedia(
   bytes: Buffer,
   baseDir?: string,
 ): Promise<string> {
+  // Validate msgId against path traversal attacks
+  if (!isValidMediaId(msgId)) {
+    throw new Error(
+      `Invalid message ID "${msgId}": must be alphanumeric with hyphens/underscores only (no dots, slashes, or special characters)`,
+    );
+  }
+
   // Determine base directory
   const base = baseDir ?? getProviderDefaultBase(provider);
 
@@ -34,6 +45,16 @@ export async function writeMedia(
 
   const filename = `${msgId}.${ext}`;
   const fullPath = join(mediaDir, filename);
+
+  // Defensive: verify the resolved path is within mediaDir
+  const resolvedPath = resolve(fullPath);
+  const resolvedMediaDir = resolve(mediaDir);
+
+  if (!resolvedPath.startsWith(resolvedMediaDir + sep) && resolvedPath !== resolvedMediaDir) {
+    throw new Error(
+      `Path traversal detected: resolved path "${resolvedPath}" is outside media directory "${resolvedMediaDir}"`,
+    );
+  }
 
   writeFileSync(fullPath, bytes);
 
