@@ -356,6 +356,14 @@ export interface SignalDaemonHandle {
 }
 
 /**
+ * Builds signal-cli daemon spawn arguments.
+ * Exported for testing.
+ */
+export function buildSignalDaemonArgs(account: string): string[] {
+  return ["signal-cli", "-a", account, "-o", "json", "daemon", "--send-read-receipts", "--socket"];
+}
+
+/**
  * Start a persistent signal-cli subprocess in daemon mode.
  * It streams JSON lines to stdout as messages arrive in real-time.
  * Returns a handle to stop the subprocess.
@@ -382,13 +390,10 @@ export function startSignalDaemon(opts: {
 
     process.stderr.write(`[signal-daemon] starting signal-cli daemon for ${opts.account}\n`);
 
-    proc = Bun.spawn(
-      ["signal-cli", "-a", opts.account, "-o", "json", "daemon", "--send-read-receipts"],
-      {
-        stdout: "pipe",
-        stderr: "pipe",
-      },
-    );
+    proc = Bun.spawn(buildSignalDaemonArgs(opts.account), {
+      stdout: "pipe",
+      stderr: "pipe",
+    });
 
     // Stream stdout line-by-line
     (async () => {
