@@ -11,17 +11,21 @@ import { join } from "node:path";
 import makeWASocket, {
   type AuthenticationCreds,
   Browsers,
+  downloadMediaMessage,
   fetchLatestWaWebVersion,
   makeCacheableSignalKeyStore,
   normalizeMessageContent,
+  type proto,
   useMultiFileAuthState,
   type WAMessage,
   type WASocket,
 } from "@whiskeysockets/baileys";
 
 import { getConfigDir } from "../config.ts";
+import { validateAttachment } from "../shared/attachment-validation.ts";
+import { writeMedia } from "../shared/media-store.ts";
 import * as store from "../store.ts";
-import type { MessageFull } from "../types.ts";
+import type { Attachment, MessageFull } from "../types.ts";
 
 // ---------------------------------------------------------------------------
 // Paths
@@ -48,6 +52,24 @@ export const silentLogger = {
     return silentLogger;
   },
 };
+
+// ---------------------------------------------------------------------------
+// Message type helpers
+// ---------------------------------------------------------------------------
+
+/**
+ * Check if a normalized Baileys message is an audio message.
+ *
+ * Returns true for both regular audio messages and push-to-talk (PTT) voice notes.
+ * PTT is indicated by the `ptt` field within the audioMessage.
+ *
+ * @param normalized The normalized message content from Baileys
+ * @returns true if the message has an audioMessage field
+ */
+export function isAudioMessage(normalized: proto.IMessage | null | undefined): boolean {
+  if (!normalized) return false;
+  return !!normalized.audioMessage;
+}
 
 // ---------------------------------------------------------------------------
 // Socket factory
@@ -133,6 +155,9 @@ async function translateJid(
  * @param msg    The raw WAMessage from Baileys
  * @param sock   Optional WASocket for LID-to-phone translation
  * @param lidCache  Optional Map for caching LID translations across calls
+ * @param groupName  Optional group name for group messages
+ * @param contactNames  Optional contact name map for display names
+ * @param isHistorySync  If true, skip eager audio downloads (default: false)
  * @returns true if the message was stored, false if skipped
  */
 export async function parseAndStoreWAMessage(
@@ -141,6 +166,7 @@ export async function parseAndStoreWAMessage(
   lidCache?: Map<string, string>,
   groupName?: string,
   contactNames?: Map<string, string>,
+  isHistorySync = false,
 ): Promise<boolean> {
   try {
     if (!msg.message) return false;
@@ -161,7 +187,9 @@ export async function parseAndStoreWAMessage(
       normalized.videoMessage?.caption ||
       "";
 
-    if (!content) return false;
+    // Allow voice-only messages (no caption) to pass through
+    // Voice notes have audioMessage/pttMessage but often no text content
+    if (!content && !isAudioMessage(normalized)) return false;
 
     // Determine sender info
     let senderJid = chatJid;
@@ -192,6 +220,69 @@ export async function parseAndStoreWAMessage(
         ? msg.messageTimestamp
         : Number(msg.messageTimestamp);
 
+    // Eager audio download (v1: audio only, not image/video)
+    const attachments: Attachment[] = [];
+    let hasAttachments = false;
+
+    if (isAudioMessage(normalized)) {
+      const audioMsg = normalized.audioMessage;
+      if (audioMsg) {
+        hasAttachments = true;
+
+        if (isHistorySync) {
+          // History sync - don't download, just mark unavailable
+          const fileLength = audioMsg.fileLength ? Number(audioMsg.fileLength) : 0;
+          attachments.push({
+            filename: `${msg.key.id}.ogg`,
+            contentType: "audio/ogg",
+            size: fileLength,
+            unavailable: "history-sync-skipped",
+          });
+        } else {
+          // Live message - attempt download with size cap
+          const SIZE_CAP = 10 * 1024 * 1024; // 10 MB
+          const fileLength = audioMsg.fileLength ? Number(audioMsg.fileLength) : 0;
+
+          if (fileLength > SIZE_CAP) {
+            // Size exceeded - mark as unavailable
+            attachments.push({
+              filename: `${msg.key.id}.ogg`,
+              contentType: "audio/ogg",
+              size: fileLength,
+              unavailable: "size-exceeded",
+            });
+          } else {
+            // Attempt download
+            try {
+              const bytes = await downloadMediaMessage(msg, "buffer", {});
+              const msgId = msg.key.id || `wa-${Date.now()}`;
+              const path = await writeMedia("whatsapp", msgId, "ogg", bytes);
+
+              const attachment: Attachment = {
+                filename: `${msgId}.ogg`,
+                contentType: "audio/ogg",
+                size: bytes.length,
+                path,
+              };
+
+              // Validate the attachment follows the three-state invariant
+              validateAttachment(attachment, { attachmentsRequested: true });
+              attachments.push(attachment);
+            } catch (err) {
+              // Download failed - mark as unavailable
+              process.stderr.write(`[whatsapp] audio download failed for ${msg.key.id}: ${err}\n`);
+              attachments.push({
+                filename: `${msg.key.id}.ogg`,
+                contentType: "audio/ogg",
+                size: fileLength,
+                unavailable: "download-failed",
+              });
+            }
+          }
+        }
+      }
+    }
+
     const full: MessageFull = {
       id: msg.key.id || `wa-${Date.now()}`,
       provider: "whatsapp",
@@ -203,10 +294,10 @@ export async function parseAndStoreWAMessage(
       bodyFormat: "text",
       date: new Date(timestamp * 1000).toISOString(),
       unread: !fromMe,
-      hasAttachments: false,
+      hasAttachments,
       isGroup,
       groupName: isGroup ? (groupName ?? chatJid.split("@")[0]) : undefined,
-      attachments: [],
+      attachments,
       direction,
     };
 
