@@ -24,7 +24,9 @@ describe("decideAudioAttachment", () => {
     });
 
     expect(decision.action).toBe("skip");
-    expect(decision.reason).toBe("history-sync-skipped");
+    if (decision.action === "skip") {
+      expect(decision.reason).toBe("history-sync-skipped");
+    }
   });
 
   test("should skip download when fileLength exceeds size cap", () => {
@@ -34,7 +36,9 @@ describe("decideAudioAttachment", () => {
     });
 
     expect(decision.action).toBe("skip");
-    expect(decision.reason).toBe("size-exceeded");
+    if (decision.action === "skip") {
+      expect(decision.reason).toBe("size-exceeded");
+    }
   });
 
   test("should download when fileLength equals size cap", () => {
@@ -75,7 +79,9 @@ describe("decideAudioAttachment", () => {
     });
 
     expect(decision.action).toBe("skip");
-    expect(decision.reason).toBe("size-exceeded");
+    if (decision.action === "skip") {
+      expect(decision.reason).toBe("size-exceeded");
+    }
   });
 
   test("history sync gate takes precedence over size cap", () => {
@@ -86,7 +92,9 @@ describe("decideAudioAttachment", () => {
     });
 
     expect(decision.action).toBe("skip");
-    expect(decision.reason).toBe("history-sync-skipped");
+    if (decision.action === "skip") {
+      expect(decision.reason).toBe("history-sync-skipped");
+    }
   });
 
   test("should skip when BOTH gates apply (history sync + oversized)", () => {
@@ -97,6 +105,8 @@ describe("decideAudioAttachment", () => {
 
     // History sync gate is checked first
     expect(decision.action).toBe("skip");
-    expect(decision.reason).toBe("history-sync-skipped");
+    if (decision.action === "skip") {
+      expect(decision.reason).toBe("history-sync-skipped");
+    }
   });
 });
