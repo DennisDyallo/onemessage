@@ -1,5 +1,4 @@
 import { describe, expect, mock, test } from "bun:test";
-import type { proto, WAMessage } from "@whiskeysockets/baileys";
 
 /**
  * Test 0-byte download detection in WhatsApp eager download.
