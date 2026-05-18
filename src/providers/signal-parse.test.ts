@@ -69,9 +69,7 @@ describe("parseSignalMessages attachment preference", () => {
     // while still setting hasAttachments=true (since syncMessage.length > 0).
     const line = makeEnvelope({
       dataAttachments: [], // explicitly empty
-      syncAttachments: [
-        { id: "real-from-sync", contentType: "audio/aac", filename: null, size: 300 },
-      ],
+      syncAttachments: [{ id: "real-from-sync", contentType: "audio/aac", size: 300 }],
     });
     const messages = parseSignalMessages(line);
     expect(messages).toHaveLength(1);
