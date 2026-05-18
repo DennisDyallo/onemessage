@@ -224,4 +224,45 @@ describe("Signal attachment path enrichment via provider.read()", () => {
 
   // Note: file-ambiguous case is covered by unit tests in signal-attachment-security.test.ts
   // Testing it here would require mocking getSignalAttachmentDir which is complex
+
+  it("should NOT leak internal id field to consumer", async () => {
+    // Regression test for Finding #1 (HIGH - contract-leakage)
+    // The id field is internal metadata used only to construct the filesystem path.
+    // It must NEVER appear in JSON output to consumers.
+    const msg = makeMsgWithAttachments([{ filename: "voice.ogg", id: "abc123" }]);
+    store.upsertFullMessage(msg);
+
+    const result = await provider.read(msg.id, { includeAttachments: true });
+    expect(result).not.toBeNull();
+    if (!result) return;
+
+    expect(result.attachments).toHaveLength(1);
+
+    // Serialize to JSON and verify "id" field is not present
+    const serialized = JSON.stringify(result.attachments[0]);
+    expect(serialized).not.toContain('"id":');
+
+    // Also verify via direct object access (TypeScript type check)
+    const att = result.attachments[0];
+    expect((att as any).id).toBeUndefined();
+  });
+
+  it("should NOT leak internal id field in inbox-light mode either", async () => {
+    // Regression test for Finding #1 (inbox-light branch)
+    const msg = makeMsgWithAttachments([{ filename: "voice.ogg", id: "abc123" }]);
+    store.upsertFullMessage(msg);
+
+    const result = await provider.read(msg.id, { includeAttachments: false });
+    expect(result).not.toBeNull();
+    if (!result) return;
+
+    expect(result.attachments).toHaveLength(1);
+
+    // Serialize to JSON and verify "id" field is not present
+    const serialized = JSON.stringify(result.attachments[0]);
+    expect(serialized).not.toContain('"id":');
+
+    const att = result.attachments[0];
+    expect((att as any).id).toBeUndefined();
+  });
 });

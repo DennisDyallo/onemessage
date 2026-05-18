@@ -639,21 +639,24 @@ const signalProvider: MessagingProvider = {
         // Type-cast to access the internal id field we stored at parse time
         const attWithId = att as Attachment & { id?: string };
 
+        // Strip the internal id field before returning to consumer
+        const { id: _internalId, ...publicAtt } = attWithId;
+
         let enriched: Attachment;
 
         if (!attWithId.id) {
           // No ID available → mark as unavailable
-          enriched = { ...att, unavailable: "no-id" };
+          enriched = { ...publicAtt, unavailable: "no-id" };
         } else {
           // ID exists - attempt to construct safe path (validates + globs for file)
           const result = constructSafeSignalAttachmentPathWithReason(attachmentDir, attWithId.id);
 
           if (result.success) {
             // Valid ID and file found on disk → set path
-            enriched = { ...att, path: result.path };
+            enriched = { ...publicAtt, path: result.path };
           } else {
             // Failed with specific reason code
-            enriched = { ...att, unavailable: result.reason };
+            enriched = { ...publicAtt, unavailable: result.reason };
           }
         }
 
@@ -661,9 +664,11 @@ const signalProvider: MessagingProvider = {
         return enriched;
       });
     } else {
-      // Inbox-light mode: verify no data/path/unavailable is set
-      msg.attachments.forEach((att) => {
-        validateAttachment(att, { attachmentsRequested: includeAttachments });
+      // Inbox-light mode: strip internal id field and verify no data/path/unavailable is set
+      msg.attachments = msg.attachments.map((att) => {
+        const { id: _internalId, ...publicAtt } = att as Attachment & { id?: string };
+        validateAttachment(publicAtt, { attachmentsRequested: includeAttachments });
+        return publicAtt;
       });
     }
 
