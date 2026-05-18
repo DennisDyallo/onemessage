@@ -1,7 +1,7 @@
 import { describe, expect, it } from "bun:test";
 import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join, sep } from "node:path";
+import { join } from "node:path";
 import { ensureWithinDir, isSafeFilesystemId } from "./path-safety";
 
 describe("isSafeFilesystemId", () => {

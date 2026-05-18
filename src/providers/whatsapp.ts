@@ -121,12 +121,12 @@ const whatsappProvider: MessagingProvider = {
     // When attachments are NOT requested (inbox-light mode), we need to
     // strip the path/unavailable fields to maintain the three-state invariant.
     if (msg.attachments.length > 0 && !includeAttachments) {
-      msg.attachments = msg.attachments.map((att) => ({
-        filename: att.filename,
-        contentType: att.contentType,
-        size: att.size,
-        // Explicitly omit data, path, and unavailable for inbox-light mode
-      }));
+      msg.attachments = msg.attachments.map((att) => {
+        // Denylist approach: explicitly remove known heavyweight fields,
+        // preserve everything else (defensive against future Attachment schema additions)
+        const { data: _d, path: _p, unavailable: _u, ...rest } = att;
+        return rest;
+      });
     }
 
     // Validate that attachments now match the requested state
