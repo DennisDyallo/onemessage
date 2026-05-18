@@ -1,5 +1,9 @@
 import { describe, expect, test } from "bun:test";
 import type { proto } from "@whiskeysockets/baileys";
+import { getProvider } from "../registry.ts";
+import * as store from "../store.ts";
+import type { Attachment, MessageFull } from "../types.ts";
+import "./whatsapp.ts"; // Force registration
 import { isAudioMessage } from "./whatsapp-shared";
 
 describe("isAudioMessage", () => {
@@ -71,46 +75,89 @@ describe("isAudioMessage", () => {
 });
 
 describe("inbox-light attachment field stripping (denylist behavior)", () => {
-  test("should preserve future Attachment fields not in the denylist", () => {
-    // This test verifies that the inbox-light strip uses a denylist approach
-    // (remove data/path/unavailable) rather than an allowlist (keep only filename/contentType/size).
-    // If the Attachment type gains new fields in the future, they should be preserved.
-
-    const mockAttachment: any = {
-      filename: "test.pdf",
-      contentType: "application/pdf",
-      size: 1024,
-      path: "/tmp/test.pdf", // should be stripped
-      __test_future_field: "preserved", // hypothetical future field
+  test("should preserve future Attachment fields not in the denylist", async () => {
+    // Tests the REAL whatsappProvider.read() inbox-light strip — not a local destructure.
+    // Denylist approach must preserve future Attachment fields and strip data/path/unavailable.
+    const msgId = `wa-denylist-test-${Date.now()}`;
+    const msg: MessageFull = {
+      id: msgId,
+      provider: "whatsapp",
+      from: { name: "Test User", address: "test@s.whatsapp.net" },
+      to: [{ name: "me", address: "me" }],
+      preview: "test",
+      body: "test",
+      bodyFormat: "text",
+      date: new Date().toISOString(),
+      unread: false,
+      hasAttachments: true,
+      attachments: [
+        {
+          filename: "test.pdf",
+          contentType: "application/pdf",
+          size: 1024,
+          path: "/tmp/test.pdf",
+          // biome-ignore lint/suspicious/noExplicitAny: forward-compat test
+          __test_future_field: "preserved",
+        } as Attachment & { __test_future_field?: string },
+      ] as Attachment[],
+      direction: "in",
     };
+    store.upsertFullMessage(msg);
 
-    // Simulate the inbox-light strip logic from whatsapp.ts
-    const { data: _d, path: _p, unavailable: _u, ...rest } = mockAttachment;
+    const provider = getProvider("whatsapp");
+    if (!provider) throw new Error("WhatsApp provider not registered");
 
-    expect(rest.filename).toBe("test.pdf");
-    expect(rest.contentType).toBe("application/pdf");
-    expect(rest.size).toBe(1024);
-    expect((rest as any).path).toBeUndefined(); // stripped
-    expect((rest as any).__test_future_field).toBe("preserved"); // NOT stripped
+    const result = await provider.read(msgId, { includeAttachments: false });
+    expect(result).not.toBeNull();
+    if (!result) return;
+
+    const att = result.attachments[0] as Attachment & { __test_future_field?: string };
+    expect(att.filename).toBe("test.pdf");
+    expect(att.contentType).toBe("application/pdf");
+    expect(att.size).toBe(1024);
+    expect(att.path).toBeUndefined();
+    // The whole point: future fields survive without code changes
+    expect(att.__test_future_field).toBe("preserved");
   });
 
-  test("should strip all three heavyweight fields (data, path, unavailable)", () => {
-    const mockAttachment: any = {
-      filename: "audio.ogg",
-      contentType: "audio/ogg",
-      size: 2048,
-      data: Buffer.from("fake data"),
-      path: "/tmp/audio.ogg",
-      unavailable: true,
+  test("inbox-light strips data/path/unavailable via whatsappProvider.read()", async () => {
+    const msgId = `wa-strip-test-${Date.now()}`;
+    const msg: MessageFull = {
+      id: msgId,
+      provider: "whatsapp",
+      from: { name: "Test User", address: "test@s.whatsapp.net" },
+      to: [{ name: "me", address: "me" }],
+      preview: "test",
+      body: "test",
+      bodyFormat: "text",
+      date: new Date().toISOString(),
+      unread: false,
+      hasAttachments: true,
+      attachments: [
+        {
+          filename: "audio.ogg",
+          contentType: "audio/ogg",
+          size: 2048,
+          path: "/tmp/audio.ogg",
+        } as Attachment,
+      ] as Attachment[],
+      direction: "in",
     };
+    store.upsertFullMessage(msg);
 
-    const { data: _d, path: _p, unavailable: _u, ...rest } = mockAttachment;
+    const provider = getProvider("whatsapp");
+    if (!provider) throw new Error("WhatsApp provider not registered");
 
-    expect(rest.filename).toBe("audio.ogg");
-    expect(rest.contentType).toBe("audio/ogg");
-    expect(rest.size).toBe(2048);
-    expect((rest as any).data).toBeUndefined();
-    expect((rest as any).path).toBeUndefined();
-    expect((rest as any).unavailable).toBeUndefined();
+    const result = await provider.read(msgId, { includeAttachments: false });
+    expect(result).not.toBeNull();
+    if (!result) return;
+
+    const att = result.attachments[0] as Attachment;
+    expect(att.filename).toBe("audio.ogg");
+    expect(att.contentType).toBe("audio/ogg");
+    expect(att.size).toBe(2048);
+    expect(att.data).toBeUndefined();
+    expect(att.path).toBeUndefined();
+    expect(att.unavailable).toBeUndefined();
   });
 });
