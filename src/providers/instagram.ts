@@ -137,6 +137,8 @@ function readMessageToFull(msg: ReadMessage, threadId: string, threadTitle: stri
     date: msg.timestamp,
     unread: false,
     hasAttachments: msg.media !== undefined,
+    // TODO(dennis): instagram-cli does not expose media download; revisit when
+    // upstream adds the command (see distributed-dusk plan §1.4)
     attachments: [],
     direction: msg.isOutgoing ? "out" : "in",
   };
