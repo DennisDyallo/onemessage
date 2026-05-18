@@ -1,5 +1,6 @@
 import { mkdirSync, writeFileSync } from "node:fs";
 import { join, resolve, sep } from "node:path";
+import { getConfigDir } from "../config.ts";
 import { isValidMediaId } from "./media-id-validation.ts";
 
 /**
@@ -72,11 +73,9 @@ function getProviderDefaultBase(provider: string): string {
   // We can't import from whatsapp-shared here to avoid circular deps,
   // so we replicate the pattern
   if (provider === "whatsapp") {
-    const { getConfigDir } = require("../config.ts");
     return join(getConfigDir(), "whatsapp");
   }
 
   // For other providers, use a similar pattern
-  const { getConfigDir } = require("../config.ts");
   return join(getConfigDir(), provider);
 }
