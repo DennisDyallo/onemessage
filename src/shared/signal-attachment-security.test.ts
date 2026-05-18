@@ -100,10 +100,10 @@ describe("constructSafeSignalAttachmentPath (charset validation only)", () => {
   });
 });
 
-describe("constructSafeSignalAttachmentPath with real file resolution", () => {
-  const fs = require("node:fs");
-  const os = require("node:os");
+import * as fs from "node:fs";
+import * as os from "node:os";
 
+describe("constructSafeSignalAttachmentPath with real file resolution", () => {
   it("should resolve <id>.<ext> when file exists", () => {
     // Create a temp directory
     const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "signal-test-"));
