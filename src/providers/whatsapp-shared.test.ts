@@ -96,7 +96,6 @@ describe("inbox-light attachment field stripping (denylist behavior)", () => {
           contentType: "application/pdf",
           size: 1024,
           path: "/tmp/test.pdf",
-          // biome-ignore lint/suspicious/noExplicitAny: forward-compat test
           __test_future_field: "preserved",
         } as Attachment & { __test_future_field?: string },
       ] as Attachment[],
