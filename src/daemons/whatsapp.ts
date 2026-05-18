@@ -193,7 +193,8 @@ export class WhatsAppAdapter implements IpcCapableAdapter {
 
     this.sock.ev.on("messages.upsert", async ({ messages }) => {
       for (const msg of messages) {
-        // Only download eagerly when history sync is complete
+        // Live messages: always eager-download (isHistorySync=false)
+        // The historySyncComplete flag gates history-sync batches, not live messages
         await this.parseAndStoreMessage(msg, false);
       }
     });
@@ -201,7 +202,7 @@ export class WhatsAppAdapter implements IpcCapableAdapter {
     this.sock.ev.on("messaging-history.set", async ({ messages, contacts: syncContacts }) => {
       let stored = 0;
       for (const msg of messages) {
-        // History sync - skip eager downloads
+        // History sync: skip eager downloads (isHistorySync=true)
         const ok = await this.parseAndStoreMessage(msg, true);
         if (ok) stored++;
       }
