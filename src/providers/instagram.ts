@@ -1,4 +1,5 @@
 import { loadConfig } from "../config.ts";
+import { daemonRequest, ensureDaemon } from "../daemons/shared.ts";
 import { registerProvider } from "../registry.ts";
 import * as store from "../store.ts";
 import type { MessageEnvelope, MessageFull, MessagingProvider } from "../types.ts";
@@ -167,7 +168,7 @@ function randomDelay(): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-async function fetchThreadMessages(
+export async function fetchThreadMessages(
   threadId: string,
   threadTitle: string,
   username: string,
@@ -364,15 +365,18 @@ const instagramProvider: MessagingProvider = {
         console.error("Instagram not configured. Run: onemessage auth instagram");
         return null;
       }
-      // Re-fetch the thread so sub-messages not yet cached are backfilled.
+      // Route thread re-fetch through daemon to enforce MIN_FETCH_INTERVAL_MS guard.
       // Use the messageId as thread ID — Instagram thread IDs are the same as
       // the envelope IDs stored in the DB.
-      const messages = await fetchThreadMessages(messageId, "", settings.username);
-      if (messages.length > 0) {
-        const incoming = messages.filter((m) => m.from?.address !== "me");
-        const outgoing = messages.filter((m) => m.from?.address === "me");
-        if (incoming.length > 0) store.upsertFullMessages(incoming, messageId);
-        if (outgoing.length > 0) store.upsertFullMessages(outgoing, messageId);
+      await ensureDaemon();
+      const res = await daemonRequest({
+        type: "fetch-thread",
+        provider: "instagram",
+        threadId: messageId,
+        account: settings.username,
+      });
+      if (!res.ok) {
+        console.error(`[instagram] thread re-fetch failed: ${res.error}`);
       }
     }
     return readFromCacheOrFail("instagram", messageId);

@@ -408,7 +408,70 @@ describe("instagramProvider.inbox via inboxViaDaemon", () => {
     // Assert: actuallyFetch exists (DRY helper for rate-limited fetch)
     expect(adapterSource).toContain("async actuallyFetch");
 
-    // Assert: lastFetchAt is updated after rate limit check
-    expect(adapterSource).toContain("this.lastFetchAt = now");
+    // Assert: lastFetchAt is updated AFTER await (not before)
+    expect(adapterSource).toContain("this.lastFetchAt = Date.now(); // record AFTER success");
+  });
+
+  test("read() --fresh routes through daemon IPC (structural proof of rate-limit fix)", async () => {
+    // This test proves that read() --fresh no longer bypasses MIN_FETCH_INTERVAL_MS.
+    // Pre-fix, read(messageId, {fresh:true}) called fetchThreadMessages() directly.
+    // Post-fix, it routes via daemon IPC to enforce the rate limit.
+    //
+    // Strategy: Read the read() source, assert it calls daemonRequest with type:"fetch-thread"
+
+    const fs = await import("node:fs/promises");
+    const instagramSource = await fs.readFile(
+      new URL("../../providers/instagram.ts", import.meta.url),
+      "utf-8",
+    );
+
+    // Extract the read() method body
+    const readMatch = instagramSource.match(/async read\(messageId, opts\)\s*{[\s\S]*?^ {2}},/m);
+    expect(readMatch).not.toBeNull();
+
+    const readBody = readMatch?.[0] ?? "";
+
+    // Assert: read() body does NOT contain direct fetchThreadMessages call
+    expect(readBody).not.toContain("fetchThreadMessages(messageId");
+
+    // Assert: read() calls ensureDaemon
+    expect(readBody).toContain("ensureDaemon");
+
+    // Assert: read() calls daemonRequest
+    expect(readBody).toContain("daemonRequest");
+
+    // Assert: read() passes type:"fetch-thread" to daemon
+    expect(readBody).toContain('type: "fetch-thread"');
+
+    // Assert: read() passes threadId:messageId
+    expect(readBody).toContain("threadId: messageId");
+  });
+
+  test("InstagramAdapter implements IpcCapableAdapter (structural proof)", async () => {
+    // This test proves that InstagramAdapter can handle IPC requests.
+    // The adapter now implements handleIpc() to process fetch-thread requests.
+
+    const fs = await import("node:fs/promises");
+    const adapterSource = await fs.readFile(
+      new URL("../../daemons/instagram.ts", import.meta.url),
+      "utf-8",
+    );
+
+    // Assert: implements IpcCapableAdapter
+    expect(adapterSource).toContain("implements IpcCapableAdapter");
+
+    // Assert: ipcTypes() returns fetch-thread
+    expect(adapterSource).toContain('return ["fetch-thread"]');
+
+    // Assert: handleIpc exists
+    expect(adapterSource).toContain("async handleIpc");
+
+    // Assert: actuallyFetchThread helper exists
+    expect(adapterSource).toContain("async actuallyFetchThread");
+
+    // Assert: actuallyFetchThread uses MIN_FETCH_INTERVAL_MS guard
+    expect(adapterSource).toMatch(
+      /actuallyFetchThread[\s\S]*?sinceLast < \w+\.MIN_FETCH_INTERVAL_MS/,
+    );
   });
 });
