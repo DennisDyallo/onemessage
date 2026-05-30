@@ -2,7 +2,7 @@ import { loadConfig } from "../config.ts";
 import { registerProvider } from "../registry.ts";
 import * as store from "../store.ts";
 import type { MessageEnvelope, MessageFull, MessagingProvider } from "../types.ts";
-import { cacheSentMessage, readFromCacheOrFail } from "./shared.ts";
+import { cacheSentMessage, inboxViaDaemon, readFromCacheOrFail } from "./shared.ts";
 
 // ---------------------------------------------------------------------------
 // Config
@@ -186,7 +186,7 @@ export async function fetchTelegramBotUpdates(token: string): Promise<void> {
 // Provider
 // ---------------------------------------------------------------------------
 
-const telegramBotProvider: MessagingProvider = {
+export const telegramBotProvider: MessagingProvider = {
   name: "telegram-bot",
   displayName: "Telegram Bot (Bot API)",
 
@@ -238,30 +238,18 @@ const telegramBotProvider: MessagingProvider = {
       return [];
     }
 
-    if (store.isFresh("telegram-bot", 30_000, "bot") && !opts?.fresh) {
-      return store.getCachedInbox("telegram-bot", {
+    return inboxViaDaemon({
+      provider: "telegram-bot",
+      freshnessMs: 30_000,
+      account: "bot",
+      fresh: opts?.fresh,
+      cacheArgs: {
         limit: opts?.limit,
         unread: opts?.unread,
         since: opts?.since,
         sinceCachedAt: opts?.sinceCachedAt,
         from: opts?.from,
-      });
-    }
-
-    try {
-      await fetchTelegramBotUpdates(settings.botToken);
-    } catch (err) {
-      console.error(
-        `[telegram-bot] Failed to fetch updates: ${err instanceof Error ? err.message : err}`,
-      );
-    }
-
-    return store.getCachedInbox("telegram-bot", {
-      limit: opts?.limit,
-      unread: opts?.unread,
-      since: opts?.since,
-      sinceCachedAt: opts?.sinceCachedAt,
-      from: opts?.from,
+      },
     });
   },
 
