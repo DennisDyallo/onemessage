@@ -26,7 +26,7 @@
     "typescript": "^5"
   },
   "dependencies": {
-    "@whiskeysockets/baileys": "^7.0.0-rc.9",
+    "@whiskeysockets/baileys": "^7.0.0-rc13",
     "commander": "^14.0.3",
     "imapflow": "^1.2.16",
     "mailparser": "^3.9.4",
