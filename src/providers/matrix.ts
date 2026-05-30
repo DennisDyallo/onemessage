@@ -4,7 +4,7 @@ import { getConfigDir, loadConfig, saveConfig } from "../config.ts";
 import { registerProvider } from "../registry.ts";
 import * as store from "../store.ts";
 import type { MessageEnvelope, MessagingProvider } from "../types.ts";
-import { cacheSentMessage, readFromCacheOrFail } from "./shared.ts";
+import { cacheSentMessage, inboxViaDaemon, readFromCacheOrFail } from "./shared.ts";
 
 // ---------------------------------------------------------------------------
 // Config
@@ -335,30 +335,18 @@ const matrixProvider: MessagingProvider = {
       return [];
     }
 
-    if (store.isFresh("matrix", 30_000, settings.userId) && !opts?.fresh) {
-      return store.getCachedInbox("matrix", {
+    return inboxViaDaemon({
+      provider: "matrix",
+      account: settings.userId,
+      freshnessMs: 30_000,
+      fresh: opts?.fresh,
+      cacheArgs: {
         limit: opts?.limit,
         unread: opts?.unread,
         since: opts?.since,
         sinceCachedAt: opts?.sinceCachedAt,
         from: opts?.from,
-      });
-    }
-
-    try {
-      await fetchMatrixMessages(settings);
-    } catch (err) {
-      console.error(
-        `[matrix] Failed to fetch messages: ${err instanceof Error ? err.message : err}`,
-      );
-    }
-
-    return store.getCachedInbox("matrix", {
-      limit: opts?.limit,
-      unread: opts?.unread,
-      since: opts?.since,
-      sinceCachedAt: opts?.sinceCachedAt,
-      from: opts?.from,
+      },
     });
   },
 
@@ -446,3 +434,5 @@ const matrixProvider: MessagingProvider = {
 };
 
 registerProvider(matrixProvider);
+
+export { matrixProvider };
