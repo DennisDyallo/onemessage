@@ -1,8 +1,8 @@
 /**
  * Signal provider adapter for the unified daemon.
  *
- * Encapsulates all Signal-specific logic: daemon mode, poll mode, fetch,
- * cleanup. The UnifiedDaemon only calls the adapter's interface methods.
+ * Encapsulates all Signal-specific logic: fetch, cleanup.
+ * The UnifiedDaemon only calls the adapter's interface methods.
  */
 
 import { loadConfig } from "../config.ts";
@@ -34,30 +34,22 @@ export class SignalAdapter implements ProviderAdapter {
     const enabled = config.daemon?.providers?.signal?.enabled !== false;
     if (!enabled) return;
 
-    const mode = config.daemon?.providers?.signal?.mode ?? "poll";
-    const interval =
-      config.daemon?.providers?.signal?.pollIntervalMs ?? orchestrator.defaultPollInterval();
-
     const phone = this.phone;
-    if (mode === "daemon") {
-      this.daemonHandle = startSignalDaemon({
-        account: phone,
-        onMessage: (messages) => {
-          const { incoming, outgoing } = processSignalMessages(messages, phone);
-          store.recordFetch("signal", phone);
-          orchestrator.setLastPoll("signal");
-          process.stderr.write(`[daemon] signal daemon: ${incoming} in + ${outgoing} out\n`);
-        },
-        onError: (error) => {
-          process.stderr.write(`[daemon] signal daemon error: ${error}\n`);
-        },
-      });
-      // Backfill any missed messages
-      orchestrator.pollNow("signal", () => fetchSignalInboxAsync(phone));
-      process.stderr.write("[daemon] signal using real-time daemon mode\n");
-    } else {
-      orchestrator.schedulePoll("signal", interval, () => fetchSignalInboxAsync(phone));
-    }
+    this.daemonHandle = startSignalDaemon({
+      account: phone,
+      onMessage: (messages) => {
+        const { incoming, outgoing } = processSignalMessages(messages, phone);
+        store.recordFetch("signal", phone);
+        orchestrator.setLastPoll("signal");
+        process.stderr.write(`[daemon] signal daemon: ${incoming} in + ${outgoing} out\n`);
+      },
+      onError: (error) => {
+        process.stderr.write(`[daemon] signal daemon error: ${error}\n`);
+      },
+    });
+    // Backfill any missed messages
+    orchestrator.pollNow("signal", () => fetchSignalInboxAsync(phone));
+    process.stderr.write("[daemon] signal using real-time daemon mode\n");
   }
 
   async fetch(): Promise<void> {

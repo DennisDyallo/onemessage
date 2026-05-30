@@ -5,7 +5,14 @@ import { validateAttachment } from "../shared/attachment-validation.ts";
 import { constructSafeSignalAttachmentPathWithReason } from "../shared/signal-attachment-security.ts";
 import * as store from "../store.ts";
 import type { Attachment, MessageFull, MessagingProvider } from "../types.ts";
-import { cacheSentMessage, cliExists, readFromCacheOrFail, runCli, runCliAsync } from "./shared.ts";
+import {
+  cacheSentMessage,
+  cliExists,
+  inboxViaDaemon,
+  readFromCacheOrFail,
+  runCli,
+  runCliAsync,
+} from "./shared.ts";
 
 // ---------------------------------------------------------------------------
 // Config
@@ -262,8 +269,8 @@ export function parseSignalMessages(jsonLines: string, account?: string): Messag
 /**
  * Process parsed Signal messages: split by direction, fix direction field,
  * and upsert to the store. This is the single source of truth for Signal
- * message processing — used by fetchSignalInbox, fetchSignalInboxAsync,
- * and the daemon's onMessage callback.
+ * message processing — used by fetchSignalInboxAsync and the daemon's
+ * onMessage callback.
  *
  * Why this exists: parseSignalMessages sets direction based on isSync, but
  * DataMessages from the user's own account arrive as "in" even though they
@@ -292,33 +299,8 @@ export function processSignalMessages(
 // Fetch-and-cache (callable by daemon)
 // ---------------------------------------------------------------------------
 
-export function fetchSignalInbox(account: string): void {
-  const result = runSignalCli([
-    "-a",
-    account,
-    "-o",
-    "json",
-    "receive",
-    "-t",
-    "5",
-    "--send-read-receipts",
-  ]);
-
-  if (result.stdout) {
-    const freshMessages = parseSignalMessages(result.stdout, account);
-    const { incoming, outgoing } = processSignalMessages(freshMessages, account);
-    if (incoming + outgoing > 0) {
-      console.error(`[signal] Stored ${incoming} in + ${outgoing} out messages`);
-    }
-  } else if (!result.ok && result.stderr) {
-    process.stderr.write(`[signal] ${result.stderr}\n`);
-  }
-
-  store.recordFetch("signal", account);
-}
-
 /**
- * Async version of fetchSignalInbox — does not block the event loop.
+ * Async fetch — does not block the event loop.
  * Used by the daemon so polling Signal doesn't stall other providers.
  */
 export async function fetchSignalInboxAsync(account: string): Promise<void> {
@@ -505,7 +487,7 @@ export function startSignalDaemon(opts: {
 // Provider
 // ---------------------------------------------------------------------------
 
-const signalProvider: MessagingProvider = {
+export const signalProvider: MessagingProvider = {
   name: "signal",
   displayName: "Signal (signal-cli)",
 
@@ -612,24 +594,18 @@ const signalProvider: MessagingProvider = {
       return [];
     }
 
-    if (store.isFresh("signal", 30_000, settings.account) && !opts?.fresh) {
-      return store.getCachedInbox("signal", {
+    return inboxViaDaemon({
+      provider: "signal",
+      freshnessMs: 30_000,
+      account: settings.account,
+      fresh: opts?.fresh,
+      cacheArgs: {
         limit: opts?.limit,
         unread: opts?.unread,
         since: opts?.since,
         sinceCachedAt: opts?.sinceCachedAt,
         from: opts?.from,
-      });
-    }
-
-    fetchSignalInbox(settings.account);
-
-    return store.getCachedInbox("signal", {
-      limit: opts?.limit,
-      unread: opts?.unread,
-      since: opts?.since,
-      sinceCachedAt: opts?.sinceCachedAt,
-      from: opts?.from,
+      },
     });
   },
 
