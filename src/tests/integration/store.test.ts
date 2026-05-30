@@ -5,6 +5,7 @@ import {
   getCachedInbox,
   getCachedMessage,
   getContactNamesByAddress,
+  getDb,
   isFresh,
   recordFetch,
   searchCached,
@@ -573,5 +574,137 @@ describe("deleteMessages", () => {
     deleteMessages(p, ["d1"]);
     expect(getCachedMessage(p, "d1")).toBeNull();
     expect(getCachedMessage(p, "d2")).not.toBeNull();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// sinceCachedAt filter
+// ---------------------------------------------------------------------------
+
+describe("sinceCachedAt filter", () => {
+  const p = "__test_cached_at__";
+
+  test("filters by cached_at timestamp, not message date", () => {
+    const baseDate = "2026-01-01T12:00:00Z";
+    const t1 = "2026-05-30T10:00:00Z";
+    const t2 = "2026-05-30T11:00:00Z";
+    const t3 = "2026-05-30T12:00:00Z";
+
+    // Insert 3 messages with SAME message date but DIFFERENT cached_at
+    // We'll manually set cached_at via direct DB manipulation after upsert
+    const msgs = [
+      {
+        id: "cached-1",
+        provider: p,
+        from: { name: "A", address: "a@test.com" },
+        to: [{ name: "Me", address: "me@test.com" }],
+        preview: "first",
+        date: baseDate,
+        unread: false,
+        hasAttachments: false,
+      },
+      {
+        id: "cached-2",
+        provider: p,
+        from: { name: "B", address: "b@test.com" },
+        to: [{ name: "Me", address: "me@test.com" }],
+        preview: "second",
+        date: baseDate,
+        unread: false,
+        hasAttachments: false,
+      },
+      {
+        id: "cached-3",
+        provider: p,
+        from: { name: "C", address: "c@test.com" },
+        to: [{ name: "Me", address: "me@test.com" }],
+        preview: "third",
+        date: baseDate,
+        unread: false,
+        hasAttachments: false,
+      },
+    ];
+
+    upsertMessages(msgs, "in");
+
+    // Manually update cached_at for testing
+    // This simulates history-sync where old messages get new cached_at
+    const db = getDb();
+    const updateStmt = db.prepare(
+      "UPDATE messages SET cached_at = ? WHERE provider = ? AND id = ?",
+    );
+    updateStmt.run(t1, p, "cached-1");
+    updateStmt.run(t2, p, "cached-2");
+    updateStmt.run(t3, p, "cached-3");
+
+    // Query with sinceCachedAt between t1 and t3
+    const results = getCachedInbox(p, { sinceCachedAt: t2, limit: 10 });
+
+    // Should return only messages cached AFTER t2 (i.e., cached-3)
+    expect(results.length).toBe(1);
+    expect(results[0]?.id).toBe("cached-3");
+  });
+
+  test("sinceCachedAt composes with since filter", () => {
+    const oldDate = "2026-01-01T00:00:00Z";
+    const recentDate = "2026-05-30T00:00:00Z";
+    const t1 = "2026-05-30T10:00:00Z";
+    const t2 = "2026-05-30T11:00:00Z";
+
+    const msgs = [
+      {
+        id: "compose-1",
+        provider: p,
+        from: { name: "X", address: "x@test.com" },
+        to: [{ name: "Me", address: "me@test.com" }],
+        preview: "old date, old cached",
+        date: oldDate,
+        unread: false,
+        hasAttachments: false,
+      },
+      {
+        id: "compose-2",
+        provider: p,
+        from: { name: "Y", address: "y@test.com" },
+        to: [{ name: "Me", address: "me@test.com" }],
+        preview: "recent date, old cached",
+        date: recentDate,
+        unread: false,
+        hasAttachments: false,
+      },
+      {
+        id: "compose-3",
+        provider: p,
+        from: { name: "Z", address: "z@test.com" },
+        to: [{ name: "Me", address: "me@test.com" }],
+        preview: "recent date, recent cached",
+        date: recentDate,
+        unread: false,
+        hasAttachments: false,
+      },
+    ];
+
+    upsertMessages(msgs, "in");
+
+    const db = getDb();
+    const updateStmt = db.prepare(
+      "UPDATE messages SET cached_at = ? WHERE provider = ? AND id = ?",
+    );
+    updateStmt.run(t1, p, "compose-1");
+    updateStmt.run(t1, p, "compose-2");
+    updateStmt.run(t2, p, "compose-3");
+
+    // Both filters: since (message date) AND sinceCachedAt
+    // Query with sinceCachedAt = t1, so should exclude compose-1 and compose-2 (cached at t1)
+    // but include compose-3 (cached at t2, which is > t1)
+    const results = getCachedInbox(p, {
+      since: recentDate,
+      sinceCachedAt: t1,
+      limit: 10,
+    });
+
+    // Should return only compose-3 (recent date AND cached_at > t1)
+    expect(results.length).toBe(1);
+    expect(results[0]?.id).toBe("compose-3");
   });
 });

@@ -284,7 +284,11 @@ const smsProvider: MessagingProvider = {
 
     if (!hasReader) {
       // Fall back to cache only
-      return store.getCachedInbox("sms", { limit: opts?.limit, unread: opts?.unread });
+      return store.getCachedInbox("sms", {
+        limit: opts?.limit,
+        unread: opts?.unread,
+        sinceCachedAt: opts?.sinceCachedAt,
+      });
     }
 
     const needsFetch = opts?.fresh || !store.isFresh("sms", FRESHNESS_MS);
@@ -301,6 +305,7 @@ const smsProvider: MessagingProvider = {
       limit: opts?.limit,
       unread: opts?.unread,
       since: opts?.since,
+      sinceCachedAt: opts?.sinceCachedAt,
       from: opts?.from,
     });
   },

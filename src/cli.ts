@@ -290,6 +290,7 @@ addProviderFlags(
     .option("-n, --limit <n>", "Max messages", "10")
     .option("-u, --unread", "Unread only", false)
     .option("--since <date>", "Messages since date")
+    .option("--since-cached-at <iso>", "Messages cached after ISO timestamp")
     .option("--from <address>", "Filter by sender")
     .option("--folder <name>", "Folder/chat name")
     .option("--account <id>", "Specific account")
@@ -316,6 +317,7 @@ addProviderFlags(
         limit,
         unread: opts.unread,
         since: opts.since,
+        sinceCachedAt: opts.sinceCachedAt,
         from: opts.from,
         folder: opts.folder,
         account: opts.account,

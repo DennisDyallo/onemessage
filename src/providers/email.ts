@@ -418,6 +418,7 @@ const emailProvider: MessagingProvider = {
       limit,
       unread: opts?.unread,
       since: opts?.since,
+      sinceCachedAt: opts?.sinceCachedAt,
       from: opts?.from,
       excludeAccounts,
     });

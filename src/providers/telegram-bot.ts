@@ -243,6 +243,7 @@ const telegramBotProvider: MessagingProvider = {
         limit: opts?.limit,
         unread: opts?.unread,
         since: opts?.since,
+        sinceCachedAt: opts?.sinceCachedAt,
         from: opts?.from,
       });
     }
@@ -259,6 +260,7 @@ const telegramBotProvider: MessagingProvider = {
       limit: opts?.limit,
       unread: opts?.unread,
       since: opts?.since,
+      sinceCachedAt: opts?.sinceCachedAt,
       from: opts?.from,
     });
   },

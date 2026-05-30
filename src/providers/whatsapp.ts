@@ -95,6 +95,7 @@ const whatsappProvider: MessagingProvider = {
         limit: opts?.limit,
         unread: opts?.unread,
         since: opts?.since,
+        sinceCachedAt: opts?.sinceCachedAt,
         from: opts?.from,
       });
     }
@@ -112,6 +113,7 @@ const whatsappProvider: MessagingProvider = {
       limit: opts?.limit,
       unread: opts?.unread,
       since: opts?.since,
+      sinceCachedAt: opts?.sinceCachedAt,
       from: opts?.from,
     });
   },

@@ -23,6 +23,7 @@ export interface MessageEnvelope {
   isGroup?: boolean; // true = group, false = 1:1, undefined = unknown
   groupName?: string; // human-readable group name when isGroup is true
   direction?: "in" | "out";
+  cachedAt?: string; // ISO timestamp when message was cached (for inventory-changefeed consumers)
 }
 
 export interface MessageFull extends MessageEnvelope {
@@ -94,6 +95,7 @@ export interface InboxOptions {
   limit?: number;
   unread?: boolean;
   since?: string;
+  sinceCachedAt?: string;
   from?: string;
   folder?: string;
   account?: string;

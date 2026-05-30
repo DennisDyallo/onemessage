@@ -10,7 +10,7 @@ import type { MessageEnvelope, MessageFull } from "./types.ts";
 
 let db: Database | null = null;
 
-function getDb(): Database {
+export function getDb(): Database {
   if (db) return db;
 
   const dir = getConfigDir();
@@ -255,6 +255,7 @@ function rowToEnvelope(row: any): MessageEnvelope {
     isGroup: row.is_group === 1,
     groupName: row.group_name ?? undefined,
     direction: (row.direction as "in" | "out") ?? "in",
+    cachedAt: row.cached_at ?? undefined,
   };
 }
 
@@ -276,6 +277,7 @@ export function getCachedInbox(
     limit?: number;
     unread?: boolean;
     since?: string;
+    sinceCachedAt?: string;
     from?: string;
     excludeAccounts?: string[];
   },
@@ -293,6 +295,10 @@ export function getCachedInbox(
   if (opts?.since) {
     conditions.push("date >= ?");
     params.push(opts.since);
+  }
+  if (opts?.sinceCachedAt) {
+    conditions.push("cached_at > ?");
+    params.push(opts.sinceCachedAt);
   }
   if (opts?.from) {
     conditions.push(
