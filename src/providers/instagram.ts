@@ -2,7 +2,14 @@ import { loadConfig } from "../config.ts";
 import { registerProvider } from "../registry.ts";
 import * as store from "../store.ts";
 import type { MessageEnvelope, MessageFull, MessagingProvider } from "../types.ts";
-import { cacheSentMessage, cliExists, readFromCacheOrFail, runCli, runCliAsync } from "./shared.ts";
+import {
+  cacheSentMessage,
+  cliExists,
+  inboxViaDaemon,
+  readFromCacheOrFail,
+  runCli,
+  runCliAsync,
+} from "./shared.ts";
 
 // ---------------------------------------------------------------------------
 // Config
@@ -335,31 +342,18 @@ const instagramProvider: MessagingProvider = {
       console.error("Instagram not configured. Run: onemessage auth instagram");
       return [];
     }
-
-    if (store.isFresh("instagram", 300_000, settings.username) && !opts?.fresh) {
-      return store.getCachedInbox("instagram", {
+    return inboxViaDaemon({
+      provider: "instagram",
+      freshnessMs: 300_000,
+      account: settings.username,
+      fresh: opts?.fresh,
+      cacheArgs: {
         limit: opts?.limit,
         unread: opts?.unread,
         since: opts?.since,
         sinceCachedAt: opts?.sinceCachedAt,
         from: opts?.from,
-      });
-    }
-
-    try {
-      await fetchInstagramInbox(settings.username);
-    } catch (err) {
-      console.error(
-        `[instagram] Failed to fetch inbox: ${err instanceof Error ? err.message : err}`,
-      );
-    }
-
-    return store.getCachedInbox("instagram", {
-      limit: opts?.limit,
-      unread: opts?.unread,
-      since: opts?.since,
-      sinceCachedAt: opts?.sinceCachedAt,
-      from: opts?.from,
+      },
     });
   },
 
@@ -391,5 +385,7 @@ const instagramProvider: MessagingProvider = {
     });
   },
 };
+
+export { instagramProvider };
 
 registerProvider(instagramProvider);

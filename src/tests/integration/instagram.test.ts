@@ -323,3 +323,92 @@ describe("Instagram read() --fresh path", () => {
     expect(upsertedOut[0]?.direction).toBe("out");
   });
 });
+
+// ---------------------------------------------------------------------------
+// inbox() migration — inboxViaDaemon integration
+// ---------------------------------------------------------------------------
+
+describe("instagramProvider.inbox via inboxViaDaemon", () => {
+  // NOTE: This migration uses a structural test (source code regex) as the
+  // revert guard instead of a behavioral test. Behavioral testing for this
+  // migration is environment-dependent (requires Instagram auth config) and
+  // would pass on both pre-migration and post-migration code when cache is
+  // fresh. The helper itself (inboxViaDaemon) has behavioral unit tests in
+  // shared.test.ts. This structural test proves the provider delegates to
+  // that helper, which is a stronger migration guarantee than a flaky
+  // behavioral test that could pass on revert.
+  //
+  // CRITICAL: This test performs ZERO live Instagram API calls. Instagram's
+  // bot detection is aggressive and will ban the account (ddyallo) if tests
+  // hit their endpoints. This is pure source inspection.
+
+  test("inbox() calls inboxViaDaemon (structural proof of migration)", async () => {
+    // This test proves the migration happened by inspecting the source code structure.
+    // The old implementation called freshness checks and fetch directly.
+    // The new implementation calls `inboxViaDaemon` (helper that manages daemon lifecycle).
+    //
+    // Strategy: Read the inbox() source, assert it contains "inboxViaDaemon" and NOT the old direct calls.
+
+    const fs = await import("node:fs/promises");
+    const instagramSource = await fs.readFile(
+      new URL("../../providers/instagram.ts", import.meta.url),
+      "utf-8",
+    );
+
+    // Extract the inbox() method body
+    const inboxMatch = instagramSource.match(/async inbox\(opts\)\s*{[\s\S]*?^ {2}},/m);
+    expect(inboxMatch).not.toBeNull();
+
+    const inboxBody = inboxMatch?.[0] ?? "";
+
+    // Assert: inbox() calls inboxViaDaemon
+    expect(inboxBody).toContain("inboxViaDaemon");
+
+    // Assert: inbox() does NOT call store.isFresh directly inside inbox()
+    expect(inboxBody).not.toContain("store.isFresh");
+
+    // Assert: inbox() does NOT call store.getCachedInbox directly (helper manages this)
+    expect(inboxBody).not.toContain("store.getCachedInbox");
+
+    // Assert: inbox() does NOT call fetchInstagramInbox directly inside inbox()
+    expect(inboxBody).not.toContain("fetchInstagramInbox");
+
+    // Assert: inbox() passes provider:"instagram" to helper
+    expect(inboxBody).toContain('provider: "instagram"');
+
+    // Assert: inbox() passes freshnessMs:300_000 to helper
+    expect(inboxBody).toContain("freshnessMs: 300_000");
+
+    // Assert: inbox() passes account:settings.username to helper
+    expect(inboxBody).toContain("account: settings.username");
+  });
+
+  test("InstagramAdapter has MIN_FETCH_INTERVAL_MS rate limit guard (structural proof)", async () => {
+    // This test proves Instagram has a defensive rate limit to prevent --fresh abuse.
+    // Pre-migration, --fresh bypassed freshness checks. Post-migration, the adapter
+    // enforces a hard 60s minimum between live Instagram API calls regardless of caller.
+    //
+    // Strategy: Read the adapter source, assert MIN_FETCH_INTERVAL_MS exists and is used in fetch logic.
+
+    const fs = await import("node:fs/promises");
+    const adapterSource = await fs.readFile(
+      new URL("../../daemons/instagram.ts", import.meta.url),
+      "utf-8",
+    );
+
+    // Assert: MIN_FETCH_INTERVAL_MS constant exists
+    expect(adapterSource).toContain("MIN_FETCH_INTERVAL_MS");
+
+    // Assert: MIN_FETCH_INTERVAL_MS is set to 60_000 (60s hard floor)
+    expect(adapterSource).toContain("MIN_FETCH_INTERVAL_MS = 60_000");
+
+    // Assert: fetch() or actuallyFetch() checks sinceLast against MIN_FETCH_INTERVAL_MS
+    expect(adapterSource).toMatch(/sinceLast < \w+\.MIN_FETCH_INTERVAL_MS/);
+
+    // Assert: actuallyFetch exists (DRY helper for rate-limited fetch)
+    expect(adapterSource).toContain("async actuallyFetch");
+
+    // Assert: lastFetchAt is updated after rate limit check
+    expect(adapterSource).toContain("this.lastFetchAt = now");
+  });
+});
