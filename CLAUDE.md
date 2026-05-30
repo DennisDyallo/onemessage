@@ -146,7 +146,7 @@ When a pattern appears identically across multiple providers, it is a **conventi
 | `runCli(cmd, args, opts)` | Every shell-provider CLI invocation in a synchronous (CLI) context |
 | `runCliAsync(cmd, args, opts)` | Every shell-provider CLI invocation in an async (daemon) context |
 | `cliExists(cmd)` | Every `isConfigured()` that depends on an external binary |
-| `inboxViaDaemon({...})` | Every `inbox()` implementation — cache-first lookup; if stale, asks daemon to fetch via IPC so the daemon (not the CLI process) owns external resources. Returns cache. Never throws. |
+| `inboxViaDaemon({...})` | Every `inbox()` implementation — cache-first lookup; if stale, asks daemon to fetch via IPC so the daemon (not the CLI process) owns external resources. Returns cache. Never throws. See split-routing pattern in email.ts for cases the daemon can't service. |
 | `store.searchCached(query, provider, opts)` | Every `search()` implementation |
 | `registerProvider(provider)` at module scope | Every provider file — self-registers on import, no manual wiring |
 
@@ -178,7 +178,39 @@ async inbox(opts) {
 },
 ```
 
-**Pair this with the adapter contract:** the corresponding `XAdapter.fetch()` in `src/daemons/x.ts` MUST call `store.recordFetch("x", account)` after a successful fetch — that's what closes the freshness gate. If the adapter is a no-op (push-based provider like WhatsApp), it must still call `recordFetch` itself. The orchestrator's `pollProvider` does not record freshness.
+#### When `inboxViaDaemon` doesn't fit
+
+The helper routes all requests through the daemon, but the daemon's adapter `fetch()` uses **hardcoded default parameters** — it doesn't receive the CLI's custom folder, criteria, account filter, or limit. If the user requests dimensions the daemon can't service, the provider must bypass the helper and fetch directly.
+
+**Bypass conditions** (any of these require direct fetch):
+- Custom folder (daemon fetches default folder only, usually INBOX)
+- Custom search criteria (e.g. `--from`, `--since`, `--unread` with provider-specific filters)
+- Account filter (daemon fetches all accounts; `--account` needs account-scoped fetch)
+- Explicit `--limit` different from adapter's default (daemon uses hardcoded limit)
+
+**Pattern:** Check if the request is "default" (matches what the daemon fetches). If not, use manual freshness check + direct fetch. See **`src/providers/email.ts` lines 421-435** for the worked example:
+
+```typescript
+// Determine if daemon can service this request
+const isDefaultRequest =
+  folder === "INBOX" && Object.keys(criteria).length === 0 && !opts?.account && !opts?.limit;
+
+if (!isDefaultRequest) {
+  // Custom dimensions — daemon can't service; fetch directly
+  const needsFetch = opts?.fresh || !store.isFresh("email", FRESHNESS_MS, accounts.join(","), folder);
+  if (needsFetch) {
+    await fetchEmailInbox(s, accounts, folder, criteria, limit);
+  }
+  return store.getCachedInbox("email", cacheArgs);
+}
+
+// Default request — route through daemon
+return inboxViaDaemon({...});
+```
+
+**Warning:** The helper's `account` and `folder` parameters are **freshness cache keys**, not fetch parameters sent to the daemon. The daemon IPC `{type:"fetch", provider}` passes only `provider` — the adapter's `fetch()` decides what to retrieve. Mismatched dimensions cause stale results.
+
+**Pair this with the adapter contract:** the corresponding `XAdapter.fetch()` in `src/daemons/x.ts` MUST call `store.recordFetch("x", account)` after a successful fetch — that's what closes the freshness gate. If the adapter is a no-op (push-based provider like WhatsApp), it still must call `recordFetch` itself. The orchestrator's `pollProvider` does not record freshness.
 
 ```
 // WRONG — reimplements caching and error handling inline
