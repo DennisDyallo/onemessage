@@ -301,8 +301,13 @@ export function getCachedInbox(
     if (opts.sinceCachedAt.trim() === "") {
       throw new Error("sinceCachedAt cannot be empty string");
     }
+    // Strict ISO 8601 guard: JS `new Date("2026-05-30junk")` would silently parse
+    // to a different date. Require canonical ISO format and round-trip-equal.
     const parsed = new Date(opts.sinceCachedAt);
-    if (Number.isNaN(parsed.getTime())) {
+    if (
+      Number.isNaN(parsed.getTime()) ||
+      !/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d{1,3})?Z$/.test(opts.sinceCachedAt)
+    ) {
       throw new Error(`sinceCachedAt must be valid ISO timestamp, got: ${opts.sinceCachedAt}`);
     }
     conditions.push("cached_at > ?");

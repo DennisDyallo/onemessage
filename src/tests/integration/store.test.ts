@@ -770,4 +770,14 @@ describe("sinceCachedAt filter", () => {
       "sinceCachedAt must be valid ISO timestamp",
     );
   });
+
+  test("sinceCachedAt rejects ISO-prefixed garbage that JS Date would silently coerce", () => {
+    // `new Date("2026-05-30junk")` returns a valid Date for some inputs — strict regex must catch this
+    expect(() => getCachedInbox(p, { sinceCachedAt: "2026-05-30junk" })).toThrow(
+      "sinceCachedAt must be valid ISO timestamp",
+    );
+    expect(() => getCachedInbox(p, { sinceCachedAt: "2026-05-30" })).toThrow(
+      "sinceCachedAt must be valid ISO timestamp",
+    );
+  });
 });
