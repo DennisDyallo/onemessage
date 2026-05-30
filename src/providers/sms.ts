@@ -2,7 +2,13 @@ import { loadConfig } from "../config.ts";
 import { registerProvider } from "../registry.ts";
 import * as store from "../store.ts";
 import type { MessageFull, MessagingProvider } from "../types.ts";
-import { cacheSentMessage, cliExists, readFromCacheOrFail, runCli } from "./shared.ts";
+import {
+  cacheSentMessage,
+  cliExists,
+  inboxViaDaemon,
+  readFromCacheOrFail,
+  runCli,
+} from "./shared.ts";
 
 // ---------------------------------------------------------------------------
 // Config
@@ -234,7 +240,7 @@ export function fetchSmsInbox(opts?: { unread?: boolean; fresh?: boolean; from?:
 
 const FRESHNESS_MS = 2 * 60_000; // 2 minutes
 
-const smsProvider: MessagingProvider = {
+export const smsProvider: MessagingProvider = {
   name: "sms",
   displayName: "SMS (KDE Connect)",
 
@@ -291,22 +297,17 @@ const smsProvider: MessagingProvider = {
       });
     }
 
-    const needsFetch = opts?.fresh || !store.isFresh("sms", FRESHNESS_MS);
-
-    if (needsFetch) {
-      fetchSmsInbox({
+    return inboxViaDaemon({
+      provider: "sms",
+      freshnessMs: FRESHNESS_MS,
+      fresh: opts?.fresh,
+      cacheArgs: {
+        limit: opts?.limit,
         unread: opts?.unread,
-        fresh: opts?.fresh,
+        since: opts?.since,
+        sinceCachedAt: opts?.sinceCachedAt,
         from: opts?.from,
-      });
-    }
-
-    return store.getCachedInbox("sms", {
-      limit: opts?.limit,
-      unread: opts?.unread,
-      since: opts?.since,
-      sinceCachedAt: opts?.sinceCachedAt,
-      from: opts?.from,
+      },
     });
   },
 

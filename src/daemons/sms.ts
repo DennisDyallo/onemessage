@@ -18,7 +18,7 @@ export class SmsAdapter implements ProviderAdapter {
       config.daemon?.providers?.sms?.pollIntervalMs ?? orchestrator.defaultPollInterval();
 
     orchestrator.schedulePoll("sms", interval, async () => {
-      await fetchSmsInbox();
+      await fetchSmsInbox({ fresh: true });
     });
   }
 
@@ -26,7 +26,7 @@ export class SmsAdapter implements ProviderAdapter {
     if (!cliExists("kdeconnect-read-sms")) {
       throw new Error("SMS polling requires kdeconnect-read-sms");
     }
-    await fetchSmsInbox();
+    await fetchSmsInbox({ fresh: true });
   }
 
   isActive(): boolean {

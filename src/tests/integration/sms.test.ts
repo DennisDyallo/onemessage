@@ -9,7 +9,9 @@
  * set correctly for each direction.
  */
 import { describe, expect, test } from "bun:test";
-import type { MessageFull } from "../../types.ts";
+import { smsProvider } from "../../providers/sms.ts";
+import * as store from "../../store.ts";
+import type { MessageEnvelope, MessageFull } from "../../types.ts";
 
 // ---------------------------------------------------------------------------
 // Inline replica of toSmsMessage() from sms.ts
@@ -216,5 +218,89 @@ describe("SMS contact name enrichment", () => {
     });
     expect(msg.from?.name).toBe("+46799999999");
     expect(msg.from?.address).toBe("+46799999999");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Phase 3a: inbox() migration to inboxViaDaemon
+// ---------------------------------------------------------------------------
+
+describe("SMS inbox() — inboxViaDaemon migration", () => {
+  test("inbox() returns fresh cache without daemon call when cache is fresh", async () => {
+    // This test proves the freshness gate works: when cache is fresh,
+    // inbox() should return cached data immediately without triggering daemon.
+    //
+    // Strategy: Seed cache with a known SMS message, mark as fresh,
+    // call inbox() with fresh:false, assert cached message returns.
+    // If the helper's freshness gate is broken, this would timeout
+    // waiting for daemon (which we're not mocking).
+
+    const testId = "__test_sms_inbox_fresh__:1";
+    const testMsg: MessageFull = {
+      id: testId,
+      provider: "sms",
+      from: { name: "Test Contact", address: "+15555550101" },
+      to: [{ name: "Me", address: "+15555550199" }],
+      preview: "cached sms inbox message",
+      body: "cached sms inbox message",
+      bodyFormat: "text",
+      date: new Date().toISOString(),
+      unread: true,
+      hasAttachments: false,
+      attachments: [],
+      direction: "in",
+    };
+    store.upsertFullMessages([testMsg]);
+
+    // Mark cache as FRESH (within 2-minute freshness window per FRESHNESS_MS)
+    store.recordFetch("sms");
+
+    // Act: call inbox() with fresh:false
+    // This should short-circuit at the freshness gate and NOT call daemon
+    const result = await smsProvider.inbox({
+      fresh: false,
+      limit: 10,
+    });
+
+    // Assert: should return the cached message WITHOUT timeout (proves freshness gate works)
+    expect(result.length).toBeGreaterThan(0);
+    const found = result.find((m: MessageEnvelope) => m.id === testId);
+    expect(found).toBeDefined();
+    expect(found?.preview).toBe("cached sms inbox message");
+  });
+
+  test("inbox() calls inboxViaDaemon (structural proof of migration)", async () => {
+    // This test proves the migration happened by inspecting the source code structure.
+    // The old implementation called `fetchSmsInbox` and `store.isFresh` directly.
+    // The new implementation calls `inboxViaDaemon` (helper that manages daemon lifecycle).
+    //
+    // Strategy: Read the inbox() source, assert it contains "inboxViaDaemon" and NOT the old direct calls.
+
+    const fs = await import("node:fs/promises");
+    const smsProviderSource = await fs.readFile(
+      new URL("../../providers/sms.ts", import.meta.url),
+      "utf-8",
+    );
+
+    // Extract the inbox() method body
+    const inboxMatch = smsProviderSource.match(/async inbox\(opts\)\s*{[\s\S]*?^ {2}},/m);
+    expect(inboxMatch).not.toBeNull();
+
+    const inboxBody = inboxMatch?.[0] ?? "";
+
+    // Assert: inbox() calls inboxViaDaemon
+    expect(inboxBody).toContain("inboxViaDaemon");
+
+    // Assert: inbox() does NOT call fetchSmsInbox directly inside inbox()
+    expect(inboxBody).not.toContain("fetchSmsInbox");
+
+    // Assert: inbox() does NOT call store.isFresh directly inside inbox()
+    expect(inboxBody).not.toContain("store.isFresh");
+
+    // Assert: inbox() passes provider:"sms" to helper
+    expect(inboxBody).toContain('provider: "sms"');
+
+    // Assert: inbox() passes freshnessMs:FRESHNESS_MS to helper
+    expect(inboxBody).toContain("freshnessMs: FRESHNESS_MS");
   });
 });
