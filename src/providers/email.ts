@@ -9,6 +9,7 @@ import { registerProvider } from "../registry.ts";
 import { validateAttachment } from "../shared/attachment-validation.ts";
 import * as store from "../store.ts";
 import type { MessageEnvelope, MessageFull, MessagingProvider } from "../types.ts";
+import { inboxViaDaemon } from "./shared.ts";
 
 const FRESHNESS_MS = 5 * 60_000; // 5 minutes
 
@@ -392,6 +393,7 @@ const emailProvider: MessagingProvider = {
     const folder = opts?.folder ?? s.defaultFolder;
     const limit = opts?.limit ?? 10;
 
+    // Build criteria from opts (pre-helper) — needed for both daemon and fallback paths
     // biome-ignore lint/suspicious/noExplicitAny: imapflow search criteria is untyped
     const criteria: any = {};
     if (opts?.unread) criteria.seen = false;
@@ -405,22 +407,42 @@ const emailProvider: MessagingProvider = {
     }
     if (opts?.from) criteria.from = opts.from;
 
-    // Fetch and cache all accounts (primary + secondary)
-    const needsFetch =
-      opts?.fresh || !store.isFresh("email", FRESHNESS_MS, accounts.join(","), folder);
-    if (needsFetch) {
-      await fetchEmailInbox(s, accounts, folder, criteria, limit);
-    }
-
     // Default view: exclude secondary accounts. --all includes everything.
     const excludeAccounts = opts?.all ? [] : s.secondaryAccounts;
-    return store.getCachedInbox("email", {
+    const cacheArgs = {
       limit,
       unread: opts?.unread,
       since: opts?.since,
       sinceCachedAt: opts?.sinceCachedAt,
       from: opts?.from,
       excludeAccounts,
+    };
+
+    // Daemon's EmailAdapter.fetch() only refreshes INBOX with no criteria for ALL accounts.
+    // For non-default requests (custom folder OR custom criteria OR account filter), bypass
+    // the helper and fetch directly — daemon can't service these without freshness key mismatch.
+    const isDefaultRequest =
+      folder === "INBOX" && Object.keys(criteria).length === 0 && !opts?.account;
+
+    if (!isDefaultRequest) {
+      // Custom folder or criteria — daemon can't service this; fetch directly
+      const needsFetch =
+        opts?.fresh || !store.isFresh("email", FRESHNESS_MS, accounts.join(","), folder);
+      if (needsFetch) {
+        await fetchEmailInbox(s, accounts, folder, criteria, limit);
+      }
+      return store.getCachedInbox("email", cacheArgs);
+    }
+
+    // Default INBOX request with no custom criteria — route through daemon for contention safety
+    return inboxViaDaemon({
+      provider: "email",
+      freshnessMs: FRESHNESS_MS,
+      account: accounts.join(","),
+      folder,
+      fresh: opts?.fresh,
+      cacheArgs,
+      fallbackFetch: () => fetchEmailInbox(s, accounts, folder, criteria, limit),
     });
   },
 
@@ -497,3 +519,5 @@ const emailProvider: MessagingProvider = {
 };
 
 registerProvider(emailProvider);
+
+export { emailProvider };
