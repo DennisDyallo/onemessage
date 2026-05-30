@@ -351,7 +351,9 @@ describe("whatsappProvider.inbox via inboxViaDaemon", () => {
     const inboxMatch = whatsappProviderSource.match(/async inbox\(opts\)\s*{[\s\S]*?^ {2}},/m);
     expect(inboxMatch).not.toBeNull();
 
-    const inboxBody = inboxMatch?.[0] ?? "";
+    const inboxBody = (inboxMatch?.[0] ?? "")
+      .replace(/\/\/.*$/gm, "") // strip line comments
+      .replace(/\/\*[\s\S]*?\*\//g, ""); // strip block comments
 
     // Assert: inbox() calls inboxViaDaemon
     expect(inboxBody).toContain("inboxViaDaemon");

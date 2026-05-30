@@ -206,6 +206,17 @@ export function cacheSentMessage(opts: {
  * invoke optional fallbackFetch (for providers that can safely run direct
  * fetch when no daemon owns the resource). Always returns cached inbox —
  * never throws.
+ *
+ * **IMPORTANT — Freshness keys vs fetch parameters:**
+ * The `account` and `folder` parameters are used ONLY as freshness cache keys
+ * (via `store.isFresh(provider, freshnessMs, account, folder)`), NOT as parameters
+ * to the daemon's fetch. The daemon IPC `{type:"fetch", provider}` passes only
+ * `provider` — the daemon adapter's `fetch()` method uses its own hardcoded
+ * default parameters. If the caller needs custom folder/criteria/account filtering
+ * that differs from what the daemon fetches, the provider MUST bypass this helper
+ * and fetch directly. See `src/providers/email.ts` lines 421-435 for the worked
+ * example: `isDefaultRequest` checks if the request matches what the daemon can
+ * service; non-default requests use manual `isFresh` + direct fetch instead.
  */
 export async function inboxViaDaemon(args: {
   provider: string;

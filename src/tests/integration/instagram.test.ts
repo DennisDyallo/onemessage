@@ -359,7 +359,9 @@ describe("instagramProvider.inbox via inboxViaDaemon", () => {
     const inboxMatch = instagramSource.match(/async inbox\(opts\)\s*{[\s\S]*?^ {2}},/m);
     expect(inboxMatch).not.toBeNull();
 
-    const inboxBody = inboxMatch?.[0] ?? "";
+    const inboxBody = (inboxMatch?.[0] ?? "")
+      .replace(/\/\/.*$/gm, "") // strip line comments
+      .replace(/\/\*[\s\S]*?\*\//g, ""); // strip block comments
 
     // Assert: inbox() calls inboxViaDaemon
     expect(inboxBody).toContain("inboxViaDaemon");
@@ -429,7 +431,9 @@ describe("instagramProvider.inbox via inboxViaDaemon", () => {
     const readMatch = instagramSource.match(/async read\(messageId, opts\)\s*{[\s\S]*?^ {2}},/m);
     expect(readMatch).not.toBeNull();
 
-    const readBody = readMatch?.[0] ?? "";
+    const readBody = (readMatch?.[0] ?? "")
+      .replace(/\/\/.*$/gm, "") // strip line comments
+      .replace(/\/\*[\s\S]*?\*\//g, ""); // strip block comments
 
     // Assert: read() body does NOT contain direct fetchThreadMessages call
     expect(readBody).not.toContain("fetchThreadMessages(messageId");
