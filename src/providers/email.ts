@@ -419,10 +419,10 @@ const emailProvider: MessagingProvider = {
     };
 
     // Daemon's EmailAdapter.fetch() only refreshes INBOX with no criteria for ALL accounts.
-    // For non-default requests (custom folder OR custom criteria OR account filter), bypass
+    // For non-default requests (custom folder OR custom criteria OR account filter OR explicit limit), bypass
     // the helper and fetch directly — daemon can't service these without freshness key mismatch.
     const isDefaultRequest =
-      folder === "INBOX" && Object.keys(criteria).length === 0 && !opts?.account;
+      folder === "INBOX" && Object.keys(criteria).length === 0 && !opts?.account && !opts?.limit;
 
     if (!isDefaultRequest) {
       // Custom folder or criteria — daemon can't service this; fetch directly

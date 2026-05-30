@@ -60,6 +60,10 @@ describe("emailProvider.inbox via inboxViaDaemon", () => {
     // (daemon fetches all accounts, but account-filtered requests need account-scoped key)
     expect(inboxBody).toMatch(/isDefaultRequest[\s\S]*?&&[\s\S]*?!opts\?\.account/);
 
+    // Assert: isDefaultRequest checks for explicit --limit to avoid daemon fetch with default limit
+    // (daemon uses default limit=10, but CLI --limit 100 should bypass daemon and fetch directly)
+    expect(inboxBody).toMatch(/isDefaultRequest[\s\S]*?&&[\s\S]*?!opts\?\.limit/);
+
     // Assert: Direct fetch path still exists for custom folder/criteria
     expect(inboxBody).toContain("fetchEmailInbox");
 
