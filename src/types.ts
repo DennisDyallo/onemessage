@@ -147,5 +147,5 @@ export interface MessagingProvider {
   search?(query: string, opts?: SearchOptions): Promise<MessageEnvelope[]>;
 
   /** Interactive authentication flow — only providers that need one implement this */
-  authenticate?(opts?: { phone?: string }): Promise<void>;
+  authenticate?(opts?: { phone?: string; force?: boolean }): Promise<void>;
 }

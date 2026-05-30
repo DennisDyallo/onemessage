@@ -456,12 +456,13 @@ program
   .command("auth <provider>")
   .description("Configure or authenticate a provider")
   .option("--phone <number>", "Phone number for WhatsApp pairing code auth")
+  .option("--force", "Re-run authenticate() even if provider is already configured")
   .action(async (providerName, opts) => {
     const provider = getProviderOrExit(providerName);
     const configPath = getConfigPath();
     const config = loadConfig();
 
-    if (provider.isConfigured()) {
+    if (provider.isConfigured() && !opts.force) {
       console.log(`  ✓ ${providerName} is configured.`);
       // biome-ignore lint/suspicious/noExplicitAny: dynamic provider key access on config
       const providerConfig = (config as any)[providerName];
@@ -475,8 +476,12 @@ program
         }
       }
       console.log(`\n  Config: ${configPath}`);
+      console.log(`  Re-authenticate with: onemessage auth ${providerName} --force\n`);
     } else if (provider.authenticate) {
-      await provider.authenticate({ phone: opts.phone });
+      if (opts.force && provider.isConfigured()) {
+        console.log(`  --force: re-running authenticate() for ${providerName}.\n`);
+      }
+      await provider.authenticate({ phone: opts.phone, force: opts.force });
     } else {
       console.log(`  ${providerName} is not configured.\n`);
       console.log(`  Create ${configPath} with:\n`);

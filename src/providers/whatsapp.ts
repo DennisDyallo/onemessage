@@ -51,6 +51,13 @@ const whatsappProvider: MessagingProvider = {
   },
 
   async authenticate(opts) {
+    if (opts?.force) {
+      const { rmSync, existsSync } = await import("node:fs");
+      if (existsSync(AUTH_DIR)) {
+        rmSync(AUTH_DIR, { recursive: true, force: true });
+        console.log(`  --force: wiped ${AUTH_DIR}\n`);
+      }
+    }
     const { runWhatsAppAuth } = await import("./whatsapp-auth.ts");
     await runWhatsAppAuth({ phone: opts?.phone });
   },
