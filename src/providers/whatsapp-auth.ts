@@ -112,7 +112,7 @@ async function connectSocket(
       const contactNames = store.getContactNamesByAddress("whatsapp");
       let stored = 0;
       for (const msg of messages) {
-        const ok = await parseAndStoreWAMessage(msg, sock, lidCache, undefined, contactNames);
+        const ok = await parseAndStoreWAMessage(msg, sock, lidCache, undefined, contactNames, true);
         if (ok) stored++;
       }
       totalStored += stored;
