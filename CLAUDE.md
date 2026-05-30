@@ -146,10 +146,11 @@ When a pattern appears identically across multiple providers, it is a **conventi
 | `runCli(cmd, args, opts)` | Every shell-provider CLI invocation in a synchronous (CLI) context |
 | `runCliAsync(cmd, args, opts)` | Every shell-provider CLI invocation in an async (daemon) context |
 | `cliExists(cmd)` | Every `isConfigured()` that depends on an external binary |
-| `store.isFresh(provider, maxAgeMs, account)` | Every `inbox()` freshness gate |
-| `store.getCachedInbox(provider, opts)` | Every `inbox()` return path (both cache-hit and post-fetch) |
+| `inboxViaDaemon({...})` | Every `inbox()` implementation — cache-first lookup; if stale, asks daemon to fetch via IPC so the daemon (not the CLI process) owns external resources. Returns cache. Never throws. |
 | `store.searchCached(query, provider, opts)` | Every `search()` implementation |
 | `registerProvider(provider)` at module scope | Every provider file — self-registers on import, no manual wiring |
+
+`store.isFresh` and `store.getCachedInbox` are **helper-internal** — call them directly only when the daemon's adapter `fetch()` cannot service the request (e.g. Email with custom folder or `--account` filter that the adapter doesn't refresh). Otherwise reach for `inboxViaDaemon`.
 
 **Canonical `inbox()` pattern** — copy this exactly, do not invent a variation:
 
@@ -161,15 +162,23 @@ async inbox(opts) {
     return [];
   }
 
-  if (store.isFresh("x", 30_000, settings.account) && !opts?.fresh) {
-    return store.getCachedInbox("x", { limit: opts?.limit, unread: opts?.unread, since: opts?.since, from: opts?.from });
-  }
-
-  await fetchXInbox(settings); // provider-specific fetch + store.upsertMessages/upsertFullMessages
-
-  return store.getCachedInbox("x", { limit: opts?.limit, unread: opts?.unread, since: opts?.since, from: opts?.from });
+  return inboxViaDaemon({
+    provider: "x",
+    freshnessMs: 30_000,
+    account: settings.account,
+    fresh: opts?.fresh,
+    cacheArgs: {
+      limit: opts?.limit,
+      unread: opts?.unread,
+      since: opts?.since,
+      sinceCachedAt: opts?.sinceCachedAt,
+      from: opts?.from,
+    },
+  });
 },
 ```
+
+**Pair this with the adapter contract:** the corresponding `XAdapter.fetch()` in `src/daemons/x.ts` MUST call `store.recordFetch("x", account)` after a successful fetch — that's what closes the freshness gate. If the adapter is a no-op (push-based provider like WhatsApp), it must still call `recordFetch` itself. The orchestrator's `pollProvider` does not record freshness.
 
 ```
 // WRONG — reimplements caching and error handling inline
@@ -201,9 +210,10 @@ Before adding any feature, run it through this filter:
 4. Add import to `src/providers/index.ts`
 5. Add config interface to `src/config.ts`
 6. Add auth instructions to the `auth` command switch in `src/cli.ts`
-7. Create `src/daemon-<name>.ts` implementing `ProviderAdapter` (use `daemon-email.ts` as template)
+7. Create `src/daemons/<name>.ts` implementing `ProviderAdapter` (use `daemons/email.ts` as template). The adapter's `fetch()` MUST call `store.recordFetch("<name>", account)` after success — the freshness gate depends on it.
 8. Add the adapter to the `adapters` array in `daemon.ts` `startAdapters()`
 9. Add `<name>?: { enabled?: boolean; pollIntervalMs?: number }` to `DaemonConfig.providers` in `config.ts`
+10. Provider `inbox()` should call `inboxViaDaemon({...})` — not invent a fresh `isFresh`/`recordFetch`/`fetchX` triplet inline.
 
 ## Async vs Sync CLI calls
 
