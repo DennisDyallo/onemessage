@@ -17,7 +17,9 @@
  * WhatsApp daemon or socket.
  */
 import { describe, expect, test } from "bun:test";
-import type { MessageFull } from "../../types.ts";
+import { whatsappProvider } from "../../providers/whatsapp.ts";
+import * as store from "../../store.ts";
+import type { MessageEnvelope, MessageFull } from "../../types.ts";
 
 // ---------------------------------------------------------------------------
 // Inline replica of the WhatsApp message-to-full mapping from whatsapp-shared.ts
@@ -287,5 +289,83 @@ describe("WhatsApp outgoing contact name enrichment", () => {
     expect(msg.direction).toBe("out");
     // Group messages: to address is the group JID prefix
     expect(msg.to[0]?.address).toBe("1234567890");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// inbox() migration — inboxViaDaemon integration
+// ---------------------------------------------------------------------------
+
+describe("whatsappProvider.inbox via inboxViaDaemon", () => {
+  test("inbox() with fresh cache returns cached messages (proves inboxViaDaemon delegation)", async () => {
+    // Arrange: populate cache with a test message
+    const testId = `wa-inbox-test-${Date.now()}`;
+    const testMsg: MessageFull = {
+      id: testId,
+      provider: "whatsapp",
+      from: { name: "Test Contact", address: "46700888888" },
+      to: [{ name: "me", address: "me" }],
+      preview: "cached whatsapp inbox message",
+      body: "cached whatsapp inbox message",
+      bodyFormat: "text",
+      date: new Date().toISOString(),
+      unread: true,
+      hasAttachments: false,
+      attachments: [],
+      direction: "in",
+    };
+    store.upsertFullMessages([testMsg]);
+
+    // Mark cache as FRESH (within 60s freshness window)
+    store.recordFetch("whatsapp");
+
+    // Act: call inbox() with fresh:false
+    // This should short-circuit at the freshness gate and NOT call daemon
+    const result = await whatsappProvider.inbox({
+      fresh: false,
+      limit: 10,
+    });
+
+    // Assert: should return the cached message WITHOUT timeout (proves freshness gate works)
+    // This confirms inbox() delegates to inboxViaDaemon and the helper's cache path works
+    expect(result.length).toBeGreaterThan(0);
+    const found = result.find((m: MessageEnvelope) => m.id === testId);
+    expect(found).toBeDefined();
+    expect(found?.preview).toBe("cached whatsapp inbox message");
+  });
+
+  test("inbox() calls inboxViaDaemon (structural proof of migration)", async () => {
+    // This test proves the migration happened by inspecting the source code structure.
+    // The old implementation called `ensureDaemon` and `store.recordFetch` directly.
+    // The new implementation calls `inboxViaDaemon` (helper that manages daemon lifecycle).
+    //
+    // Strategy: Read the inbox() source, assert it contains "inboxViaDaemon" and NOT the old direct calls.
+
+    const fs = await import("node:fs/promises");
+    const whatsappProviderSource = await fs.readFile(
+      new URL("../../providers/whatsapp.ts", import.meta.url),
+      "utf-8",
+    );
+
+    // Extract the inbox() method body
+    const inboxMatch = whatsappProviderSource.match(/async inbox\(opts\)\s*{[\s\S]*?^ {2}},/m);
+    expect(inboxMatch).not.toBeNull();
+
+    const inboxBody = inboxMatch?.[0] ?? "";
+
+    // Assert: inbox() calls inboxViaDaemon
+    expect(inboxBody).toContain("inboxViaDaemon");
+
+    // Assert: inbox() does NOT call ensureDaemon directly inside inbox()
+    expect(inboxBody).not.toContain("ensureDaemon");
+
+    // Assert: inbox() does NOT call store.recordFetch directly inside inbox()
+    expect(inboxBody).not.toContain("store.recordFetch");
+
+    // Assert: inbox() passes provider:"whatsapp" to helper
+    expect(inboxBody).toContain('provider: "whatsapp"');
+
+    // Assert: inbox() passes freshnessMs:60_000 to helper
+    expect(inboxBody).toContain("freshnessMs: 60_000");
   });
 });

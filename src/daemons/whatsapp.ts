@@ -48,6 +48,8 @@ export class WhatsAppAdapter implements IpcCapableAdapter {
 
   async fetch(): Promise<void> {
     // WhatsApp is real-time, not polling — nothing to fetch
+    // Record successful "poll" so freshness gate works
+    store.recordFetch("whatsapp");
   }
 
   isActive(): boolean {

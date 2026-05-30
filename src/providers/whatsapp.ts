@@ -5,7 +5,7 @@ import { registerProvider } from "../registry.ts";
 import { validateAttachment } from "../shared/attachment-validation.ts";
 import * as store from "../store.ts";
 import type { MessagingProvider } from "../types.ts";
-import { cacheSentMessage, readFromCacheOrFail } from "./shared.ts";
+import { cacheSentMessage, inboxViaDaemon, readFromCacheOrFail } from "./shared.ts";
 import { AUTH_DIR } from "./whatsapp-shared.ts";
 
 // ---------------------------------------------------------------------------
@@ -42,7 +42,7 @@ async function recipientToJid(recipientId: string): Promise<string | null> {
 // Provider
 // ---------------------------------------------------------------------------
 
-const whatsappProvider: MessagingProvider = {
+export const whatsappProvider: MessagingProvider = {
   name: "whatsapp",
   displayName: "WhatsApp (Baileys)",
 
@@ -90,31 +90,17 @@ const whatsappProvider: MessagingProvider = {
   },
 
   async inbox(opts) {
-    if (store.isFresh("whatsapp", 60_000) && !opts?.fresh) {
-      return store.getCachedInbox("whatsapp", {
+    return inboxViaDaemon({
+      provider: "whatsapp",
+      freshnessMs: 60_000,
+      fresh: opts?.fresh,
+      cacheArgs: {
         limit: opts?.limit,
         unread: opts?.unread,
         since: opts?.since,
         sinceCachedAt: opts?.sinceCachedAt,
         from: opts?.from,
-      });
-    }
-
-    try {
-      await ensureDaemon();
-      store.recordFetch("whatsapp");
-    } catch (err) {
-      console.warn(
-        `[whatsapp] daemon failed to start: ${err instanceof Error ? err.message : err}`,
-      );
-    }
-
-    return store.getCachedInbox("whatsapp", {
-      limit: opts?.limit,
-      unread: opts?.unread,
-      since: opts?.since,
-      sinceCachedAt: opts?.sinceCachedAt,
-      from: opts?.from,
+      },
     });
   },
 
