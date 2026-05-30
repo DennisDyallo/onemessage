@@ -271,17 +271,16 @@ function rowToFull(row: any): MessageFull {
   };
 }
 
-export function getCachedInbox(
-  provider: string,
-  opts?: {
-    limit?: number;
-    unread?: boolean;
-    since?: string;
-    sinceCachedAt?: string;
-    from?: string;
-    excludeAccounts?: string[];
-  },
-): MessageEnvelope[] {
+export type GetCachedInboxArgs = {
+  limit?: number;
+  unread?: boolean;
+  since?: string;
+  sinceCachedAt?: string;
+  from?: string;
+  excludeAccounts?: string[];
+};
+
+export function getCachedInbox(provider: string, opts?: GetCachedInboxArgs): MessageEnvelope[] {
   const d = getDb();
   const conditions = ["provider = ?"];
   const params: (string | number)[] = [provider];

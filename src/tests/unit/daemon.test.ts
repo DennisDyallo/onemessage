@@ -158,3 +158,137 @@ describe("daemon IPC dispatch", () => {
     expect(res).toEqual({ ok: true, data: "handled" });
   });
 });
+
+// ---------------------------------------------------------------------------
+// pollProvider in-flight deduplication
+// ---------------------------------------------------------------------------
+
+class CountingAdapter implements ProviderAdapter {
+  readonly name: string;
+  readonly polling = true;
+  fetchCount = 0;
+  shouldThrow = false;
+
+  constructor(name: string) {
+    this.name = name;
+  }
+  start(_o: DaemonOrchestrator) {}
+  async fetch() {
+    this.fetchCount++;
+    if (this.shouldThrow) throw new Error("fetch failed");
+    // Simulate async work
+    await new Promise((r) => setTimeout(r, 50));
+  }
+  isActive() {
+    return true;
+  }
+  statusInfo() {
+    return {};
+  }
+  cleanup() {}
+}
+
+describe("pollProvider in-flight deduplication", () => {
+  test("coalesces concurrent fetches on same adapter", async () => {
+    const adapter = new CountingAdapter("test-dedup");
+    const daemon = new UnifiedDaemon([adapter]);
+
+    // Spawn 5 concurrent IPC fetch requests
+    const promises = Array.from({ length: 5 }, () =>
+      daemon.processIpc(JSON.stringify({ type: "fetch", provider: "test-dedup" })),
+    );
+
+    const results = await Promise.all(promises);
+
+    // All should succeed
+    for (const res of results) {
+      expect(res.ok).toBe(true);
+    }
+
+    // But fetch should only be called once due to deduplication
+    expect(adapter.fetchCount).toBe(1);
+  });
+
+  test("releases inflight map slot after settlement", async () => {
+    const adapter = new CountingAdapter("test-seq");
+    const daemon = new UnifiedDaemon([adapter]);
+
+    // First fetch
+    const res1 = await daemon.processIpc(JSON.stringify({ type: "fetch", provider: "test-seq" }));
+    expect(res1.ok).toBe(true);
+    expect(adapter.fetchCount).toBe(1);
+
+    // Second fetch (sequential) — should trigger a new fetch, not reuse
+    const res2 = await daemon.processIpc(JSON.stringify({ type: "fetch", provider: "test-seq" }));
+    expect(res2.ok).toBe(true);
+    expect(adapter.fetchCount).toBe(2);
+  });
+
+  test("propagates rejection to all in-flight callers", async () => {
+    const adapter = new CountingAdapter("test-fail");
+    adapter.shouldThrow = true;
+    const daemon = new UnifiedDaemon([adapter]);
+
+    // Spawn 5 concurrent fetch requests
+    const promises = Array.from({ length: 5 }, () =>
+      daemon.processIpc(JSON.stringify({ type: "fetch", provider: "test-fail" })),
+    );
+
+    const results = await Promise.all(promises);
+
+    // All should fail with the same error
+    for (const res of results) {
+      expect(res.ok).toBe(false);
+      expect((res as { ok: false; error: string }).error).toContain("fetch failed");
+    }
+
+    // Fetch should only be called once
+    expect(adapter.fetchCount).toBe(1);
+  });
+
+  test("clears inflight map when fetchFn throws synchronously", async () => {
+    const daemon = new UnifiedDaemon([]);
+    let callCount = 0;
+    const syncThrowFn = () => {
+      callCount++;
+      throw new Error("sync boom");
+    };
+
+    // First call should reject and clean up
+    await expect((daemon as any).pollProvider("__test_sync_throw__", syncThrowFn)).rejects.toThrow(
+      "sync boom",
+    );
+
+    // Map must be empty for this provider — otherwise next call would reuse rejected promise
+    expect((daemon as any).inflightFetches.get("__test_sync_throw__")).toBeUndefined();
+
+    // Second call must INVOKE fn again (would not if rejected promise was cached)
+    await expect((daemon as any).pollProvider("__test_sync_throw__", syncThrowFn)).rejects.toThrow(
+      "sync boom",
+    );
+    expect(callCount).toBe(2);
+  });
+
+  test("clears inflight map when fetchFn rejects synchronously", async () => {
+    const daemon = new UnifiedDaemon([]);
+    let callCount = 0;
+    const syncRejectFn = () => {
+      callCount++;
+      return Promise.reject(new Error("sync reject"));
+    };
+
+    // First call should reject and clean up
+    await expect(
+      (daemon as any).pollProvider("__test_sync_reject__", syncRejectFn),
+    ).rejects.toThrow("sync reject");
+
+    // Map must be empty
+    expect((daemon as any).inflightFetches.get("__test_sync_reject__")).toBeUndefined();
+
+    // Second call must INVOKE fn again
+    await expect(
+      (daemon as any).pollProvider("__test_sync_reject__", syncRejectFn),
+    ).rejects.toThrow("sync reject");
+    expect(callCount).toBe(2);
+  });
+});

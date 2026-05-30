@@ -8,6 +8,8 @@
  *   - Outbound message envelope creation (signal, sms)
  */
 
+import { daemonRequest, ensureDaemon } from "../daemons/shared.ts";
+import type { GetCachedInboxArgs } from "../store.ts";
 import * as store from "../store.ts";
 import type { MessageEnvelope, MessageFull } from "../types.ts";
 
@@ -185,4 +187,63 @@ export function cacheSentMessage(opts: {
     hasAttachments: opts.hasAttachments ?? false,
   };
   store.upsertMessages([envelope], "out");
+}
+
+// ---------------------------------------------------------------------------
+// Daemon-based inbox
+// ---------------------------------------------------------------------------
+
+/**
+ * Canonical "cache-first inbox with daemon-owned fetch" convention.
+ *
+ *   1. If cache for (provider, account) is fresh and !fresh, return cache immediately.
+ *   2. Otherwise ensureDaemon() and ask the daemon to perform the fetch via
+ *      { type: "fetch", provider } — the daemon owns the external resource,
+ *      so this eliminates contention with concurrent CLI invocations.
+ *   3. Return cache (now up-to-date if the daemon fetch succeeded).
+ *
+ * On daemon unavailability (start fails OR IPC errors): log a warning and
+ * invoke optional fallbackFetch (for providers that can safely run direct
+ * fetch when no daemon owns the resource). Always returns cached inbox —
+ * never throws.
+ */
+export async function inboxViaDaemon(args: {
+  provider: string;
+  freshnessMs: number;
+  account?: string;
+  folder?: string;
+  fresh?: boolean;
+  cacheArgs: GetCachedInboxArgs;
+  fallbackFetch?: () => void | Promise<void>;
+}): Promise<MessageEnvelope[]> {
+  const { provider, freshnessMs, account, folder, fresh, cacheArgs, fallbackFetch } = args;
+
+  if (store.isFresh(provider, freshnessMs, account, folder) && !fresh) {
+    return store.getCachedInbox(provider, cacheArgs);
+  }
+
+  async function runFallback() {
+    if (!fallbackFetch) return;
+    try {
+      await fallbackFetch();
+    } catch (err) {
+      console.warn(
+        `[${provider}] fallback fetch failed: ${err instanceof Error ? err.message : err}`,
+      );
+    }
+  }
+
+  try {
+    await ensureDaemon();
+    const res = await daemonRequest({ type: "fetch", provider });
+    if (!res?.ok) {
+      console.warn(`[${provider}] daemon fetch error: ${res?.error ?? "unknown"}`);
+      await runFallback();
+    }
+  } catch (err) {
+    console.warn(`[${provider}] daemon unavailable: ${err instanceof Error ? err.message : err}`);
+    await runFallback();
+  }
+
+  return store.getCachedInbox(provider, cacheArgs);
 }

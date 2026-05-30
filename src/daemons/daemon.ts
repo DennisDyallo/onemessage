@@ -47,6 +47,7 @@ export class UnifiedDaemon {
   private pollTimers = new Map<string, ReturnType<typeof setInterval>>();
   private polling = new Map<string, boolean>();
   private lastPoll = new Map<string, number>();
+  private inflightFetches = new Map<string, Promise<void>>();
 
   // IPC
   private unixServer: ReturnType<typeof Bun.listen> | null = null;
@@ -142,26 +143,39 @@ export class UnifiedDaemon {
   }
 
   private schedulePoll(name: string, intervalMs: number, fn: () => void | Promise<void>): void {
-    this.pollProvider(name, fn);
+    this.pollProvider(name, fn).catch(() => {}); // Errors logged inside pollProvider
     this.pollTimers.set(
       name,
-      setInterval(() => this.pollProvider(name, fn), intervalMs),
+      setInterval(() => this.pollProvider(name, fn).catch(() => {}), intervalMs),
     );
     process.stderr.write(`[daemon] polling ${name} every ${Math.round(intervalMs / 1000)}s\n`);
   }
 
   private async pollProvider(name: string, fn: () => void | Promise<void>): Promise<void> {
-    if (this.polling.get(name)) return; // skip if still running
-    this.polling.set(name, true);
-    try {
-      await fn();
-      this.lastPoll.set(name, Date.now());
-      process.stderr.write(`[daemon] ${name} polled successfully\n`);
-    } catch (err) {
-      process.stderr.write(`[daemon] ${name} poll failed: ${err}\n`);
-    } finally {
-      this.polling.set(name, false);
-    }
+    // Coalesce concurrent fetches — if a fetch is in flight, return that promise
+    const inflight = this.inflightFetches.get(name);
+    if (inflight) return inflight;
+
+    // Use IIFE instead of async promise executor
+    const promise = (async () => {
+      // Yield one microtask so the outer .set(name, promise) runs before this body executes
+      await Promise.resolve();
+      this.polling.set(name, true);
+      try {
+        await fn();
+        this.lastPoll.set(name, Date.now());
+        process.stderr.write(`[daemon] ${name} polled successfully\n`);
+      } catch (err) {
+        process.stderr.write(`[daemon] ${name} poll failed: ${err}\n`);
+        throw err; // propagate to all in-flight callers
+      } finally {
+        this.polling.set(name, false);
+        this.inflightFetches.delete(name);
+      }
+    })();
+
+    this.inflightFetches.set(name, promise);
+    return promise;
   }
 
   // -----------------------------------------------------------------------
