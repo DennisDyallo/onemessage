@@ -132,7 +132,7 @@ export function upsertMessages(msgs: MessageEnvelope[], direction: "in" | "out" 
       has_attachments = excluded.has_attachments,
       is_group        = excluded.is_group,
       group_name      = COALESCE(excluded.group_name, messages.group_name),
-      cached_at       = excluded.cached_at,
+      cached_at       = messages.cached_at,
       ${FROM_JSON_MERGE}
   `);
 
@@ -187,7 +187,7 @@ export function upsertFullMessages(msgs: MessageFull[], threadId?: string): void
       is_group         = excluded.is_group,
       group_name       = COALESCE(excluded.group_name, messages.group_name),
       attachments_json = excluded.attachments_json,
-      cached_at        = excluded.cached_at,
+      cached_at        = messages.cached_at,
       thread_id        = excluded.thread_id,
       rfc_message_id   = COALESCE(excluded.rfc_message_id, messages.rfc_message_id),
       ${FROM_JSON_MERGE}
@@ -296,7 +296,15 @@ export function getCachedInbox(
     conditions.push("date >= ?");
     params.push(opts.since);
   }
-  if (opts?.sinceCachedAt) {
+  if (opts?.sinceCachedAt !== undefined) {
+    // Validate sinceCachedAt is a non-empty, valid ISO timestamp
+    if (opts.sinceCachedAt.trim() === "") {
+      throw new Error("sinceCachedAt cannot be empty string");
+    }
+    const parsed = new Date(opts.sinceCachedAt);
+    if (Number.isNaN(parsed.getTime())) {
+      throw new Error(`sinceCachedAt must be valid ISO timestamp, got: ${opts.sinceCachedAt}`);
+    }
     conditions.push("cached_at > ?");
     params.push(opts.sinceCachedAt);
   }

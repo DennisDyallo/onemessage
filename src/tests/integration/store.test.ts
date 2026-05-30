@@ -707,4 +707,67 @@ describe("sinceCachedAt filter", () => {
     expect(results.length).toBe(1);
     expect(results[0]?.id).toBe("compose-3");
   });
+
+  test("re-upserting existing message preserves original cached_at", () => {
+    const t0 = "2026-05-30T09:00:00Z";
+    const t1 = "2026-05-30T10:00:00Z";
+    const t2 = "2026-05-30T11:00:00Z";
+
+    // Insert message at t0
+    const msg = {
+      id: "upsert-test-1",
+      provider: p,
+      from: { name: "Alice", address: "alice@test.com" },
+      to: [{ name: "Me", address: "me@test.com" }],
+      preview: "original",
+      date: "2026-05-30T00:00:00Z",
+      unread: true,
+      hasAttachments: false,
+    };
+    upsertMessages([msg], "in");
+
+    // Manually set cached_at to t0
+    const db = getDb();
+    const updateStmt = db.prepare(
+      "UPDATE messages SET cached_at = ? WHERE provider = ? AND id = ?",
+    );
+    updateStmt.run(t0, p, "upsert-test-1");
+
+    // Verify cached_at is t0
+    const beforeUpsert = getCachedInbox(p, { limit: 100 });
+    const before = beforeUpsert.find((m) => m.id === "upsert-test-1");
+    expect(before?.cachedAt).toBe(t0);
+
+    // Re-upsert the same message (simulates refresh)
+    const updated = {
+      ...msg,
+      preview: "updated preview",
+      unread: false,
+    };
+    upsertMessages([updated], "in");
+
+    // Query with sinceCachedAt cursor between t0 and t2
+    // Message should NOT appear because its cached_at should still be t0 (not updated)
+    const afterCursor = getCachedInbox(p, { sinceCachedAt: t1, limit: 100 });
+    const found = afterCursor.find((m) => m.id === "upsert-test-1");
+    expect(found).toBeUndefined();
+
+    // Verify cached_at is STILL t0 (not overwritten by upsert)
+    const afterUpsert = getCachedInbox(p, { limit: 100 });
+    const after = afterUpsert.find((m) => m.id === "upsert-test-1");
+    expect(after?.cachedAt).toBe(t0);
+    expect(after?.preview).toBe("updated preview"); // Other fields updated
+  });
+
+  test("sinceCachedAt rejects empty string", () => {
+    expect(() => getCachedInbox(p, { sinceCachedAt: "" })).toThrow(
+      "sinceCachedAt cannot be empty string",
+    );
+  });
+
+  test("sinceCachedAt rejects malformed timestamp", () => {
+    expect(() => getCachedInbox(p, { sinceCachedAt: "not-a-date" })).toThrow(
+      "sinceCachedAt must be valid ISO timestamp",
+    );
+  });
 });
