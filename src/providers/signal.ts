@@ -1,3 +1,7 @@
+import { existsSync } from "node:fs";
+import { connect } from "node:net";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { loadConfig } from "../config.ts";
 import { registerProvider } from "../registry.ts";
 import { getSignalAttachmentDir } from "../shared/attachment-paths.ts";
@@ -43,6 +47,76 @@ function runSignalCli(args: string[], timeoutMs = 30_000) {
     stderrFilters: SIGNAL_STDERR_FILTERS,
     timeoutMs,
   });
+}
+
+function getSignalJsonRpcSocketPath(): string {
+  return join(process.env.XDG_RUNTIME_DIR ?? tmpdir(), "signal-cli", "socket");
+}
+
+interface SignalJsonRpcSendResult {
+  timestamp?: number;
+  results?: Array<{ type?: string }>;
+}
+
+async function signalJsonRpcSend(params: Record<string, unknown>): Promise<string | null> {
+  const socketPath = getSignalJsonRpcSocketPath();
+  if (!existsSync(socketPath)) return null;
+
+  const id = `onemessage-${Date.now()}`;
+  const req = {
+    jsonrpc: "2.0",
+    method: "send",
+    params,
+    id,
+  };
+
+  const resp = await new Promise<Record<string, unknown>>((resolve, reject) => {
+    const socket = connect(socketPath, () => {
+      socket.write(`${JSON.stringify(req)}\n`);
+    });
+
+    let data = "";
+    const timeout = setTimeout(() => {
+      socket.destroy();
+      reject(new Error("signal-cli JSON-RPC request timed out"));
+    }, 30_000);
+
+    socket.on("data", (chunk) => {
+      data += chunk.toString();
+      for (const line of data.split("\n")) {
+        if (!line.trim()) continue;
+        try {
+          const parsed = JSON.parse(line) as Record<string, unknown>;
+          if (parsed.id === id) {
+            clearTimeout(timeout);
+            socket.end();
+            resolve(parsed);
+            return;
+          }
+        } catch {
+          // Keep reading until a complete JSON-RPC response arrives.
+        }
+      }
+    });
+
+    socket.on("end", () => {
+      clearTimeout(timeout);
+      reject(new Error(`signal-cli JSON-RPC socket ended without response: ${data.slice(0, 200)}`));
+    });
+    socket.on("error", (err) => {
+      clearTimeout(timeout);
+      reject(err);
+    });
+  });
+
+  const err = resp.error as { message?: string } | undefined;
+  if (err) throw new Error(err.message ?? JSON.stringify(err));
+
+  const result = resp.result as SignalJsonRpcSendResult | undefined;
+  const failed = result?.results?.find((r) => r.type && r.type !== "SUCCESS");
+  if (failed) throw new Error(`signal-cli JSON-RPC send failed: ${failed.type}`);
+
+  return result?.timestamp ? String(result.timestamp) : "";
 }
 
 // ---------------------------------------------------------------------------
@@ -536,9 +610,11 @@ export const signalProvider: MessagingProvider = {
       };
     }
 
+    const jsonRpcParams: Record<string, unknown> = { message: body };
     const args = ["-a", settings.account, "send", "-m", body];
 
     if (opts?.attachments && opts.attachments.length > 0) {
+      jsonRpcParams.attachments = opts.attachments;
       for (const att of opts.attachments) {
         args.push("--attachment", att);
       }
@@ -558,9 +634,34 @@ export const signalProvider: MessagingProvider = {
           };
         }
       }
+      jsonRpcParams.groupId = groupId;
       args.push("-g", groupId);
+    } else if (recipientId === settings.account) {
+      jsonRpcParams.noteToSelf = true;
+      args.push("--note-to-self");
     } else {
+      jsonRpcParams.recipient = [recipientId];
       args.push(recipientId);
+    }
+
+    try {
+      const messageId = await signalJsonRpcSend(jsonRpcParams);
+      if (messageId === null) throw new Error("signal-cli JSON-RPC socket not found");
+      cacheSentMessage({
+        provider: "signal",
+        messageId: messageId || undefined,
+        fromAddress: settings.account,
+        recipientId,
+        body,
+        hasAttachments: !!opts?.attachments?.length,
+      });
+      return { ok: true, provider: "signal", recipientId, messageId };
+    } catch (err) {
+      process.stderr.write(
+        `[signal] JSON-RPC send failed, falling back to signal-cli send: ${
+          err instanceof Error ? err.message : err
+        }\n`,
+      );
     }
 
     const result = runSignalCli(args);

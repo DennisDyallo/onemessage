@@ -439,8 +439,10 @@ export class UnifiedDaemon {
 // Entry point
 // ---------------------------------------------------------------------------
 
-const daemon = new UnifiedDaemon();
-daemon.start().catch((err) => {
-  process.stderr.write(`[daemon] fatal: ${err}\n`);
-  process.exit(1);
-});
+if (import.meta.main) {
+  const daemon = new UnifiedDaemon();
+  daemon.start().catch((err) => {
+    process.stderr.write(`[daemon] fatal: ${err}\n`);
+    process.exit(1);
+  });
+}

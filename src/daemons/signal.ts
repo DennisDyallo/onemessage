@@ -21,7 +21,7 @@ import type { DaemonOrchestrator, ProviderAdapter } from "./adapter.ts";
 
 export class SignalAdapter implements ProviderAdapter {
   readonly name = "signal";
-  readonly polling = true;
+  readonly polling = false;
   private daemonHandle: SignalDaemonHandle | null = null;
   private phone: string | null = null;
 
@@ -47,13 +47,15 @@ export class SignalAdapter implements ProviderAdapter {
         process.stderr.write(`[daemon] signal daemon error: ${error}\n`);
       },
     });
-    // Backfill any missed messages
-    orchestrator.pollNow("signal", () => fetchSignalInboxAsync(phone));
     process.stderr.write("[daemon] signal using real-time daemon mode\n");
   }
 
   async fetch(): Promise<void> {
     if (!this.phone) throw new Error("signal not configured");
+    if (this.daemonHandle) {
+      store.recordFetch("signal", this.phone);
+      return;
+    }
     await fetchSignalInboxAsync(this.phone);
   }
 
