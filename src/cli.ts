@@ -157,6 +157,10 @@ addProviderFlags(
 
   if (opts.json) {
     process.stdout.write(`${JSON.stringify(result, null, 2)}\n`);
+  } else if (result.ok && result.queued) {
+    console.log(
+      `  ✓ queued via ${result.provider} → ${result.recipientId}${result.queueSize ? ` (${result.queueSize} queued)` : ""}`,
+    );
   } else if (result.ok) {
     console.log(
       `  ✓ sent via ${result.provider} → ${result.recipientId}${result.messageId ? ` (${result.messageId})` : ""}`,
@@ -658,32 +662,41 @@ daemonCmd
   .command("stop")
   .description("Stop the running daemon")
   .action(async () => {
-    const { DAEMON_PID } = await import("./daemons/shared.ts");
-    const { existsSync, readFileSync, unlinkSync } = await import("node:fs");
+    const { DAEMON_PID, daemonRequest, isDaemonResponding, isProcessAlive, readDaemonPid } =
+      await import("./daemons/shared.ts");
+    const { existsSync, unlinkSync } = await import("node:fs");
 
     if (!existsSync(DAEMON_PID)) {
       console.log("  Daemon is not running (no PID file).");
       return;
     }
 
-    const pidStr = readFileSync(DAEMON_PID, "utf-8").trim();
-    const pid = parseInt(pidStr, 10);
-    if (Number.isNaN(pid)) {
+    const pid = readDaemonPid();
+    if (pid === null) {
       console.error("  Invalid PID file. Removing.");
       unlinkSync(DAEMON_PID);
       return;
     }
 
-    try {
-      process.kill(pid, 0); // check if alive
-      process.kill(pid, "SIGTERM");
-      console.log(`  Sent SIGTERM to daemon (pid=${pid}).`);
-    } catch {
-      console.log("  Daemon is not running. Cleaning up stale PID file.");
-      try {
-        unlinkSync(DAEMON_PID);
-      } catch {}
+    if (await isDaemonResponding()) {
+      const res = await daemonRequest({ type: "status" }, { timeoutMs: 1_000 });
+      const statusPid = Number(res?.data?.pid);
+      if (!Number.isNaN(statusPid)) {
+        process.kill(statusPid, "SIGTERM");
+        console.log(`  Sent SIGTERM to daemon (pid=${statusPid}).`);
+        return;
+      }
     }
+
+    if (isProcessAlive(pid)) {
+      console.error(`  Daemon is not responding; refusing to kill unverified PID ${pid}.`);
+      return;
+    }
+
+    console.log("  Daemon is not running. Cleaning up stale PID file.");
+    try {
+      unlinkSync(DAEMON_PID);
+    } catch {}
   });
 
 daemonCmd
@@ -692,7 +705,15 @@ daemonCmd
   .action(async () => {
     const PLIST = `${process.env.HOME}/Library/LaunchAgents/com.onemessage.daemon.plist`;
     const { existsSync } = await import("node:fs");
-    const { DAEMON_SOCK, isDaemonRunning } = await import("./daemons/shared.ts");
+    const {
+      DAEMON_PID,
+      DAEMON_SOCK,
+      daemonRequest,
+      isDaemonResponding,
+      isDaemonRunning,
+      isProcessAlive,
+      readDaemonPid,
+    } = await import("./daemons/shared.ts");
 
     if (existsSync(PLIST)) {
       // Managed by launchd — unload/load so launchd owns the restart (no competing spawns)
@@ -703,7 +724,7 @@ daemonCmd
       const maxWait = 10_000;
       let waited = 0;
       while (waited < maxWait) {
-        if (existsSync(DAEMON_SOCK) && isDaemonRunning()) {
+        if (isDaemonRunning() && (await isDaemonResponding())) {
           console.log("  Daemon restarted (via launchctl).");
           return;
         }
@@ -715,14 +736,26 @@ daemonCmd
     }
 
     // Not managed by launchd — stop + spawn manually
-    const { DAEMON_PID } = await import("./daemons/shared.ts");
-    const { readFileSync, unlinkSync } = await import("node:fs");
+    const { unlinkSync } = await import("node:fs");
     if (existsSync(DAEMON_PID)) {
-      const pid = parseInt(readFileSync(DAEMON_PID, "utf-8").trim(), 10);
-      if (!Number.isNaN(pid)) {
+      const pid = readDaemonPid();
+      if (pid === null) {
         try {
-          process.kill(pid, "SIGTERM");
-          console.log(`  Sent SIGTERM to daemon (pid=${pid}).`);
+          unlinkSync(DAEMON_PID);
+        } catch {}
+      } else if (await isDaemonResponding()) {
+        const res = await daemonRequest({ type: "status" }, { timeoutMs: 1_000 });
+        const statusPid = Number(res?.data?.pid);
+        if (!Number.isNaN(statusPid)) {
+          process.kill(statusPid, "SIGTERM");
+          console.log(`  Sent SIGTERM to daemon (pid=${statusPid}).`);
+        }
+      } else if (isProcessAlive(pid)) {
+        console.error(`  Daemon is not responding; refusing to restart unverified PID ${pid}.`);
+        return;
+      } else {
+        try {
+          unlinkSync(DAEMON_PID);
         } catch {}
       }
     }
@@ -731,7 +764,7 @@ daemonCmd
       await new Promise((r) => setTimeout(r, 200));
     }
     try {
-      if (existsSync(DAEMON_SOCK)) unlinkSync(DAEMON_SOCK);
+      if (!isDaemonRunning() && existsSync(DAEMON_SOCK)) unlinkSync(DAEMON_SOCK);
     } catch {}
     const { join, dirname } = await import("node:path");
     const PROJECT_ROOT = join(dirname(new URL(import.meta.url).pathname), "..");
@@ -743,7 +776,7 @@ daemonCmd
     proc.unref();
     let waited2 = 0;
     while (waited2 < 10_000) {
-      if (existsSync(DAEMON_SOCK) && isDaemonRunning()) {
+      if (isDaemonRunning() && (await isDaemonResponding())) {
         console.log("  Daemon restarted.");
         return;
       }
@@ -779,22 +812,42 @@ daemonCmd
       const d = res.data as {
         pid: number;
         uptime: number;
-        whatsapp: { connected: boolean; groups: number; queuedMessages: number };
         polling: Record<string, { lastPoll: string | null; enabled: boolean }>;
+        [provider: string]: unknown;
       };
       console.log();
       console.log(`  Daemon running (pid=${d.pid}, uptime=${d.uptime}s)`);
       console.log();
 
-      // WhatsApp
-      const wa = d.whatsapp;
-      const waIcon = wa.connected ? "+" : "-";
-      console.log(
-        `  ${waIcon} whatsapp: ${wa.connected ? "connected" : "disconnected"} (${wa.groups} groups, ${wa.queuedMessages} queued)`,
-      );
+      const reserved = new Set(["pid", "uptime", "polling"]);
+      for (const [name, raw] of Object.entries(d)) {
+        if (reserved.has(name) || !raw || typeof raw !== "object") continue;
+        const info = raw as Record<string, unknown>;
+        const active =
+          typeof info.connected === "boolean"
+            ? info.connected
+            : typeof info.running === "boolean"
+              ? info.running
+              : true;
+        const state =
+          typeof info.connected === "boolean"
+            ? info.connected
+              ? "connected"
+              : "disconnected"
+            : typeof info.running === "boolean"
+              ? info.running
+                ? "running"
+                : "stopped"
+              : "active";
+        const details = Object.entries(info)
+          .filter(([key]) => key !== "connected" && key !== "running")
+          .map(([key, value]) => `${key}: ${value}`)
+          .join(", ");
+        console.log(`  ${active ? "+" : "-"} ${name}: ${state}${details ? ` (${details})` : ""}`);
+      }
 
       // Polling providers
-      const polling = d.polling;
+      const polling = d.polling ?? {};
       for (const [name, info] of Object.entries(polling)) {
         const icon = info.enabled ? "+" : "-";
         const last = info.lastPoll ? `last: ${info.lastPoll}` : "never polled";

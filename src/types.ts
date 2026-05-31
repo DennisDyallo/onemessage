@@ -88,6 +88,8 @@ export interface SendResult {
   provider: string;
   recipientId: string;
   messageId?: string;
+  queued?: boolean;
+  queueSize?: number;
   error?: string;
 }
 

@@ -1,8 +1,8 @@
 import { existsSync } from "node:fs";
 import { connect } from "node:net";
-import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { loadConfig } from "../config.ts";
+import { getConfigDir, loadConfig } from "../config.ts";
+import { daemonRequest, isDaemonResponding } from "../daemons/shared.ts";
 import { registerProvider } from "../registry.ts";
 import { getSignalAttachmentDir } from "../shared/attachment-paths.ts";
 import { validateAttachment } from "../shared/attachment-validation.ts";
@@ -49,8 +49,8 @@ function runSignalCli(args: string[], timeoutMs = 30_000) {
   });
 }
 
-function getSignalJsonRpcSocketPath(): string {
-  return join(process.env.XDG_RUNTIME_DIR ?? tmpdir(), "signal-cli", "socket");
+export function getSignalJsonRpcSocketPath(): string {
+  return join(getConfigDir(), "signal-cli.sock");
 }
 
 interface SignalJsonRpcSendResult {
@@ -416,7 +416,28 @@ export interface SignalDaemonHandle {
  * Exported for testing.
  */
 export function buildSignalDaemonArgs(account: string): string[] {
-  return ["signal-cli", "-a", account, "-o", "json", "daemon", "--send-read-receipts", "--socket"];
+  return [
+    "signal-cli",
+    "-a",
+    account,
+    "-o",
+    "json",
+    "daemon",
+    "--send-read-receipts",
+    "--socket",
+    getSignalJsonRpcSocketPath(),
+  ];
+}
+
+async function unifiedDaemonOwnsSignal(): Promise<boolean> {
+  if (!(await isDaemonResponding(500))) return false;
+  try {
+    const res = await daemonRequest({ type: "status" }, { timeoutMs: 1_000 });
+    const signal = res?.data?.signal as { running?: boolean; mode?: string } | undefined;
+    return signal?.mode === "daemon";
+  } catch {
+    return false;
+  }
 }
 
 /**
@@ -657,10 +678,17 @@ export const signalProvider: MessagingProvider = {
       });
       return { ok: true, provider: "signal", recipientId, messageId };
     } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      if (existsSync(getSignalJsonRpcSocketPath()) || (await unifiedDaemonOwnsSignal())) {
+        return {
+          ok: false,
+          provider: "signal",
+          recipientId,
+          error: `Signal daemon JSON-RPC send failed: ${message}`,
+        };
+      }
       process.stderr.write(
-        `[signal] JSON-RPC send failed, falling back to signal-cli send: ${
-          err instanceof Error ? err.message : err
-        }\n`,
+        `[signal] JSON-RPC unavailable, falling back to signal-cli send: ${message}\n`,
       );
     }
 

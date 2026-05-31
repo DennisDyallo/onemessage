@@ -4,9 +4,49 @@ import { daemonRequest, ensureDaemon } from "../daemons/shared.ts";
 import { registerProvider } from "../registry.ts";
 import { validateAttachment } from "../shared/attachment-validation.ts";
 import * as store from "../store.ts";
-import type { MessagingProvider } from "../types.ts";
+import type { MessagingProvider, SendResult } from "../types.ts";
 import { cacheSentMessage, inboxViaDaemon, readFromCacheOrFail } from "./shared.ts";
 import { AUTH_DIR } from "./whatsapp-shared.ts";
+
+type WhatsAppDaemonSendResponse =
+  | { ok: true; data?: { queued?: boolean; queueSize?: number; messageId?: string } }
+  | { ok: false; error?: string };
+
+export function whatsappSendResultFromDaemon(
+  res: WhatsAppDaemonSendResponse,
+  recipientId: string,
+  body: string,
+  cacheFn = cacheSentMessage,
+): SendResult {
+  if (res.ok) {
+    if (res.data?.queued) {
+      return {
+        ok: true,
+        provider: "whatsapp",
+        recipientId,
+        queued: true,
+        queueSize: res.data.queueSize,
+      };
+    }
+
+    const messageId = res.data?.messageId;
+    cacheFn({
+      provider: "whatsapp",
+      messageId,
+      fromAddress: "me",
+      recipientId,
+      body,
+    });
+    return {
+      ok: true,
+      provider: "whatsapp",
+      recipientId,
+      messageId,
+    };
+  }
+
+  return { ok: false, provider: "whatsapp", recipientId, error: res.error };
+}
 
 // ---------------------------------------------------------------------------
 // Recipient resolution
@@ -71,22 +111,7 @@ export const whatsappProvider: MessagingProvider = {
 
     const res = await daemonRequest({ type: "send", jid, text: body });
 
-    if (res.ok) {
-      cacheSentMessage({
-        provider: "whatsapp",
-        fromAddress: "me",
-        recipientId,
-        body,
-      });
-      return {
-        ok: true,
-        provider: "whatsapp",
-        recipientId,
-        messageId: res.data?.messageId,
-      };
-    }
-
-    return { ok: false, provider: "whatsapp", recipientId, error: res.error };
+    return whatsappSendResultFromDaemon(res, recipientId, body);
   },
 
   async inbox(opts) {

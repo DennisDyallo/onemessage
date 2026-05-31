@@ -53,6 +53,9 @@ export class SignalAdapter implements ProviderAdapter {
   async fetch(): Promise<void> {
     if (!this.phone) throw new Error("signal not configured");
     if (this.daemonHandle) {
+      if (!this.daemonHandle.running) {
+        throw new Error("signal daemon subprocess is not running");
+      }
       store.recordFetch("signal", this.phone);
       return;
     }
@@ -64,7 +67,7 @@ export class SignalAdapter implements ProviderAdapter {
   }
 
   statusInfo(): Record<string, unknown> {
-    if (this.daemonHandle) return { mode: "daemon" };
+    if (this.daemonHandle) return { mode: "daemon", running: this.daemonHandle.running };
     return {};
   }
 

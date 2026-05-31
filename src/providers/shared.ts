@@ -9,6 +9,7 @@
  */
 
 import { daemonRequest, ensureDaemon } from "../daemons/shared.ts";
+import { getProvider } from "../registry.ts";
 import type { GetCachedInboxArgs } from "../store.ts";
 import * as store from "../store.ts";
 import type { MessageEnvelope, MessageFull } from "../types.ts";
@@ -245,6 +246,12 @@ export async function inboxViaDaemon(args: {
   }
 
   try {
+    if (!getProvider(provider)) {
+      console.warn(`[${provider}] daemon fetch error: unknown provider`);
+      await runFallback();
+      return store.getCachedInbox(provider, cacheArgs);
+    }
+
     await ensureDaemon();
     const res = await daemonRequest({ type: "fetch", provider });
     if (!res?.ok) {

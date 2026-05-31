@@ -1,5 +1,5 @@
 import { describe, expect, it } from "bun:test";
-import { buildSignalDaemonArgs } from "./signal";
+import { buildSignalDaemonArgs, getSignalJsonRpcSocketPath } from "./signal";
 
 describe("buildSignalDaemonArgs", () => {
   it("includes --socket for signal-cli 0.14.3 daemon mode compat", () => {
@@ -25,6 +25,7 @@ describe("buildSignalDaemonArgs", () => {
       "daemon",
       "--send-read-receipts",
       "--socket",
+      getSignalJsonRpcSocketPath(),
     ]);
   });
 });

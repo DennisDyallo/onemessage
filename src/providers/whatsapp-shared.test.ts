@@ -3,7 +3,7 @@ import type { proto } from "@whiskeysockets/baileys";
 import { getProvider } from "../registry.ts";
 import * as store from "../store.ts";
 import type { Attachment, MessageFull } from "../types.ts";
-import "./whatsapp.ts"; // Force registration
+import { whatsappSendResultFromDaemon } from "./whatsapp.ts";
 import { isAudioMessage } from "./whatsapp-shared";
 
 describe("isAudioMessage", () => {
@@ -71,6 +71,45 @@ describe("isAudioMessage", () => {
 
   test("returns false for undefined message", () => {
     expect(isAudioMessage(undefined)).toBe(false);
+  });
+});
+
+describe("WhatsApp queued send result", () => {
+  test("does not cache queued offline sends as confirmed sent", () => {
+    let cacheCalls = 0;
+    const result = whatsappSendResultFromDaemon(
+      { ok: true, data: { queued: true, queueSize: 2 } },
+      "+46700000000",
+      "queued body",
+      () => {
+        cacheCalls++;
+      },
+    );
+
+    expect(result).toEqual({
+      ok: true,
+      provider: "whatsapp",
+      recipientId: "+46700000000",
+      queued: true,
+      queueSize: 2,
+    });
+    expect(cacheCalls).toBe(0);
+  });
+
+  test("caches only confirmed daemon sends", () => {
+    let cacheCalls = 0;
+    const result = whatsappSendResultFromDaemon(
+      { ok: true, data: { messageId: "wa-confirmed-1" } },
+      "+46700000000",
+      "sent body",
+      (msg) => {
+        cacheCalls++;
+        expect(msg.messageId).toBe("wa-confirmed-1");
+      },
+    );
+
+    expect(result.messageId).toBe("wa-confirmed-1");
+    expect(cacheCalls).toBe(1);
   });
 });
 

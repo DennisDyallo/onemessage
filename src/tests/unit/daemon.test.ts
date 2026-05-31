@@ -5,7 +5,8 @@ import type {
   IpcCapableAdapter,
   ProviderAdapter,
 } from "../../daemons/adapter.ts";
-import { UnifiedDaemon } from "../../daemons/daemon.ts";
+import { extractIpcFrames, UnifiedDaemon } from "../../daemons/daemon.ts";
+import { SignalAdapter } from "../../daemons/signal.ts";
 
 // ---------------------------------------------------------------------------
 // Stub adapters
@@ -64,6 +65,16 @@ class StubIpcAdapter implements IpcCapableAdapter {
 // ---------------------------------------------------------------------------
 
 describe("daemon IPC dispatch", () => {
+  test("IPC framing buffers fragmented newline-delimited JSON frames", () => {
+    const first = extractIpcFrames("", '{"type":"pi');
+    expect(first.frames).toEqual([]);
+    expect(first.buffer).toBe('{"type":"pi');
+
+    const second = extractIpcFrames(first.buffer, 'ng"}\n{"type":"status"}\n');
+    expect(second.frames).toEqual(['{"type":"ping"}', '{"type":"status"}']);
+    expect(second.buffer).toBe("");
+  });
+
   test("invalid JSON returns error", async () => {
     const daemon = new UnifiedDaemon([new StubAdapter("a")]);
     const res = await daemon.processIpc("not json{{{");
@@ -262,6 +273,19 @@ describe("daemon IPC dispatch", () => {
     expect(res).toEqual({ ok: true, data: "beta-handled" });
     expect(adapterAlpha.handleIpcCalls).toBe(0); // alpha NOT called
     expect(adapterBeta.handleIpcCalls).toBe(1); // beta called exactly once
+  });
+});
+
+describe("SignalAdapter daemon freshness", () => {
+  test("fetch does not mark Signal fresh when daemon handle is not running", async () => {
+    const adapter = new SignalAdapter();
+    (adapter as any).phone = "+46700000000";
+    (adapter as any).daemonHandle = {
+      running: false,
+      stop() {},
+    };
+
+    await expect(adapter.fetch()).rejects.toThrow("signal daemon subprocess is not running");
   });
 });
 

@@ -17,7 +17,13 @@ import { isIpcCapable } from "./adapter.ts";
 import { EmailAdapter } from "./email.ts";
 import { InstagramAdapter } from "./instagram.ts";
 import { MatrixAdapter } from "./matrix.ts";
-import { DAEMON_PID, DAEMON_SOCK } from "./shared.ts";
+import {
+  DAEMON_PID,
+  DAEMON_SOCK,
+  isDaemonResponding,
+  isProcessAlive,
+  readDaemonPid,
+} from "./shared.ts";
 import { SignalAdapter } from "./signal.ts";
 import { SmsAdapter } from "./sms.ts";
 import { TelegramBotAdapter } from "./telegram-bot.ts";
@@ -33,6 +39,26 @@ type DaemonRequest =
   | { type: "fetch"; provider?: string }
   | { type: "providers" }
   | { type: string; [key: string]: unknown }; // adapter-delegated types
+
+export function extractIpcFrames(
+  buffer: string,
+  chunk: string,
+): { buffer: string; frames: string[] } {
+  let nextBuffer = buffer + chunk;
+  const frames: string[] = [];
+
+  for (
+    let newlineIdx = nextBuffer.indexOf("\n");
+    newlineIdx !== -1;
+    newlineIdx = nextBuffer.indexOf("\n")
+  ) {
+    const line = nextBuffer.slice(0, newlineIdx).trim();
+    nextBuffer = nextBuffer.slice(newlineIdx + 1);
+    if (line) frames.push(line);
+  }
+
+  return { buffer: nextBuffer, frames };
+}
 
 // ---------------------------------------------------------------------------
 // UnifiedDaemon
@@ -52,6 +78,8 @@ export class UnifiedDaemon {
   // IPC
   private unixServer: ReturnType<typeof Bun.listen> | null = null;
   private ipcTypeOwners = new Map<string, import("./adapter.ts").IpcCapableAdapter>();
+  private ipcBuffers = new WeakMap<object, string>();
+  private ipcClosing = new WeakSet<object>();
 
   // Lifecycle
   private startTime = Date.now();
@@ -127,10 +155,17 @@ export class UnifiedDaemon {
     const configDir = DAEMON_PID.replace(/\/[^/]+$/, "");
     mkdirSync(configDir, { recursive: true });
 
-    // Write PID file
-    writeFileSync(DAEMON_PID, String(process.pid), "utf-8");
+    if (existsSync(DAEMON_SOCK) && (await isDaemonResponding())) {
+      throw new Error(`daemon already running at ${DAEMON_SOCK}`);
+    }
 
-    // Clean up stale socket
+    const existingPid = readDaemonPid();
+    if (existingPid !== null && existingPid !== process.pid && isProcessAlive(existingPid)) {
+      throw new Error(
+        `daemon PID file points at live process ${existingPid}; refusing to steal ownership`,
+      );
+    }
+
     if (existsSync(DAEMON_SOCK)) {
       try {
         unlinkSync(DAEMON_SOCK);
@@ -139,11 +174,19 @@ export class UnifiedDaemon {
       }
     }
 
-    // Start all provider adapters
-    await this.startAdapters();
+    // Write PID file
+    writeFileSync(DAEMON_PID, String(process.pid), "utf-8");
 
-    // Start IPC server
-    this.startIpcServer();
+    try {
+      // Start all provider adapters
+      await this.startAdapters();
+
+      // Start IPC server
+      this.startIpcServer();
+    } catch (err) {
+      this.removeOwnedRuntimeFiles();
+      throw err;
+    }
 
     // Graceful shutdown
     process.on("SIGTERM", () => this.cleanup());
@@ -237,37 +280,46 @@ export class UnifiedDaemon {
       unix: DAEMON_SOCK,
       socket: {
         data(socket, data) {
+          if (self.ipcClosing.has(socket)) return;
           const raw = typeof data === "string" ? data : Buffer.from(data).toString("utf-8");
+          const parsed = extractIpcFrames(self.ipcBuffers.get(socket) ?? "", raw);
 
-          const lines = raw.split("\n").filter((l) => l.trim());
-          const firstLine = lines[0];
-          if (!firstLine) return;
-
+          self.ipcBuffers.set(socket, parsed.buffer);
+          if (parsed.frames.length === 0) return;
+          self.ipcClosing.add(socket);
           (async () => {
+            for (const frame of parsed.frames) {
+              try {
+                const resp = await self.handleRequest(frame);
+                try {
+                  socket.write(`${JSON.stringify(resp)}\n`);
+                } catch (writeErr) {
+                  process.stderr.write(`[daemon] socket.write failed: ${writeErr}\n`);
+                }
+              } catch (err) {
+                const errResp: DaemonResponse = {
+                  ok: false,
+                  error: String(err),
+                };
+                try {
+                  socket.write(`${JSON.stringify(errResp)}\n`);
+                } catch (writeErr) {
+                  process.stderr.write(`[daemon] error response write failed: ${writeErr}\n`);
+                }
+              }
+            }
             try {
-              const resp = await self.handleRequest(firstLine);
-              try {
-                socket.write(JSON.stringify(resp));
-              } catch (writeErr) {
-                process.stderr.write(`[daemon] socket.write failed: ${writeErr}\n`);
-              }
               socket.end();
-            } catch (err) {
-              const errResp: DaemonResponse = {
-                ok: false,
-                error: String(err),
-              };
-              try {
-                socket.write(JSON.stringify(errResp));
-              } catch (writeErr) {
-                process.stderr.write(`[daemon] error response write failed: ${writeErr}\n`);
-              }
-              socket.end();
+            } catch {
+              // ignore
             }
           })();
         },
         open() {},
-        close() {},
+        close(socket) {
+          self.ipcBuffers.delete(socket);
+          self.ipcClosing.delete(socket);
+        },
         error(_socket, err) {
           process.stderr.write(`[daemon] socket error: ${err}\n`);
         },
@@ -417,21 +469,26 @@ export class UnifiedDaemon {
     }
     this.pollTimers.clear();
 
-    // Delete PID file
-    try {
-      if (existsSync(DAEMON_PID)) unlinkSync(DAEMON_PID);
-    } catch {
-      // ignore
-    }
-
-    // Delete socket file
-    try {
-      if (existsSync(DAEMON_SOCK)) unlinkSync(DAEMON_SOCK);
-    } catch {
-      // ignore
-    }
+    this.removeOwnedRuntimeFiles();
 
     process.exit(0);
+  }
+
+  private removeOwnedRuntimeFiles(): void {
+    try {
+      const ownerPid = readDaemonPid();
+      if (ownerPid !== process.pid) return;
+    } catch {
+      return;
+    }
+
+    for (const path of [DAEMON_PID, DAEMON_SOCK]) {
+      try {
+        if (existsSync(path)) unlinkSync(path);
+      } catch {
+        // ignore
+      }
+    }
   }
 }
 
