@@ -157,6 +157,112 @@ describe("daemon IPC dispatch", () => {
     const res = await daemon.processIpc(JSON.stringify({ type: "custom-action" }));
     expect(res).toEqual({ ok: true, data: "handled" });
   });
+
+  test("IPC type collision throws at construction with both owners mentioned", () => {
+    class AdapterA implements IpcCapableAdapter {
+      readonly name = "adapter-a";
+      readonly polling = false;
+      start(_o: DaemonOrchestrator) {}
+      async fetch() {}
+      isActive() {
+        return true;
+      }
+      statusInfo() {
+        return {};
+      }
+      cleanup() {}
+      ipcTypes() {
+        return ["dupe-type"];
+      }
+      async handleIpc(_req: Record<string, unknown>): Promise<DaemonResponse | undefined> {
+        return { ok: true, data: "a" };
+      }
+    }
+
+    class AdapterB implements IpcCapableAdapter {
+      readonly name = "adapter-b";
+      readonly polling = false;
+      start(_o: DaemonOrchestrator) {}
+      async fetch() {}
+      isActive() {
+        return true;
+      }
+      statusInfo() {
+        return {};
+      }
+      cleanup() {}
+      ipcTypes() {
+        return ["dupe-type"];
+      }
+      async handleIpc(_req: Record<string, unknown>): Promise<DaemonResponse | undefined> {
+        return { ok: true, data: "b" };
+      }
+    }
+
+    expect(() => new UnifiedDaemon([new AdapterA(), new AdapterB()])).toThrow(
+      /IPC type collision detected.*dupe-type.*adapter-a.*adapter-b/,
+    );
+  });
+
+  test("IPC routing dispatches to correct single owner without cross-adapter leakage", async () => {
+    class AdapterAlpha implements IpcCapableAdapter {
+      readonly name = "alpha";
+      readonly polling = false;
+      handleIpcCalls = 0;
+      start(_o: DaemonOrchestrator) {}
+      async fetch() {}
+      isActive() {
+        return true;
+      }
+      statusInfo() {
+        return {};
+      }
+      cleanup() {}
+      ipcTypes() {
+        return ["alpha-action"];
+      }
+      async handleIpc(req: Record<string, unknown>): Promise<DaemonResponse | undefined> {
+        this.handleIpcCalls++;
+        if (req.type === "alpha-action") return { ok: true, data: "alpha-handled" };
+        return undefined;
+      }
+    }
+
+    class AdapterBeta implements IpcCapableAdapter {
+      readonly name = "beta";
+      readonly polling = false;
+      handleIpcCalls = 0;
+      start(_o: DaemonOrchestrator) {}
+      async fetch() {}
+      isActive() {
+        return true;
+      }
+      statusInfo() {
+        return {};
+      }
+      cleanup() {}
+      ipcTypes() {
+        return ["beta-action"];
+      }
+      async handleIpc(req: Record<string, unknown>): Promise<DaemonResponse | undefined> {
+        this.handleIpcCalls++;
+        if (req.type === "beta-action") return { ok: true, data: "beta-handled" };
+        return undefined;
+      }
+    }
+
+    const adapterAlpha = new AdapterAlpha();
+    const adapterBeta = new AdapterBeta();
+    const daemon = new UnifiedDaemon([adapterAlpha, adapterBeta]);
+
+    // Dispatch beta-action
+    const res = await daemon.processIpc(JSON.stringify({ type: "beta-action" }));
+
+    // Verify: only beta adapter was invoked
+    expect(res).toEqual({ ok: true, data: "beta-handled" });
+    expect(adapterAlpha.handleIpcCalls).toBe(0); // alpha NOT called
+    expect(adapterBeta.handleIpcCalls).toBe(1); // beta called exactly once
+  });
 });
 
 // ---------------------------------------------------------------------------

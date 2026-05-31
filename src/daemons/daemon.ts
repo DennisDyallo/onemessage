@@ -51,6 +51,7 @@ export class UnifiedDaemon {
 
   // IPC
   private unixServer: ReturnType<typeof Bun.listen> | null = null;
+  private ipcTypeOwners = new Map<string, import("./adapter.ts").IpcCapableAdapter>();
 
   // Lifecycle
   private startTime = Date.now();
@@ -59,6 +60,51 @@ export class UnifiedDaemon {
     if (adapters) {
       this.adapters = adapters;
       for (const a of adapters) this.adapterMap.set(a.name, a);
+      this.buildIpcTypeRegistry();
+    }
+  }
+
+  /**
+   * Build IPC type-owner registry and fail-fast on collisions.
+   * Called from constructor (test injection) and startAdapters (production).
+   */
+  private buildIpcTypeRegistry(): void {
+    this.ipcTypeOwners.clear();
+    const collisions: Array<{ type: string; owners: string[] }> = [];
+    const typeToAdapters = new Map<string, string[]>();
+
+    // First pass: collect all type claims
+    for (const adapter of this.adapters) {
+      if (isIpcCapable(adapter)) {
+        for (const type of adapter.ipcTypes()) {
+          const existing = typeToAdapters.get(type);
+          if (existing) {
+            existing.push(adapter.name);
+          } else {
+            typeToAdapters.set(type, [adapter.name]);
+          }
+        }
+      }
+    }
+
+    // Second pass: detect collisions and populate registry
+    for (const [type, owners] of typeToAdapters) {
+      if (owners.length > 1) {
+        collisions.push({ type, owners });
+      } else {
+        const adapter = this.adapters.find(
+          (a) => isIpcCapable(a) && a.name === owners[0],
+        ) as import("./adapter.ts").IpcCapableAdapter;
+        this.ipcTypeOwners.set(type, adapter);
+      }
+    }
+
+    // Fail-fast if collisions exist
+    if (collisions.length > 0) {
+      const details = collisions
+        .map(({ type, owners }) => `type "${type}" is claimed by ${owners.join(" and ")}`)
+        .join(". ");
+      throw new Error(`IPC type collision detected: ${details}`);
     }
   }
 
@@ -125,6 +171,8 @@ export class UnifiedDaemon {
       for (const adapter of this.adapters) {
         this.adapterMap.set(adapter.name, adapter);
       }
+
+      this.buildIpcTypeRegistry();
     }
 
     const orchestrator: DaemonOrchestrator = {
@@ -327,17 +375,17 @@ export class UnifiedDaemon {
       }
 
       default: {
-        // Try IPC-capable adapters before returning unknown
-        for (const adapter of this.adapters) {
-          if (isIpcCapable(adapter)) {
-            const result = await adapter.handleIpc(req as Record<string, unknown>);
-            if (result !== undefined) return result;
-          }
+        // Direct registry lookup — no iteration, no silent shadowing
+        const reqType = (req as { type: string }).type;
+        const owner = this.ipcTypeOwners.get(reqType);
+        if (owner) {
+          const result = await owner.handleIpc(req as Record<string, unknown>);
+          if (result !== undefined) return result;
         }
 
         return {
           ok: false,
-          error: `unknown request type: ${(req as { type: string }).type}`,
+          error: `unknown request type: ${reqType}`,
         };
       }
     }
