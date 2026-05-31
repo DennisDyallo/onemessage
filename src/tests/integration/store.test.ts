@@ -711,7 +711,6 @@ describe("sinceCachedAt filter", () => {
   test("re-upserting existing message preserves original cached_at", () => {
     const t0 = "2026-05-30T09:00:00Z";
     const t1 = "2026-05-30T10:00:00Z";
-    const t2 = "2026-05-30T11:00:00Z";
 
     // Insert message at t0
     const msg = {

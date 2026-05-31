@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test";
-import { type GroupCacheEntry, resolveGroup } from "../../daemons/whatsapp.ts";
+import { type GroupCacheEntry, resolveGroup, WhatsAppAdapter } from "../../daemons/whatsapp.ts";
+import * as store from "../../store.ts";
 
 function makeCache(
   entries: Array<{
@@ -203,44 +204,16 @@ describe("resolveGroup — auto-resolution", () => {
 // ---------------------------------------------------------------------------
 
 describe("WhatsAppAdapter.fetch()", () => {
-  test("recordFetch called only when connected=true (structural proof)", async () => {
-    // This test proves that fetch() only calls store.recordFetch when connected.
-    // During disconnect/reconnect, the adapter shouldn't mark cache as fresh.
-    //
-    // Strategy: Read the fetch() source, assert:
-    //   1. Exactly one recordFetch call exists
-    //   2. That call is inside the if(this.connected) block
+  test("recordFetch is called only when connected=true", async () => {
+    const db = store.getDb();
+    db.prepare("DELETE FROM fetch_log WHERE provider = ?").run("whatsapp");
 
-    const fs = await import("node:fs/promises");
-    const whatsappAdapterSource = await fs.readFile(
-      new URL("../../daemons/whatsapp.ts", import.meta.url),
-      "utf-8",
-    );
+    const adapter = new WhatsAppAdapter();
+    await adapter.fetch();
+    expect(store.isFresh("whatsapp", 60_000)).toBe(false);
 
-    // Extract the fetch() method body
-    const fetchMatch = whatsappAdapterSource.match(
-      /async fetch\(\): Promise<void>\s*{[\s\S]*?^ {2}}/m,
-    );
-    expect(fetchMatch).not.toBeNull();
-
-    const fetchBody = (fetchMatch?.[0] ?? "")
-      .replace(/\/\/.*$/gm, "") // strip line comments
-      .replace(/\/\*[\s\S]*?\*\//g, ""); // strip block comments
-
-    // Assert: exactly one recordFetch call in fetch()
-    const occurrences = (fetchBody.match(/recordFetch\(/g) || []).length;
-    expect(occurrences).toBe(1);
-
-    // Assert: the if-guard exists and comes before recordFetch
-    const ifIdx = fetchBody.indexOf("if (this.connected)");
-    const recordIdx = fetchBody.indexOf("recordFetch(");
-    expect(ifIdx).toBeGreaterThanOrEqual(0);
-    expect(recordIdx).toBeGreaterThan(ifIdx);
-
-    // Assert: recordFetch is structurally INSIDE the if-block (not just textually after)
-    // Normalize whitespace and verify the block structure: if (...) { recordFetch }
-    expect(fetchBody.replace(/\s+/g, " ")).toMatch(
-      /if \(this\.connected\) \{\s*store\.recordFetch\(/,
-    );
+    (adapter as unknown as { connected: boolean }).connected = true;
+    await adapter.fetch();
+    expect(store.isFresh("whatsapp", 60_000)).toBe(true);
   });
 });
