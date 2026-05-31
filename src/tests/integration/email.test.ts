@@ -1,4 +1,7 @@
 import { describe, expect, test } from "bun:test";
+import { emailMessageId, parseEmailMessageId } from "../../providers/email.ts";
+import * as store from "../../store.ts";
+import type { MessageFull } from "../../types.ts";
 
 // ---------------------------------------------------------------------------
 // inbox() migration — inboxViaDaemon integration
@@ -73,5 +76,50 @@ describe("emailProvider.inbox via inboxViaDaemon", () => {
     // This proves the split: default → daemon, custom → direct
     const hasConditionalHelper = /if \(!isDefaultRequest\)[\s\S]*?inboxViaDaemon/.test(inboxBody);
     expect(hasConditionalHelper).toBe(true);
+  });
+});
+
+describe("email cache identity", () => {
+  function makeEmail(id: string, account: string, subject: string): MessageFull {
+    return {
+      id,
+      provider: "email",
+      account,
+      from: { name: account, address: account },
+      to: [{ name: "Recipient", address: "to@example.com" }],
+      subject,
+      preview: subject,
+      body: subject,
+      bodyFormat: "text",
+      date: new Date().toISOString(),
+      unread: false,
+      hasAttachments: false,
+      attachments: [],
+      direction: "in",
+    };
+  }
+
+  test("email message IDs are scoped by account, folder, and UID", () => {
+    const firstId = emailMessageId("a@example.com", "INBOX", 42);
+    const secondId = emailMessageId("b@example.com", "Archive", 42);
+
+    expect(firstId).not.toBe(secondId);
+    expect(parseEmailMessageId(firstId)).toEqual({
+      account: "a@example.com",
+      folder: "INBOX",
+      uid: 42,
+    });
+
+    store.upsertFullMessages([
+      makeEmail(firstId, "a@example.com", "first"),
+      makeEmail(secondId, "b@example.com", "second"),
+    ]);
+
+    expect(store.getCachedMessage("email", firstId)?.subject).toBe("first");
+    expect(store.getCachedMessage("email", secondId)?.subject).toBe("second");
+  });
+
+  test("legacy numeric IDs still parse as UIDs", () => {
+    expect(parseEmailMessageId("42")).toEqual({ uid: 42 });
   });
 });

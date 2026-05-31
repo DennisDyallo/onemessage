@@ -5,7 +5,13 @@
  */
 import { describe, expect, test } from "bun:test";
 import type { TelegramMessage, TelegramUpdate } from "../../providers/telegram-bot.ts";
-import { updateToEnvelope, updateToFull } from "../../providers/telegram-bot.ts";
+import {
+  nextTelegramBotOffset,
+  telegramMessageId,
+  updateToEnvelope,
+  updateToFull,
+} from "../../providers/telegram-bot.ts";
+import * as store from "../../store.ts";
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -43,7 +49,7 @@ describe("updateToEnvelope", () => {
   test("text message produces correct envelope", () => {
     const env = updateToEnvelope(makeUpdate());
     expect(env).not.toBeNull();
-    expect(env?.id).toBe("1");
+    expect(env?.id).toBe("chat:999:message:100");
     expect(env?.provider).toBe("telegram-bot");
     expect(env?.from).toEqual({ name: "Alice Smith", address: "42" });
     expect(env?.to).toEqual([{ name: "Alice Smith", address: "999" }]);
@@ -183,6 +189,32 @@ describe("updateToEnvelope", () => {
   test("date converted from unix epoch seconds to ISO string", () => {
     const env = updateToEnvelope(makeUpdate({ message: makeMessage({ date: 0 }) }));
     expect(env?.date).toBe("1970-01-01T00:00:00.000Z");
+  });
+});
+
+describe("Telegram cursor identity", () => {
+  test("message ID uses chat and message IDs, not update_id", () => {
+    expect(telegramMessageId(999, 100)).toBe("chat:999:message:100");
+  });
+
+  test("next offset comes from cursor state and ignores cached messages", () => {
+    store.setCursor("telegram-bot", "bot", "getUpdates.offset", "not-a-number");
+    store.upsertMessages([
+      {
+        id: "999999",
+        provider: "telegram-bot",
+        from: { name: "bot", address: "bot" },
+        to: [{ name: "chat", address: "999" }],
+        preview: "outgoing",
+        date: new Date().toISOString(),
+        unread: false,
+        hasAttachments: false,
+      },
+    ]);
+    expect(nextTelegramBotOffset()).toBeUndefined();
+
+    store.setCursor("telegram-bot", "bot", "getUpdates.offset", "12345");
+    expect(nextTelegramBotOffset()).toBe(12345);
   });
 });
 

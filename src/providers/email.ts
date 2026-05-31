@@ -115,6 +115,40 @@ function pickAccounts(s: ResolvedEmail, accountFilter?: string): string[] {
   return [accountFilter];
 }
 
+export function emailMessageId(account: string, folder: string, uid: number): string {
+  return `account:${encodeURIComponent(account)}:folder:${encodeURIComponent(folder)}:uid:${uid}`;
+}
+
+export function parseEmailMessageId(messageId: string): {
+  account?: string;
+  folder?: string;
+  uid: number | null;
+} {
+  const match = /^account:([^:]+):folder:([^:]+):uid:(\d+)$/.exec(messageId);
+  if (!match) {
+    const legacyUid = parseInt(messageId, 10);
+    return { uid: Number.isNaN(legacyUid) ? null : legacyUid };
+  }
+  return {
+    account: decodeURIComponent(match[1] ?? ""),
+    folder: decodeURIComponent(match[2] ?? ""),
+    uid: parseInt(match[3] ?? "", 10),
+  };
+}
+
+function cachedEmailHasRequestedAttachments(msg: MessageFull): boolean {
+  if (!msg.hasAttachments) return true;
+  if (msg.attachments.length === 0) return false;
+  return msg.attachments.every((att) => {
+    try {
+      validateAttachment(att, { attachmentsRequested: true });
+      return true;
+    } catch {
+      return false;
+    }
+  });
+}
+
 // biome-ignore lint/suspicious/noExplicitAny: imapflow body structure is untyped
 function hasAttachmentParts(structure: any): boolean {
   if (!structure) return false;
@@ -128,6 +162,7 @@ function hasAttachmentParts(structure: any): boolean {
 
 function toEnvelope(
   uid: number,
+  folder: string,
   // biome-ignore lint/suspicious/noExplicitAny: imapflow envelope is untyped
   env: any,
   flags: Set<string>,
@@ -136,7 +171,7 @@ function toEnvelope(
   account = "",
 ): MessageEnvelope {
   return {
-    id: String(uid),
+    id: emailMessageId(account, folder, uid),
     provider: "email",
     account,
     from: env.from?.[0]
@@ -175,7 +210,14 @@ async function fetchMailboxMessages(
         { uid: true },
       )) {
         messages.push(
-          toEnvelope(msg.uid, msg.envelope, msg.flags ?? new Set(), msg.bodyStructure, account),
+          toEnvelope(
+            msg.uid,
+            folder,
+            msg.envelope,
+            msg.flags ?? new Set(),
+            msg.bodyStructure,
+            account,
+          ),
         );
       }
       return messages;
@@ -228,7 +270,7 @@ async function fetchFullMessage(
       const flags = raw.flags ?? new Set<string>();
       const fromAddr = env?.from?.[0]?.address;
       return {
-        id: String(raw.uid),
+        id: emailMessageId(account, folder, raw.uid),
         provider: "email",
         account,
         from: env?.from?.[0]
@@ -448,10 +490,11 @@ const emailProvider: MessagingProvider = {
 
   async read(messageId, opts) {
     const s = requireSettings(opts?.providerFlags);
-    const folder = opts?.folder ?? s.defaultFolder;
+    const parsedId = parseEmailMessageId(messageId);
+    const folder = opts?.folder ?? parsedId.folder ?? s.defaultFolder;
     const prefer = opts?.prefer ?? "text";
-    const uid = parseInt(messageId, 10);
-    if (Number.isNaN(uid) || uid < 1) {
+    const uid = parsedId.uid;
+    if (uid === null || uid < 1) {
       console.error(`Invalid message ID: "${messageId}"`);
       return null;
     }
@@ -459,10 +502,12 @@ const emailProvider: MessagingProvider = {
     // Always look up cache to find which account owns this UID —
     // even with --fresh we need the account for the IMAP fetch.
     const cached = store.getCachedMessage("email", messageId);
-    if (!opts?.fresh && cached?.body) return cached;
+    if (!opts?.fresh && cached?.body) {
+      if (!opts?.includeAttachments || cachedEmailHasRequestedAttachments(cached)) return cached;
+    }
 
     // Use: explicit --account flag > account stored in cache > default account
-    const account = opts?.account ?? cached?.account ?? s.defaultAccount;
+    const account = opts?.account ?? parsedId.account ?? cached?.account ?? s.defaultAccount;
 
     // Fetch from IMAP
     const msg = await fetchFullMessage(
@@ -474,7 +519,6 @@ const emailProvider: MessagingProvider = {
       opts?.includeAttachments ?? false,
     );
     if (msg) {
-      const _dir = isOutgoingEmail(msg.from?.address, s) ? "out" : "in";
       store.upsertFullMessage(msg);
     }
     return msg;

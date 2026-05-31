@@ -114,7 +114,7 @@ export function updateToEnvelope(update: TelegramUpdate): MessageEnvelope | null
   const hasAttachments = !!(msg.photo || msg.document || msg.voice || msg.audio || msg.video);
 
   return {
-    id: String(update.update_id),
+    id: telegramMessageId(msg.chat.id, msg.message_id),
     provider: "telegram-bot",
     from: { name: senderName(msg), address: fromAddr },
     to: [{ name: chatName(msg), address: chatId }],
@@ -125,6 +125,10 @@ export function updateToEnvelope(update: TelegramUpdate): MessageEnvelope | null
     isGroup: msg.chat.type === "group" || msg.chat.type === "supergroup",
     groupName: msg.chat.title ?? undefined,
   };
+}
+
+export function telegramMessageId(chatId: number | string, messageId: number | string): string {
+  return `chat:${chatId}:message:${messageId}`;
 }
 
 export function updateToFull(update: TelegramUpdate): MessageFull | null {
@@ -144,17 +148,14 @@ export function updateToFull(update: TelegramUpdate): MessageFull | null {
 }
 
 // ---------------------------------------------------------------------------
-// Offset tracking (derived from cached messages to avoid re-fetching)
+// Offset tracking
 // ---------------------------------------------------------------------------
 
-function nextOffset(): number | undefined {
-  // Get the latest cached update_id; offset = update_id + 1 tells Telegram
-  // to only return newer updates. Returns undefined on first run (no offset).
-  const recent = store.getCachedInbox("telegram-bot", { limit: 1 });
-  if (recent.length === 0) return undefined;
-  const latestId = Number(recent[0]?.id);
-  if (Number.isNaN(latestId)) return undefined;
-  return latestId + 1;
+export function nextTelegramBotOffset(): number | undefined {
+  const cursor = store.getCursor("telegram-bot", "bot", "getUpdates.offset");
+  if (!cursor) return undefined;
+  const offset = Number(cursor);
+  return Number.isNaN(offset) ? undefined : offset;
 }
 
 // ---------------------------------------------------------------------------
@@ -162,7 +163,7 @@ function nextOffset(): number | undefined {
 // ---------------------------------------------------------------------------
 
 export async function fetchTelegramBotUpdates(token: string): Promise<void> {
-  const offset = nextOffset();
+  const offset = nextTelegramBotOffset();
   const updates = (await apiGet(token, "getUpdates", {
     offset,
     limit: 100,
@@ -173,6 +174,9 @@ export async function fetchTelegramBotUpdates(token: string): Promise<void> {
     store.recordFetch("telegram-bot", "bot");
     return;
   }
+
+  const maxUpdateId = Math.max(...updates.map((update) => update.update_id));
+  store.setCursor("telegram-bot", "bot", "getUpdates.offset", String(maxUpdateId + 1));
 
   const fulls = updates.map(updateToFull).filter(Boolean) as MessageFull[];
   if (fulls.length > 0) {
@@ -209,9 +213,9 @@ export const telegramBotProvider: MessagingProvider = {
       const result = (await apiPost(settings.botToken, "sendMessage", {
         chat_id: recipientId,
         text: body,
-      })) as { message_id: number };
+      })) as { message_id: number; chat?: { id?: number | string } };
 
-      const messageId = String(result.message_id);
+      const messageId = telegramMessageId(result.chat?.id ?? recipientId, result.message_id);
       cacheSentMessage({
         provider: "telegram-bot",
         messageId,

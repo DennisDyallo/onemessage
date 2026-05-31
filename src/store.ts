@@ -10,6 +10,48 @@ import type { MessageEnvelope, MessageFull } from "./types.ts";
 
 let db: Database | null = null;
 
+function tableColumns(d: Database, table: string): Set<string> {
+  const rows = d.prepare(`PRAGMA table_info(${table})`).all() as Array<{ name: string }>;
+  return new Set(rows.map((row) => row.name));
+}
+
+function ensureColumn(d: Database, table: string, column: string, definition: string): void {
+  if (tableColumns(d, table).has(column)) return;
+  d.run(`ALTER TABLE ${table} ADD COLUMN ${column} ${definition}`);
+}
+
+function ensureFetchLogPrimaryKey(d: Database): void {
+  const columns = d.prepare("PRAGMA table_info(fetch_log)").all() as Array<{
+    name: string;
+    pk: number;
+  }>;
+  const pk = columns
+    .filter((column) => column.pk > 0)
+    .sort((a, b) => a.pk - b.pk)
+    .map((column) => column.name);
+  if (pk.join(",") === "provider,account,folder") return;
+
+  d.transaction(() => {
+    d.run(`
+      CREATE TABLE fetch_log_new (
+        provider   TEXT NOT NULL,
+        account    TEXT NOT NULL DEFAULT '',
+        folder     TEXT NOT NULL DEFAULT '',
+        fetched_at TEXT NOT NULL,
+        PRIMARY KEY (provider, account, folder)
+      )
+    `);
+    d.run(`
+      INSERT OR REPLACE INTO fetch_log_new (provider, account, folder, fetched_at)
+      SELECT provider, COALESCE(account, ''), COALESCE(folder, ''), fetched_at
+      FROM fetch_log
+      WHERE provider IS NOT NULL
+    `);
+    d.run("DROP TABLE fetch_log");
+    d.run("ALTER TABLE fetch_log_new RENAME TO fetch_log");
+  })();
+}
+
 export function getDb(): Database {
   if (db) return db;
 
@@ -41,16 +83,28 @@ export function getDb(): Database {
       PRIMARY KEY (provider, id)
     )
   `);
-  // Non-destructive migrations for existing databases
-  try {
-    db.run("ALTER TABLE messages ADD COLUMN account TEXT NOT NULL DEFAULT ''");
-  } catch {
-    /* already exists */
-  }
-  try {
-    db.run("ALTER TABLE messages ADD COLUMN direction TEXT NOT NULL DEFAULT 'in'");
-  } catch {
-    /* already exists */
+
+  const messageColumns: Array<[string, string]> = [
+    ["direction", "TEXT NOT NULL DEFAULT 'in'"],
+    ["account", "TEXT NOT NULL DEFAULT ''"],
+    ["from_json", "TEXT"],
+    ["to_json", "TEXT NOT NULL DEFAULT '[]'"],
+    ["subject", "TEXT"],
+    ["preview", "TEXT NOT NULL DEFAULT ''"],
+    ["body", "TEXT"],
+    ["body_format", "TEXT DEFAULT 'text'"],
+    ["date", "TEXT NOT NULL DEFAULT ''"],
+    ["unread", "INTEGER NOT NULL DEFAULT 1"],
+    ["has_attachments", "INTEGER NOT NULL DEFAULT 0"],
+    ["is_group", "INTEGER NOT NULL DEFAULT 0"],
+    ["group_name", "TEXT"],
+    ["attachments_json", "TEXT DEFAULT '[]'"],
+    ["cached_at", "TEXT NOT NULL DEFAULT ''"],
+    ["thread_id", "TEXT"],
+    ["rfc_message_id", "TEXT"],
+  ];
+  for (const [column, definition] of messageColumns) {
+    ensureColumn(db, "messages", column, definition);
   }
 
   db.run(`
@@ -62,23 +116,29 @@ export function getDb(): Database {
       PRIMARY KEY (provider, account, folder)
     )
   `);
+  const fetchLogColumns: Array<[string, string]> = [
+    ["account", "TEXT NOT NULL DEFAULT ''"],
+    ["folder", "TEXT NOT NULL DEFAULT ''"],
+    ["fetched_at", "TEXT NOT NULL DEFAULT ''"],
+  ];
+  for (const [column, definition] of fetchLogColumns) {
+    ensureColumn(db, "fetch_log", column, definition);
+  }
+  ensureFetchLogPrimaryKey(db);
+
+  db.run(`
+    CREATE TABLE IF NOT EXISTS cursors (
+      provider   TEXT NOT NULL,
+      account    TEXT NOT NULL DEFAULT '',
+      name       TEXT NOT NULL,
+      value      TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      PRIMARY KEY (provider, account, name)
+    )
+  `);
 
   db.run("CREATE INDEX IF NOT EXISTS idx_messages_date ON messages(date DESC)");
   db.run("CREATE INDEX IF NOT EXISTS idx_messages_provider_date ON messages(provider, date DESC)");
-
-  // thread_id column for SMS conversation threading (nullable for non-SMS providers)
-  try {
-    db.run("ALTER TABLE messages ADD COLUMN thread_id TEXT");
-  } catch {
-    // Column already exists — ignore
-  }
-
-  // rfc_message_id column for email In-Reply-To / References threading
-  try {
-    db.run("ALTER TABLE messages ADD COLUMN rfc_message_id TEXT");
-  } catch {
-    // Column already exists — ignore
-  }
   db.run(
     "CREATE INDEX IF NOT EXISTS idx_messages_thread ON messages(provider, thread_id, date ASC)",
   );
@@ -453,6 +513,26 @@ export function recordFetch(provider: string, account = "", folder = ""): void {
     INSERT OR REPLACE INTO fetch_log (provider, account, folder, fetched_at)
     VALUES (?, ?, ?, ?)
   `).run(provider, account, folder, new Date().toISOString());
+}
+
+// ---------------------------------------------------------------------------
+// Provider cursors
+// ---------------------------------------------------------------------------
+
+export function getCursor(provider: string, account: string, name: string): string | null {
+  const d = getDb();
+  const row = d
+    .prepare("SELECT value FROM cursors WHERE provider = ? AND account = ? AND name = ?")
+    .get(provider, account, name) as { value: string } | null;
+  return row?.value ?? null;
+}
+
+export function setCursor(provider: string, account: string, name: string, value: string): void {
+  const d = getDb();
+  d.prepare(`
+    INSERT OR REPLACE INTO cursors (provider, account, name, value, updated_at)
+    VALUES (?, ?, ?, ?, ?)
+  `).run(provider, account, name, value, new Date().toISOString());
 }
 
 // ---------------------------------------------------------------------------
