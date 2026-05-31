@@ -9,7 +9,7 @@ bun run check          # Type-check (tsc --noEmit)
 bun run lint           # Lint (Biome, strict recommended rules)
 bun run lint:fix       # Lint and auto-fix
 bun run format         # Format (Biome)
-bun test               # Run tests (121 tests across 10 files)
+bun test               # Run tests
 bun run start          # Run CLI directly (same as: bun src/cli.ts)
 bun link               # Make `onemessage` available globally
 onemessage status      # Verify providers are configured
@@ -24,7 +24,10 @@ onemessage daemon status  # Check if background daemon is running
 - WhatsApp: @whiskeysockets/baileys (direct protocol, no external binary)
 - Email: nodemailer (SMTP) + imapflow (IMAP), designed for Proton Mail Bridge
 - Signal: shells out to `signal-cli` (external binary)
-- SMS: shells out to `kdeconnect-cli` (external binary)
+- SMS: shells out to `kdeconnect-cli` / `kdeconnect-read-sms` (external binaries)
+- Telegram Bot: Bot API
+- Instagram: `instagram-cli`
+- Matrix: Matrix Client-Server API
 
 ## Architecture
 
@@ -42,17 +45,17 @@ Two provider styles exist:
 
 ### Daemon adapter architecture
 
-The **unified daemon** (`src/daemon.ts`) is a thin orchestrator (~350 LOC) that delegates all provider-specific logic to **adapter classes** implementing the `ProviderAdapter` interface from `src/daemon-adapter.ts`.
+The **unified daemon** (`src/daemons/daemon.ts`) is a thin orchestrator that delegates all provider-specific logic to **adapter classes** implementing the `ProviderAdapter` interface from `src/daemons/adapter.ts`.
 
 | Adapter | File | Mode | Notes |
 |---------|------|------|-------|
-| WhatsApp | `daemon-whatsapp.ts` | Real-time | Baileys WebSocket, implements `IpcCapableAdapter` for send/resolve-group/list-groups |
-| Signal | `daemon-signal.ts` | Poll or daemon | signal-cli subprocess (daemon mode) or polling |
-| Email | `daemon-email.ts` | Polling | IMAP via imapflow |
-| SMS | `daemon-sms.ts` | Polling | KDE Connect CLI |
-| Telegram | `daemon-telegram-bot.ts` | Polling | Bot API |
-| Instagram | `daemon-instagram.ts` | Polling | instagram-cli |
-| Matrix | `daemon-matrix.ts` | Polling | Matrix CS API /sync |
+| WhatsApp | `src/daemons/whatsapp.ts` | Real-time | Baileys WebSocket, implements `IpcCapableAdapter` for send/resolve-group/list-groups |
+| Signal | `src/daemons/signal.ts` | Real-time | signal-cli daemon subprocess |
+| Email | `src/daemons/email.ts` | Polling | IMAP via imapflow |
+| SMS | `src/daemons/sms.ts` | Polling | KDE Connect CLI |
+| Telegram Bot | `src/daemons/telegram-bot.ts` | Polling | Bot API |
+| Instagram | `src/daemons/instagram.ts` | Polling | instagram-cli |
+| Matrix | `src/daemons/matrix.ts` | Polling | Matrix CS API /sync |
 
 **Key interfaces:**
 - `ProviderAdapter` — base interface: `start()`, `fetch()`, `isActive()`, `statusInfo()`, `cleanup()`, `readonly polling: boolean`
@@ -61,9 +64,9 @@ The **unified daemon** (`src/daemon.ts`) is a thin orchestrator (~350 LOC) that 
 
 The daemon has **zero provider-name string literals** — all dispatch is via adapter iteration. Adapters self-classify as real-time (`polling = false`) or polling (`polling = true`).
 
-The WhatsApp CLI provider (`src/providers/whatsapp.ts`) is a thin IPC client — it calls `ensureDaemon()` from `src/daemon-shared.ts` to auto-start the daemon, then sends requests over the Unix socket.
+The WhatsApp CLI provider (`src/providers/whatsapp.ts`) is a thin IPC client — it calls `ensureDaemon()` from `src/daemons/shared.ts` to auto-start the daemon, then sends requests over the Unix socket.
 
-Baileys socket creation is shared between auth and daemon via `src/whatsapp-shared.ts`.
+Baileys socket creation is shared between auth and daemon via `src/providers/whatsapp-shared.ts`.
 
 ### Cache layer
 

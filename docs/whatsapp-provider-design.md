@@ -1,5 +1,13 @@
 # WhatsApp Provider Design Document
 
+> Historical note: this document predates the current unified daemon/store architecture.
+> The implemented code now lives under `src/daemons/whatsapp.ts`,
+> `src/providers/whatsapp.ts`, `src/providers/whatsapp-auth.ts`, and
+> `src/providers/whatsapp-shared.ts`. Runtime PID/socket files are shared by the
+> unified daemon at `~/.config/onemessage/daemon.pid` and
+> `~/.config/onemessage/daemon.sock`; messages are stored in the unified
+> `~/.config/onemessage/messages.db` cache.
+
 ## The Fundamental Constraint
 
 WhatsApp is an always-connected protocol. Baileys (the underlying library) maintains a persistent WebSocket to WhatsApp's servers. onemessage is a CLI that starts, does its thing, and exits. These two models are fundamentally at odds.

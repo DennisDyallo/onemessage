@@ -1,6 +1,6 @@
 # onemessage
 
-One CLI for all your messengers. Send, read, reply, and search across Email, Signal, WhatsApp, and SMS from a single command.
+One CLI for all your messengers. Send, read, reply, and search across Email, Signal, WhatsApp, SMS, Telegram Bot, Instagram, and Matrix from a single command.
 
 ```
 onemessage inbox
@@ -23,6 +23,9 @@ onemessage search "invoice" --since 2025-01-01
 | Signal | [signal-cli](https://github.com/AsamK/signal-cli) | `brew install signal-cli` |
 | WhatsApp | None | Built-in (uses [@whiskeysockets/baileys](https://github.com/WhiskeySockets/Baileys)) |
 | SMS | [KDE Connect](https://kdeconnect.kde.org/) | `brew install --cask kdeconnect` (+ paired Android phone) |
+| Telegram Bot | Telegram Bot API token | Create a bot with BotFather |
+| Instagram | `instagram-cli` | Install/configure separately |
+| Matrix | Matrix access token | Homeserver + user ID + token |
 
 ## Install
 
@@ -57,6 +60,14 @@ Create `~/.config/onemessage/config.json`:
   "whatsapp": {},
   "sms": {
     "device": "Pixel 8"
+  },
+  "telegramBot": {
+    "botToken": "123456:ABC-your-token"
+  },
+  "matrix": {
+    "homeserver": "https://matrix.example.com",
+    "userId": "@you:example.com",
+    "accessToken": "your-access-token"
   }
 }
 ```
@@ -89,6 +100,10 @@ onemessage read email 12
 # Search across all providers
 onemessage search "meeting notes"
 onemessage search signal "dinner" --since 2025-03-01
+
+# Self-message and contacts
+onemessage me "daily check"
+onemessage contacts whatsapp
 ```
 
 ## Commands
@@ -101,12 +116,14 @@ onemessage search signal "dinner" --since 2025-03-01
 | `read <provider> <messageId>` | Read a full message |
 | `search [provider] <query>` | Search messages |
 | `auth <provider>` | Set up or check provider authentication |
+| `me [body]` | Send to the configured self target |
+| `contacts [provider]` | List known contacts |
 | `status` | Show all providers and config status |
-| `daemon start\|stop\|status` | Manage background polling daemon |
+| `daemon start\|stop\|restart\|status` | Manage background polling daemon |
 
 **Common flags:**
 
-- `--json` — output as JSON (available on all commands)
+- `--json` — output as JSON on data-returning commands (`send`, `reply`, `inbox`, `read`, `search`, `status`, `contacts`, `daemon status`)
 - `--limit <n>` / `-n <n>` — max messages (default: 10)
 - `--fresh` — bypass cache, fetch directly from source
 - `--unread` / `-u` — unread messages only
@@ -211,9 +228,12 @@ onemessage daemon status
 
 # Stop
 onemessage daemon stop
+
+# Restart
+onemessage daemon restart
 ```
 
-The daemon polls Signal and Email on intervals while maintaining a persistent WhatsApp connection. Configure polling in your config:
+The daemon maintains real-time providers where available and polls configured providers such as Email, SMS, Telegram Bot, Instagram, and Matrix. Configure polling in your config:
 
 ```json
 {
@@ -231,7 +251,7 @@ To run as a persistent macOS service (auto-start on boot, restart on crash), cre
 
 ## JSON Output
 
-Every command supports `--json` for scripting and AI agent integration:
+Most data-returning commands support `--json` for scripting and AI agent integration:
 
 ```bash
 onemessage inbox signal --json --limit 5
