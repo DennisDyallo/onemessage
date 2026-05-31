@@ -26,14 +26,14 @@ export class EmailAdapter implements ProviderAdapter {
     orchestrator.schedulePoll("email", interval, async () => {
       const settings = resolveEmailSettings();
       if (!settings) return;
-      await fetchEmailInbox(settings, settings.accounts, "INBOX");
+      await fetchEmailInbox(settings, settings.accounts, settings.defaultFolder);
     });
   }
 
   async fetch(): Promise<void> {
     const settings = resolveEmailSettings();
     if (!settings) throw new Error("Email not configured");
-    await fetchEmailInbox(settings, settings.accounts, "INBOX");
+    await fetchEmailInbox(settings, settings.accounts, settings.defaultFolder);
   }
 
   isActive(): boolean {

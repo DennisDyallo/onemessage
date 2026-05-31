@@ -18,7 +18,7 @@ interface SmsSettings {
   device: string;
 }
 
-function resolveSettings(cliOverrides?: Record<string, unknown>): SmsSettings | null {
+export function resolveSettings(cliOverrides?: Record<string, unknown>): SmsSettings | null {
   const config = loadConfig();
   const sms = config.sms;
 

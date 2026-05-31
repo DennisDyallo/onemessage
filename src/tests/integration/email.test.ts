@@ -123,3 +123,13 @@ describe("email cache identity", () => {
     expect(parseEmailMessageId("42")).toEqual({ uid: 42 });
   });
 });
+
+describe("EmailAdapter default folder", () => {
+  test("daemon fetch uses email.defaultFolder instead of hardcoded INBOX", async () => {
+    const fs = await import("node:fs/promises");
+    const source = await fs.readFile(new URL("../../daemons/email.ts", import.meta.url), "utf-8");
+
+    expect(source).toContain("settings.defaultFolder");
+    expect(source).not.toContain('settings.accounts, "INBOX"');
+  });
+});

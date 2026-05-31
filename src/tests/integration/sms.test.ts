@@ -306,3 +306,13 @@ describe("SMS inbox() — inboxViaDaemon migration", () => {
     expect(inboxBody).toContain("freshnessMs: FRESHNESS_MS");
   });
 });
+
+describe("SmsAdapter configuration convention", () => {
+  test("daemon active state requires provider settings and read-sms binary", async () => {
+    const fs = await import("node:fs/promises");
+    const source = await fs.readFile(new URL("../../daemons/sms.ts", import.meta.url), "utf-8");
+
+    expect(source).toContain("resolveSmsSettings() !== null");
+    expect(source).toContain('cliExists("kdeconnect-read-sms")');
+  });
+});

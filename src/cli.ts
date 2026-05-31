@@ -86,9 +86,14 @@ function collectProviderFlags(opts: Record<string, unknown>): Record<string, unk
   if (opts.host !== undefined) flags.host = opts.host;
   if (opts.smtpPort !== undefined) flags.smtpPort = Number(opts.smtpPort);
   if (opts.imapPort !== undefined) flags.imapPort = Number(opts.imapPort);
+  if (opts.security !== undefined) flags.security = opts.security;
   if (opts.botToken !== undefined) flags.botToken = opts.botToken;
   if (opts.phone !== undefined) flags.phone = opts.phone;
   if (opts.device !== undefined) flags.device = opts.device;
+  if (opts.username !== undefined) flags.username = opts.username;
+  if (opts.homeserver !== undefined) flags.homeserver = opts.homeserver;
+  if (opts.userId !== undefined) flags.userId = opts.userId;
+  if (opts.accessToken !== undefined) flags.accessToken = opts.accessToken;
   return Object.keys(flags).length > 0 ? flags : undefined;
 }
 
@@ -104,9 +109,14 @@ function addProviderFlags(cmd: Command): Command {
     .option("--host <host>", "Server host (overrides config)")
     .option("--smtp-port <port>", "SMTP port (email)")
     .option("--imap-port <port>", "IMAP port (email)")
+    .option("--security <mode>", "Security mode (email)")
     .option("--bot-token <token>", "Bot token (telegram-bot)")
     .option("--phone <number>", "Phone number (signal, sms)")
-    .option("--device <name>", "Device name (sms via KDE Connect)");
+    .option("--device <name>", "Device name (sms via KDE Connect)")
+    .option("--username <name>", "Username/account (instagram)")
+    .option("--homeserver <url>", "Homeserver URL (matrix)")
+    .option("--user-id <id>", "User ID (matrix)")
+    .option("--access-token <token>", "Access token (matrix)");
 }
 
 // ---------------------------------------------------------------------------

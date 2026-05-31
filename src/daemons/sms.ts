@@ -1,6 +1,6 @@
 import { loadConfig } from "../config.ts";
 import { cliExists } from "../providers/shared.ts";
-import { fetchSmsInbox } from "../providers/sms.ts";
+import { fetchSmsInbox, resolveSettings as resolveSmsSettings } from "../providers/sms.ts";
 import type { DaemonOrchestrator, ProviderAdapter } from "./adapter.ts";
 
 export class SmsAdapter implements ProviderAdapter {
@@ -8,7 +8,7 @@ export class SmsAdapter implements ProviderAdapter {
   readonly polling = true;
 
   start(orchestrator: DaemonOrchestrator): void {
-    if (!cliExists("kdeconnect-read-sms")) return;
+    if (!this.isActive()) return;
 
     const config = loadConfig();
     const enabled = config.daemon?.providers?.sms?.enabled !== false;
@@ -30,7 +30,7 @@ export class SmsAdapter implements ProviderAdapter {
   }
 
   isActive(): boolean {
-    return cliExists("kdeconnect-read-sms");
+    return cliExists("kdeconnect-read-sms") && resolveSmsSettings() !== null;
   }
 
   statusInfo(): Record<string, unknown> {
