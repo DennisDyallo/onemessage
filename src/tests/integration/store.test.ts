@@ -3,6 +3,7 @@ import {
   backfillMessageNames,
   deleteMessages,
   getCachedInbox,
+  getCachedInboxPage,
   getCachedMessage,
   getContactNamesByAddress,
   getDb,
@@ -706,6 +707,188 @@ describe("sinceCachedAt filter", () => {
     // Should return only compose-3 (recent date AND cached_at > t1)
     expect(results.length).toBe(1);
     expect(results[0]?.id).toBe("compose-3");
+  });
+
+  test("changefeed mode orders by cached_at then id", () => {
+    const provider = "__test_cached_at_order__";
+    const t1 = "2026-05-30T10:00:00Z";
+    const t2 = "2026-05-30T11:00:00Z";
+    const msgs = [
+      {
+        id: "order-new-date-old-cache",
+        provider,
+        from: { name: "A", address: "a@test.com" },
+        to: [{ name: "Me", address: "me@test.com" }],
+        preview: "new date old cache",
+        date: "2026-06-01T00:00:00Z",
+        unread: false,
+        hasAttachments: false,
+      },
+      {
+        id: "order-old-date-new-cache",
+        provider,
+        from: { name: "B", address: "b@test.com" },
+        to: [{ name: "Me", address: "me@test.com" }],
+        preview: "old date new cache",
+        date: "2026-01-01T00:00:00Z",
+        unread: false,
+        hasAttachments: false,
+      },
+    ];
+
+    upsertMessages(msgs, "in");
+    const db = getDb();
+    const updateStmt = db.prepare(
+      "UPDATE messages SET cached_at = ? WHERE provider = ? AND id = ?",
+    );
+    updateStmt.run(t1, provider, "order-new-date-old-cache");
+    updateStmt.run(t2, provider, "order-old-date-new-cache");
+
+    const normal = getCachedInbox(provider, { sinceCachedAt: "2026-05-30T09:00:00Z", limit: 10 });
+    expect(normal.map((m) => m.id)).toEqual([
+      "order-new-date-old-cache",
+      "order-old-date-new-cache",
+    ]);
+
+    const page = getCachedInboxPage(provider, {
+      sinceCachedAt: "2026-05-30T09:00:00Z",
+      changefeed: true,
+      limit: 10,
+    });
+    expect(page.messages.map((m) => m.id)).toEqual([
+      "order-new-date-old-cache",
+      "order-old-date-new-cache",
+    ]);
+  });
+
+  test("changefeed cursor pages tied cached_at without loss or duplicates", () => {
+    const provider = "__test_cached_at_ties__";
+    const cachedAt = "2026-05-30T10:00:00Z";
+    const msgs = ["tie-1", "tie-2", "tie-3"].map((id) => ({
+      id,
+      provider,
+      from: { name: "A", address: "a@test.com" },
+      to: [{ name: "Me", address: "me@test.com" }],
+      preview: id,
+      date: "2026-01-01T00:00:00Z",
+      unread: false,
+      hasAttachments: false,
+    }));
+
+    upsertMessages(msgs, "in");
+    const db = getDb();
+    const updateStmt = db.prepare(
+      "UPDATE messages SET cached_at = ? WHERE provider = ? AND id = ?",
+    );
+    for (const id of ["tie-1", "tie-2", "tie-3"]) updateStmt.run(cachedAt, provider, id);
+
+    const page1 = getCachedInboxPage(provider, {
+      sinceCachedAt: "2026-05-30T09:00:00Z",
+      changefeed: true,
+      limit: 2,
+    });
+    expect(page1.messages.map((m) => m.id)).toEqual(["tie-1", "tie-2"]);
+    expect(page1.nextCursor).toBeDefined();
+    expect(page1.hasMore).toBe(true);
+
+    const page2 = getCachedInboxPage(provider, {
+      cursor: page1.nextCursor,
+      changefeed: true,
+      limit: 2,
+    });
+    expect(page2.messages.map((m) => m.id)).toEqual(["tie-3"]);
+    expect(page2.nextCursor).toBeDefined();
+    expect(page2.hasMore).toBe(false);
+  });
+
+  test("changefeed mode applies account filter", () => {
+    const provider = "__test_cached_at_account__";
+    const cachedAt = "2026-05-30T10:00:00Z";
+    upsertMessages(
+      [
+        {
+          id: "account-a",
+          provider,
+          account: "a@example.com",
+          from: { name: "A", address: "a@test.com" },
+          to: [{ name: "Me", address: "me@test.com" }],
+          preview: "account a",
+          date: "2026-01-01T00:00:00Z",
+          unread: false,
+          hasAttachments: false,
+        },
+        {
+          id: "account-b",
+          provider,
+          account: "b@example.com",
+          from: { name: "B", address: "b@test.com" },
+          to: [{ name: "Me", address: "me@test.com" }],
+          preview: "account b",
+          date: "2026-01-01T00:00:00Z",
+          unread: false,
+          hasAttachments: false,
+        },
+      ],
+      "in",
+    );
+
+    const db = getDb();
+    const updateStmt = db.prepare("UPDATE messages SET cached_at = ? WHERE provider = ?");
+    updateStmt.run(cachedAt, provider);
+
+    const page = getCachedInboxPage(provider, {
+      sinceCachedAt: "2026-05-30T09:00:00Z",
+      changefeed: true,
+      account: "b@example.com",
+      limit: 10,
+    });
+
+    expect(page.messages.map((m) => m.id)).toEqual(["account-b"]);
+  });
+
+  test("changefeed mode applies excluded account filter", () => {
+    const provider = "__test_cached_at_excluded_account__";
+    const cachedAt = "2026-05-30T10:00:00Z";
+    upsertMessages(
+      [
+        {
+          id: "primary-account",
+          provider,
+          account: "primary@example.com",
+          from: { name: "A", address: "a@test.com" },
+          to: [{ name: "Me", address: "me@test.com" }],
+          preview: "primary",
+          date: "2026-01-01T00:00:00Z",
+          unread: false,
+          hasAttachments: false,
+        },
+        {
+          id: "secondary-account",
+          provider,
+          account: "secondary@example.com",
+          from: { name: "B", address: "b@test.com" },
+          to: [{ name: "Me", address: "me@test.com" }],
+          preview: "secondary",
+          date: "2026-01-01T00:00:00Z",
+          unread: false,
+          hasAttachments: false,
+        },
+      ],
+      "in",
+    );
+
+    const db = getDb();
+    const updateStmt = db.prepare("UPDATE messages SET cached_at = ? WHERE provider = ?");
+    updateStmt.run(cachedAt, provider);
+
+    const page = getCachedInboxPage(provider, {
+      sinceCachedAt: "2026-05-30T09:00:00Z",
+      changefeed: true,
+      excludeAccounts: ["secondary@example.com"],
+      limit: 10,
+    });
+
+    expect(page.messages.map((m) => m.id)).toEqual(["primary-account"]);
   });
 
   test("re-upserting existing message preserves original cached_at", () => {

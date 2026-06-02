@@ -1,4 +1,5 @@
 import { Database } from "bun:sqlite";
+import { Buffer } from "node:buffer";
 import { mkdirSync } from "node:fs";
 import { join } from "node:path";
 import { getConfigDir } from "./config.ts";
@@ -336,14 +337,66 @@ export type GetCachedInboxArgs = {
   unread?: boolean;
   since?: string;
   sinceCachedAt?: string;
+  cursor?: string;
+  changefeed?: boolean;
   from?: string;
+  account?: string;
   excludeAccounts?: string[];
 };
 
-export function getCachedInbox(provider: string, opts?: GetCachedInboxArgs): MessageEnvelope[] {
+export type CachedInboxCursor = {
+  cachedAt: string;
+  id: string;
+};
+
+export type CachedInboxPage = {
+  messages: MessageEnvelope[];
+  nextCursor?: string;
+  hasMore: boolean;
+};
+
+export function encodeInboxCursor(cursor: CachedInboxCursor): string {
+  return Buffer.from(JSON.stringify(cursor), "utf-8").toString("base64url");
+}
+
+export function decodeInboxCursor(token: string): CachedInboxCursor {
+  try {
+    const parsed = JSON.parse(Buffer.from(token, "base64url").toString("utf-8"));
+    if (typeof parsed?.cachedAt !== "string" || typeof parsed?.id !== "string") {
+      throw new Error("invalid cursor payload");
+    }
+    return { cachedAt: parsed.cachedAt, id: parsed.id };
+  } catch (err) {
+    throw new Error(`Invalid inbox cursor: ${err instanceof Error ? err.message : String(err)}`);
+  }
+}
+
+function validateSinceCachedAt(sinceCachedAt: string): void {
+  if (sinceCachedAt.trim() === "") {
+    throw new Error("sinceCachedAt cannot be empty string");
+  }
+  // Strict ISO 8601 guard: JS `new Date("2026-05-30junk")` would silently parse
+  // to a different date. Require canonical ISO format and round-trip-equal.
+  const parsed = new Date(sinceCachedAt);
+  if (
+    Number.isNaN(parsed.getTime()) ||
+    !/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d{1,3})?Z$/.test(sinceCachedAt)
+  ) {
+    throw new Error(`sinceCachedAt must be valid ISO timestamp, got: ${sinceCachedAt}`);
+  }
+}
+
+export function getCachedInboxPage(provider: string, opts?: GetCachedInboxArgs): CachedInboxPage {
   const d = getDb();
   const conditions = ["provider = ?"];
   const params: (string | number)[] = [provider];
+  const limit = Math.max(1, opts?.limit ?? 10);
+  const cursor = opts?.cursor ? decodeInboxCursor(opts.cursor) : undefined;
+  const changefeed = Boolean(opts?.changefeed || cursor);
+
+  if (cursor && opts?.sinceCachedAt !== undefined) {
+    throw new Error("cursor cannot be combined with sinceCachedAt");
+  }
 
   // Exclude thread sub-messages from inbox listing
   conditions.push("thread_id IS NULL");
@@ -355,20 +408,12 @@ export function getCachedInbox(provider: string, opts?: GetCachedInboxArgs): Mes
     conditions.push("date >= ?");
     params.push(opts.since);
   }
-  if (opts?.sinceCachedAt !== undefined) {
-    // Validate sinceCachedAt is a non-empty, valid ISO timestamp
-    if (opts.sinceCachedAt.trim() === "") {
-      throw new Error("sinceCachedAt cannot be empty string");
-    }
-    // Strict ISO 8601 guard: JS `new Date("2026-05-30junk")` would silently parse
-    // to a different date. Require canonical ISO format and round-trip-equal.
-    const parsed = new Date(opts.sinceCachedAt);
-    if (
-      Number.isNaN(parsed.getTime()) ||
-      !/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d{1,3})?Z$/.test(opts.sinceCachedAt)
-    ) {
-      throw new Error(`sinceCachedAt must be valid ISO timestamp, got: ${opts.sinceCachedAt}`);
-    }
+  if (cursor) {
+    validateSinceCachedAt(cursor.cachedAt);
+    conditions.push("(cached_at > ? OR (cached_at = ? AND id > ?))");
+    params.push(cursor.cachedAt, cursor.cachedAt, cursor.id);
+  } else if (opts?.sinceCachedAt !== undefined) {
+    validateSinceCachedAt(opts.sinceCachedAt);
     conditions.push("cached_at > ?");
     params.push(opts.sinceCachedAt);
   }
@@ -378,20 +423,37 @@ export function getCachedInbox(provider: string, opts?: GetCachedInboxArgs): Mes
     );
     params.push(`%${opts.from}%`, `%${opts.from}%`);
   }
+  if (opts?.account) {
+    conditions.push("account = ?");
+    params.push(opts.account);
+  }
   if (opts?.excludeAccounts?.length) {
     const placeholders = opts.excludeAccounts.map(() => "?").join(", ");
     conditions.push(`account NOT IN (${placeholders})`);
     params.push(...opts.excludeAccounts);
   }
 
-  const limit = opts?.limit ?? 10;
-  const sql = `SELECT * FROM messages WHERE ${conditions.join(" AND ")} ORDER BY date DESC LIMIT ?`;
-  params.push(limit);
+  const orderBy = changefeed ? "cached_at ASC, id ASC" : "date DESC";
+  const sql = `SELECT * FROM messages WHERE ${conditions.join(" AND ")} ORDER BY ${orderBy} LIMIT ?`;
+  params.push(changefeed ? limit + 1 : limit);
 
-  return d
+  const rows = d
     .prepare(sql)
     .all(...params)
     .map(rowToEnvelope);
+
+  const messages = changefeed ? rows.slice(0, limit) : rows;
+  const last = messages.at(-1);
+  const nextCursor =
+    changefeed && last?.cachedAt
+      ? encodeInboxCursor({ cachedAt: last.cachedAt, id: last.id })
+      : undefined;
+
+  return { messages, nextCursor, hasMore: changefeed && rows.length > limit };
+}
+
+export function getCachedInbox(provider: string, opts?: GetCachedInboxArgs): MessageEnvelope[] {
+  return getCachedInboxPage(provider, opts).messages;
 }
 
 export function getCachedMessage(provider: string, messageId: string): MessageFull | null {

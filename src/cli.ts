@@ -6,7 +6,12 @@ import "./providers/index.ts";
 
 import { getConfigPath, loadConfig } from "./config.ts";
 import { getAllProviders, getProviderOrExit } from "./registry.ts";
-import { getCachedMessage, getContacts, getPreviousOutboundRecipient } from "./store.ts";
+import {
+  getCachedInboxPage,
+  getCachedMessage,
+  getContacts,
+  getPreviousOutboundRecipient,
+} from "./store.ts";
 import type { MessageEnvelope, MessageFull } from "./types.ts";
 
 // ---------------------------------------------------------------------------
@@ -305,6 +310,8 @@ addProviderFlags(
     .option("-u, --unread", "Unread only", false)
     .option("--since <date>", "Messages since date")
     .option("--since-cached-at <iso>", "Messages cached after ISO timestamp")
+    .option("--cursor <token>", "Continue a paged cache changefeed cursor")
+    .option("--page-json", "Output paged JSON envelope with nextCursor", false)
     .option("--from <address>", "Filter by sender")
     .option("--folder <name>", "Folder/chat name")
     .option("--account <id>", "Specific account")
@@ -314,6 +321,23 @@ addProviderFlags(
 ).action(async (providerName, opts) => {
   const limit = parseInt(opts.limit, 10) || 10;
   const providerFlags = collectProviderFlags(opts);
+
+  if ((opts.pageJson || opts.cursor) && !providerName) {
+    console.error("--page-json/--cursor requires a single provider.");
+    process.exit(1);
+  }
+
+  if (opts.cursor && !opts.pageJson) {
+    console.error("--cursor requires --page-json.");
+    process.exit(1);
+  }
+
+  if (opts.pageJson && opts.folder) {
+    console.error(
+      "--page-json does not support --folder because cached inbox rows do not store folder metadata.",
+    );
+    process.exit(1);
+  }
 
   const providers = providerName
     ? [getProviderOrExit(providerName)]
@@ -327,6 +351,40 @@ addProviderFlags(
   const allMessages: MessageEnvelope[] = [];
   for (const provider of providers) {
     try {
+      if (opts.pageJson) {
+        await provider.inbox({
+          limit,
+          unread: opts.unread,
+          since: opts.since,
+          sinceCachedAt: opts.sinceCachedAt,
+          from: opts.from,
+          folder: opts.folder,
+          account: opts.account,
+          fresh: opts.fresh,
+          all: opts.all,
+          providerFlags,
+        });
+
+        const excludeAccounts =
+          provider.name === "email" && !opts.all
+            ? (loadConfig()?.email?.secondaryAccounts ?? [])
+            : [];
+
+        const page = getCachedInboxPage(provider.name, {
+          limit,
+          unread: opts.unread,
+          since: opts.since,
+          sinceCachedAt: opts.sinceCachedAt,
+          cursor: opts.cursor,
+          changefeed: true,
+          from: opts.from,
+          account: opts.account,
+          excludeAccounts,
+        });
+        process.stdout.write(`${JSON.stringify(page, null, 2)}\n`);
+        return;
+      }
+
       const messages = await provider.inbox({
         limit,
         unread: opts.unread,

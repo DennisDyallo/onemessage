@@ -98,6 +98,8 @@ export interface InboxOptions {
   unread?: boolean;
   since?: string;
   sinceCachedAt?: string;
+  cursor?: string;
+  changefeed?: boolean;
   from?: string;
   folder?: string;
   account?: string;
