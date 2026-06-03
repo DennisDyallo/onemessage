@@ -2,10 +2,11 @@
  * Unit tests for WhatsApp direction detection and contact name enrichment.
  *
  * WhatsApp messages processed in whatsapp-shared.ts use the Baileys
- * `fromMe` flag to determine direction. When fromMe=true:
+ * `fromMe` flag to determine direction. When fromMe=true and the socket
+ * owner is known:
  * - direction is "out"
- * - from is the contact (not "me"), matching the convention that
- *   the `from` field carries the conversation partner's identity
+ * - from is the account owner
+ * - to is the conversation partner
  *
  * Contact name enrichment: outgoing messages look up the recipient's
  * human-readable name from a contact name map (built from the store's
@@ -17,31 +18,16 @@
  * WhatsApp daemon or socket.
  */
 import { describe, expect, test } from "bun:test";
+import type { WAMessage, WASocket } from "@whiskeysockets/baileys";
+import { resolveDefaultReply } from "../../providers/shared.ts";
 import { whatsappProvider } from "../../providers/whatsapp.ts";
+import { parseAndStoreWAMessage } from "../../providers/whatsapp-shared.ts";
 import * as store from "../../store.ts";
 import type { MessageEnvelope, MessageFull } from "../../types.ts";
 
 // ---------------------------------------------------------------------------
-// Inline replica of the WhatsApp message-to-full mapping from whatsapp-shared.ts
-//
-// The real code (whatsapp-shared.ts parseAndStoreWAMessage):
-//   const fromMe = msg.key.fromMe ?? false;
-//   const direction: "in" | "out" = fromMe ? "out" : "in";
-//   const chatJid = msg.key.remoteJid ?? "";
-//   const isGroup = chatJid.endsWith("@g.us");
-//   let senderJid = chatJid;   // for non-group messages without participant
-//   const senderName = msg.pushName || senderJid.split("@")[0] || senderJid;
-//   const senderAddress = senderJid.split("@")[0] || senderJid;
-//   const fromContact = { name: senderName, address: senderAddress };  // always the sender's identity
-//   const recipientAddress = chatJid.split("@")[0] || chatJid;
-//   const recipientName = contactNames?.get(recipientAddress) ?? recipientAddress;
-//   const toContact = fromMe ? { name: recipientName, address: recipientAddress }
-//                            : { name: "me", address: "me" };
-//
-// NOTE: For outgoing messages (fromMe=true) without a participant field, senderJid == chatJid,
-// so from.address is the contact's phone number (not "me"). This is intentional — the from
-// field reflects who sent the message in the Baileys sense, which for outgoing 1:1 messages
-// is the remoteJid (the chat partner), not the self-JID.
+// Pure mirror of the WhatsApp address normalization rules. Production-path
+// tests below call parseAndStoreWAMessage and inspect the cached row.
 // ---------------------------------------------------------------------------
 
 interface MockBaileysKey {
@@ -58,26 +44,41 @@ interface MockBaileysMsg {
 }
 
 function processWhatsAppMsg(msg: MockBaileysMsg, contactNames?: Map<string, string>): MessageFull {
+  return processWhatsAppMsgWithOwner(msg, contactNames);
+}
+
+function bareAddressFromJid(jid: string | undefined): string | undefined {
+  if (!jid) return undefined;
+  const user = jid.split("@")[0] || jid;
+  return user.split(":")[0] || user;
+}
+
+function processWhatsAppMsgWithOwner(
+  msg: MockBaileysMsg,
+  contactNames?: Map<string, string>,
+  owner?: { id?: string; name?: string },
+): MessageFull {
   const fromMe = msg.key.fromMe ?? false;
   const direction: "in" | "out" = fromMe ? "out" : "in";
   const chatJid = msg.key.remoteJid ?? "";
   const isGroup = chatJid.endsWith("@g.us");
-  // senderJid = chatJid for non-group messages with no participant field
   const senderJid = chatJid;
-  const senderAddress = senderJid.split("@")[0] || senderJid;
+  const senderAddress = bareAddressFromJid(senderJid) ?? senderJid;
   const senderName = msg.pushName || senderAddress;
-
-  // Production behavior: from always reflects the Baileys sender identity.
-  // For outgoing 1:1 messages (fromMe=true, no participant), senderJid == chatJid,
-  // so from.address is the contact's phone number (not "me").
-  const fromContact = { name: senderName, address: senderAddress };
+  const ownerAddress = bareAddressFromJid(owner?.id);
+  const ownerName = owner?.name || ownerAddress || "me";
+  const fromContact = fromMe
+    ? { name: ownerName, address: ownerAddress ?? (owner ? "me" : senderAddress) }
+    : { name: senderName, address: senderAddress };
 
   // For outgoing messages, look up recipient name from contact names map
-  const recipientAddress = chatJid.split("@")[0] || chatJid;
+  const recipientAddress = bareAddressFromJid(chatJid) ?? chatJid;
   const recipientName = contactNames?.get(recipientAddress) ?? recipientAddress;
   const toContact = fromMe
     ? { name: recipientName, address: recipientAddress }
-    : { name: "me", address: "me" };
+    : !isGroup && ownerAddress
+      ? { name: ownerName, address: ownerAddress }
+      : { name: "me", address: "me" };
 
   const content = msg.message?.conversation ?? msg.message?.extendedTextMessage?.text ?? "";
 
@@ -131,21 +132,20 @@ describe("WhatsApp direction detection", () => {
     expect(msg.direction).toBe("out");
   });
 
-  test("outgoing message — from is the contact (Baileys sender identity), to is the contact", () => {
-    // Production behavior: for fromMe=true without a participant field, senderJid == chatJid,
-    // so from.address is the contact's phone number — not "me". The direction field is the
-    // canonical indicator for outgoing messages, not the from address.
-    const msg = processWhatsAppMsg({
-      key: { remoteJid: "46722222222@s.whatsapp.net", fromMe: true, id: "msg-out-002" },
-      messageTimestamp: TS,
-      pushName: "Bob",
-      message: { conversation: "Hey Bob" },
-    });
-    // from = contact's phone (production: senderJid = chatJid for non-group outgoing)
-    expect(msg.from?.address).toBe("46722222222");
-    // to = the same contact address (chatJid stripped of @domain)
+  test("outgoing message with owner identity — from is owner, to is contact", () => {
+    const msg = processWhatsAppMsgWithOwner(
+      {
+        key: { remoteJid: "46722222222@s.whatsapp.net", fromMe: true, id: "msg-out-002" },
+        messageTimestamp: TS,
+        pushName: "Bob",
+        message: { conversation: "Hey Bob" },
+      },
+      undefined,
+      { id: "46737124377:12@s.whatsapp.net", name: "Dennis" },
+    );
+    expect(msg.from?.name).toBe("Dennis");
+    expect(msg.from?.address).toBe("46737124377");
     expect(msg.to[0]?.address).toBe("46722222222");
-    // direction is the authoritative indicator
     expect(msg.direction).toBe("out");
   });
 
@@ -207,6 +207,200 @@ describe("WhatsApp direction detection", () => {
       message: { conversation: "No fromMe field" },
     });
     expect(msg.direction).toBe("in");
+  });
+});
+
+describe("WhatsApp production normalization", () => {
+  test("outbound direct cache row stores owner as from and partner as to", async () => {
+    const id = `wa-normalize-out-${Date.now()}`;
+    const sock = {
+      user: { id: "46737124377:12@s.whatsapp.net", name: "Dennis" },
+    } as unknown as WASocket;
+
+    const ok = await parseAndStoreWAMessage(
+      {
+        key: { remoteJid: "46728418689@s.whatsapp.net", fromMe: true, id },
+        messageTimestamp: TS,
+        message: { conversation: "Hey John" },
+      } as unknown as WAMessage,
+      sock,
+      undefined,
+      undefined,
+      new Map([["46728418689", "John (tenant)"]]),
+      true,
+    );
+
+    expect(ok).toBe(true);
+    const cached = store.getCachedMessage("whatsapp", id);
+    expect(cached).not.toBeNull();
+    if (!cached) return;
+
+    expect(cached.direction).toBe("out");
+    expect(cached.from?.name).toBe("Dennis");
+    expect(cached.from?.address).toBe("46737124377");
+    expect(cached.to[0]?.name).toBe("John (tenant)");
+    expect(cached.to[0]?.address).toBe("46728418689");
+    expect(resolveDefaultReply(cached).recipientId).toBe("46728418689");
+  });
+
+  test("inbound direct cache row stores partner as from and owner as to", async () => {
+    const id = `wa-normalize-in-${Date.now()}`;
+    const sock = {
+      user: { id: "46737124377@s.whatsapp.net", name: "Dennis" },
+    } as unknown as WASocket;
+
+    const ok = await parseAndStoreWAMessage(
+      {
+        key: { remoteJid: "46728418689@s.whatsapp.net", fromMe: false, id },
+        messageTimestamp: TS,
+        pushName: "John",
+        message: { conversation: "Hello Dennis" },
+      } as unknown as WAMessage,
+      sock,
+      undefined,
+      undefined,
+      new Map([["46728418689", "John (tenant)"]]),
+      true,
+    );
+
+    expect(ok).toBe(true);
+    const cached = store.getCachedMessage("whatsapp", id);
+    expect(cached).not.toBeNull();
+    if (!cached) return;
+
+    expect(cached.direction).toBe("in");
+    expect(cached.from?.name).toBe("John");
+    expect(cached.from?.address).toBe("46728418689");
+    expect(cached.to[0]?.name).toBe("Dennis");
+    expect(cached.to[0]?.address).toBe("46737124377");
+  });
+
+  test("outbound direct cache row uses creds owner identity when sock.user is unavailable", async () => {
+    const id = `wa-normalize-creds-out-${Date.now()}`;
+    const sock = {} as unknown as WASocket;
+
+    const ok = await parseAndStoreWAMessage(
+      {
+        key: { remoteJid: "46728418689@s.whatsapp.net", fromMe: true, id },
+        messageTimestamp: TS,
+        message: { conversation: "Creds-only owner" },
+      } as unknown as WAMessage,
+      sock,
+      undefined,
+      undefined,
+      new Map([["46728418689", "John (tenant)"]]),
+      true,
+      { id: "46737124377:4@s.whatsapp.net", name: "Dennis" },
+    );
+
+    expect(ok).toBe(true);
+    const cached = store.getCachedMessage("whatsapp", id);
+    expect(cached).not.toBeNull();
+    if (!cached) return;
+
+    expect(cached.direction).toBe("out");
+    expect(cached.from?.name).toBe("Dennis");
+    expect(cached.from?.address).toBe("46737124377");
+    expect(cached.to[0]?.name).toBe("John (tenant)");
+    expect(cached.to[0]?.address).toBe("46728418689");
+  });
+
+  test("direct history owner-authored message with unreliable fromMe is stored as outbound", async () => {
+    const id = `wa-normalize-history-owner-${Date.now()}`;
+
+    const ok = await parseAndStoreWAMessage(
+      {
+        key: { remoteJid: "46728418689@s.whatsapp.net", fromMe: false, id },
+        messageTimestamp: TS,
+        pushName: "Dennis",
+        message: { conversation: "Synced from linked device" },
+      } as unknown as WAMessage,
+      undefined,
+      undefined,
+      undefined,
+      new Map([["46728418689", "John (tenant)"]]),
+      true,
+      { id: "46737124377@s.whatsapp.net", name: "Dennis" },
+    );
+
+    expect(ok).toBe(true);
+    const cached = store.getCachedMessage("whatsapp", id);
+    expect(cached).not.toBeNull();
+    if (!cached) return;
+
+    expect(cached.direction).toBe("out");
+    expect(cached.unread).toBe(false);
+    expect(cached.from?.name).toBe("Dennis");
+    expect(cached.from?.address).toBe("46737124377");
+    expect(cached.to[0]?.name).toBe("John (tenant)");
+    expect(cached.to[0]?.address).toBe("46728418689");
+    expect(resolveDefaultReply(cached).recipientId).toBe("46728418689");
+  });
+
+  test("direct history owner participant proves outbound even without pushName", async () => {
+    const id = `wa-normalize-history-owner-participant-${Date.now()}`;
+
+    const ok = await parseAndStoreWAMessage(
+      {
+        key: {
+          remoteJid: "46728418689@s.whatsapp.net",
+          participant: "46737124377:9@s.whatsapp.net",
+          fromMe: false,
+          id,
+        },
+        messageTimestamp: TS,
+        message: { conversation: "Synced participant owner" },
+      } as unknown as WAMessage,
+      undefined,
+      undefined,
+      undefined,
+      new Map([["46728418689", "John (tenant)"]]),
+      true,
+      { id: "46737124377@s.whatsapp.net" },
+    );
+
+    expect(ok).toBe(true);
+    const cached = store.getCachedMessage("whatsapp", id);
+    expect(cached).not.toBeNull();
+    if (!cached) return;
+
+    expect(cached.direction).toBe("out");
+    expect(cached.from?.address).toBe("46737124377");
+    expect(cached.to[0]?.name).toBe("John (tenant)");
+    expect(cached.to[0]?.address).toBe("46728418689");
+    expect(resolveDefaultReply(cached).recipientId).toBe("46728418689");
+  });
+
+  test("direct history contact-name collision is not inferred as owner-authored", async () => {
+    const id = `wa-normalize-history-name-collision-${Date.now()}`;
+
+    const ok = await parseAndStoreWAMessage(
+      {
+        key: { remoteJid: "46728418689@s.whatsapp.net", fromMe: false, id },
+        messageTimestamp: TS,
+        pushName: "Dennis",
+        message: { conversation: "Inbound from contact with same display name" },
+      } as unknown as WAMessage,
+      undefined,
+      undefined,
+      undefined,
+      new Map([["46728418689", "Dennis"]]),
+      true,
+      { id: "46737124377@s.whatsapp.net", name: "Dennis" },
+    );
+
+    expect(ok).toBe(true);
+    const cached = store.getCachedMessage("whatsapp", id);
+    expect(cached).not.toBeNull();
+    if (!cached) return;
+
+    expect(cached.direction).toBe("in");
+    expect(cached.unread).toBe(true);
+    expect(cached.from?.name).toBe("Dennis");
+    expect(cached.from?.address).toBe("46728418689");
+    expect(cached.to[0]?.name).toBe("Dennis");
+    expect(cached.to[0]?.address).toBe("46737124377");
+    expect(resolveDefaultReply(cached).recipientId).toBe("46728418689");
   });
 });
 

@@ -5,6 +5,7 @@ import {
   AUTH_DIR,
   createBaileysSocket,
   parseAndStoreWAMessage,
+  type WhatsAppOwnerIdentity,
 } from "../providers/whatsapp-shared.ts";
 import * as store from "../store.ts";
 import type { MessageFull } from "../types.ts";
@@ -19,6 +20,7 @@ export class WhatsAppAdapter implements IpcCapableAdapter {
   private reconnecting = false;
   private groupsSynced = false;
   private historySyncComplete = false;
+  private ownerIdentity: WhatsAppOwnerIdentity | undefined;
   private lidToPhoneMap = new Map<string, string>();
   private groupCache = new Map<
     string,
@@ -138,8 +140,11 @@ export class WhatsAppAdapter implements IpcCapableAdapter {
   private async connectWhatsApp(): Promise<void> {
     mkdirSync(AUTH_DIR, { recursive: true });
 
-    const { sock, saveCreds } = await createBaileysSocket(AUTH_DIR);
+    const { sock, saveCreds, creds } = await createBaileysSocket(AUTH_DIR);
     this.sock = sock;
+    this.ownerIdentity = creds.me
+      ? { id: creds.me.id, name: creds.me.name ?? undefined }
+      : undefined;
 
     this.sock.ev.on("creds.update", saveCreds);
 
@@ -314,6 +319,7 @@ export class WhatsAppAdapter implements IpcCapableAdapter {
       resolvedGroupName,
       contactNames,
       isHistorySync,
+      this.ownerIdentity,
     );
   }
 

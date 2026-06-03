@@ -82,6 +82,11 @@ export interface CreateSocketResult {
   creds: AuthenticationCreds;
 }
 
+export interface WhatsAppOwnerIdentity {
+  id?: string;
+  name?: string;
+}
+
 /**
  * Create a Baileys WASocket with standard config.
  * Handles auth state loading, version fetching, and silent logging.
@@ -147,6 +152,16 @@ async function translateJid(
   return jid;
 }
 
+function bareAddressFromJid(jid: string | undefined): string | undefined {
+  if (!jid) return undefined;
+  const user = jid.split("@")[0] || jid;
+  return user.split(":")[0] || user;
+}
+
+function namesMatch(a: string | null | undefined, b: string | null | undefined): boolean {
+  return !!a && !!b && a.trim().toLowerCase() === b.trim().toLowerCase();
+}
+
 /**
  * Parse a Baileys WAMessage and store it in the SQLite cache.
  *
@@ -168,6 +183,7 @@ export async function parseAndStoreWAMessage(
   groupName?: string,
   contactNames?: Map<string, string>,
   isHistorySync = false,
+  ownerIdentity?: WhatsAppOwnerIdentity,
 ): Promise<boolean> {
   try {
     if (!msg.message) return false;
@@ -192,29 +208,56 @@ export async function parseAndStoreWAMessage(
     // Voice notes have audioMessage/pttMessage but often no text content
     if (!content && !isAudioMessage(normalized)) return false;
 
+    const ownerAddress =
+      bareAddressFromJid(sock?.user?.id) ?? bareAddressFromJid(ownerIdentity?.id);
+    const ownerProfileName = sock?.user?.name || ownerIdentity?.name;
+    const ownerName = ownerProfileName || ownerAddress || "me";
+
     // Determine sender info
     let senderJid = chatJid;
     if (msg.key.participant) {
       senderJid = await translateJid(msg.key.participant, sock, lidCache);
     }
-    const senderName = msg.pushName || senderJid.split("@")[0] || senderJid;
-    const senderAddress = senderJid.split("@")[0] || senderJid;
+    const senderAddress = bareAddressFromJid(senderJid) ?? senderJid;
+    const senderName = msg.pushName || senderAddress;
+    const recipientAddress = bareAddressFromJid(chatJid) ?? chatJid;
+    const recipientName = contactNames?.get(recipientAddress);
+
+    const participantIsOwner =
+      !!ownerAddress && !!msg.key.participant && senderAddress === ownerAddress;
+    const displayNameIdentifiesOwner =
+      !!ownerAddress &&
+      !!ownerProfileName &&
+      ownerProfileName !== ownerAddress &&
+      !!recipientName &&
+      !namesMatch(recipientName, ownerProfileName) &&
+      namesMatch(msg.pushName, ownerProfileName);
+
+    const inferredOwnerAuthoredHistory =
+      isHistorySync && !isGroup && !fromMe && (participantIsOwner || displayNameIdentifiesOwner);
+    const authoredByOwner = fromMe || inferredOwnerAuthoredHistory;
 
     // Determine direction and build contacts
-    const direction: "in" | "out" = fromMe ? "out" : "in";
-    const fromContact = {
-      name: senderName,
-      address: senderAddress,
-    };
+    const direction: "in" | "out" = authoredByOwner ? "out" : "in";
+    const fromContact = authoredByOwner
+      ? {
+          name: ownerName,
+          address: ownerAddress ?? (sock?.user || ownerIdentity ? "me" : senderAddress),
+        }
+      : {
+          name: senderName,
+          address: senderAddress,
+        };
 
     // For outgoing messages, the "to" is the chat; for incoming, "to" is self
-    const recipientAddress = chatJid.split("@")[0] || chatJid;
-    const toContact = fromMe
+    const toContact = authoredByOwner
       ? {
-          name: contactNames?.get(recipientAddress) ?? recipientAddress,
+          name: recipientName ?? recipientAddress,
           address: recipientAddress,
         }
-      : { name: "me", address: "me" };
+      : !isGroup && ownerAddress
+        ? { name: ownerName, address: ownerAddress }
+        : { name: "me", address: "me" };
 
     const timestamp =
       typeof msg.messageTimestamp === "number"
@@ -309,7 +352,7 @@ export async function parseAndStoreWAMessage(
       body: content,
       bodyFormat: "text",
       date: new Date(timestamp * 1000).toISOString(),
-      unread: !fromMe,
+      unread: !authoredByOwner,
       hasAttachments,
       isGroup,
       groupName: isGroup ? (groupName ?? chatJid.split("@")[0]) : undefined,
