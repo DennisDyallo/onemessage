@@ -40,6 +40,141 @@ function runKdeConnect(args: string[]) {
   });
 }
 
+function normalizePhone(value: string): string {
+  return value.replace(/[^+\d]/g, "").replace(/^00/, "+");
+}
+
+function resolveDeviceId(device: string): string | null {
+  if (/^[a-f0-9]{32}$/i.test(device)) return device;
+
+  const result = runKdeConnect(["-a", "--id-name-only"]);
+  if (!result.ok || !result.stdout) return null;
+
+  for (const line of result.stdout.split("\n")) {
+    const match = line.match(/^([a-f0-9]{32})\s+(.+)$/i);
+    if (match?.[1] && match[2] === device) return match[1];
+  }
+
+  return null;
+}
+
+function extractDbusString(block: string): string | null {
+  const start = block.indexOf('string "');
+  if (start === -1) return null;
+
+  let value = "";
+  let escaped = false;
+  for (let i = start + 'string "'.length; i < block.length; i++) {
+    const char = block[i];
+    if (escaped) {
+      value += char;
+      escaped = false;
+      continue;
+    }
+    if (char === "\\") {
+      escaped = true;
+      continue;
+    }
+    if (char === '"') return value;
+    value += char;
+  }
+
+  return null;
+}
+
+function parseDbusConversationBlocks(stdout: string): string[] {
+  const blocks: string[] = [];
+  const lines = stdout.split("\n");
+  let current: string[] | null = null;
+
+  for (const line of lines) {
+    if (line.includes("variant") && line.includes("struct {")) {
+      current = [line];
+      continue;
+    }
+    if (!current) continue;
+    current.push(line);
+    if (line === "         }") {
+      blocks.push(current.join("\n"));
+      current = null;
+    }
+  }
+
+  return blocks;
+}
+
+function fetchSmsConversationsViaDbus(opts?: { from?: string }): MessageFull[] {
+  const settings = resolveSettings();
+  if (!settings) return [];
+
+  const deviceId = resolveDeviceId(settings.device);
+  if (!deviceId) return [];
+
+  const result = runCli(
+    "dbus-send",
+    [
+      "--session",
+      "--dest=org.kde.kdeconnect",
+      "--type=method_call",
+      "--print-reply",
+      `/modules/kdeconnect/devices/${deviceId}`,
+      "org.kde.kdeconnect.device.conversations.activeConversations",
+    ],
+    { stderrFilters: KDE_STDERR_FILTERS, timeoutMs: 15_000 },
+  );
+
+  if (!result.ok || !result.stdout) {
+    if (result.stderr) process.stderr.write(`[sms] ${result.stderr}\n`);
+    return [];
+  }
+
+  const contactNames = store.getContactNamesByAddress("sms");
+  const config = loadConfig();
+  const ownAddress = normalizePhone(config.signal?.phone ?? "");
+  const fromFilter = opts?.from ? normalizePhone(opts.from) : null;
+  const messages: MessageFull[] = [];
+
+  for (const block of parseDbusConversationBlocks(result.stdout)) {
+    const body = extractDbusString(block);
+    const timestampMatches = [...block.matchAll(/int64 (\d+)/g)]
+      .map((match) => match[1])
+      .filter((value): value is string => value !== undefined);
+    const timestamp = timestampMatches[0];
+    const threadId = timestampMatches[1] ?? timestamp;
+    const afterTimestamp = timestamp
+      ? block.slice(block.indexOf(`int64 ${timestamp}`) + `int64 ${timestamp}`.length)
+      : "";
+    const messageBox = afterTimestamp.match(/int32 (\d+)/)?.[1];
+    const arrayStart = block.indexOf("array [");
+    const arrayEnd = block.indexOf("int64", arrayStart);
+    const contactsText = arrayStart === -1 || arrayEnd === -1 ? "" : block.slice(arrayStart, arrayEnd);
+    const contacts = [...contactsText.matchAll(/string "([^"]+)"/g)]
+      .map((match) => match[1])
+      .filter((value): value is string => value !== undefined);
+    const firstContact = contacts[0];
+
+    if (!body || !timestamp || !firstContact) continue;
+    if (fromFilter && !contacts.some((contact) => normalizePhone(contact) === fromFilter)) continue;
+
+    const contact = contacts.find((candidate) => normalizePhone(candidate) !== ownAddress) ?? firstContact;
+    const direction = messageBox === "2" ? "out" : "in";
+
+    messages.push(
+      toSmsMessage({
+        id: `${threadId}:${timestamp}`,
+        contact,
+        body,
+        timestamp: new Date(Number(timestamp)).toISOString(),
+        direction,
+        read: true,
+        contactNames,
+      }),
+    );
+  }
+
+  return messages.sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime());
+}
+
 // ---------------------------------------------------------------------------
 // kdeconnect-read-sms wrapper (inbox)
 // ---------------------------------------------------------------------------
@@ -104,6 +239,10 @@ function fetchSmsConversations(opts?: {
   fresh?: boolean;
   from?: string;
 }): MessageFull[] {
+  if (!cliExists("kdeconnect-read-sms")) {
+    return fetchSmsConversationsViaDbus(opts);
+  }
+
   const args: string[] = ["--json"];
   if (opts?.unread) args.push("--unread");
   if (opts?.fresh) args.push("--refresh");
@@ -286,7 +425,7 @@ export const smsProvider: MessagingProvider = {
   },
 
   async inbox(opts) {
-    const hasReader = cliExists("kdeconnect-read-sms");
+    const hasReader = cliExists("kdeconnect-read-sms") || cliExists("dbus-send");
 
     if (!hasReader) {
       // Fall back to cache only
@@ -308,6 +447,7 @@ export const smsProvider: MessagingProvider = {
         sinceCachedAt: opts?.sinceCachedAt,
         from: opts?.from,
       },
+      fallbackFetch: () => fetchSmsInbox(opts),
     });
   },
 
