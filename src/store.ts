@@ -103,6 +103,8 @@ export function getDb(): Database {
     ["cached_at", "TEXT NOT NULL DEFAULT ''"],
     ["thread_id", "TEXT"],
     ["rfc_message_id", "TEXT"],
+    ["reply_to_json", "TEXT"],
+    ["references_json", "TEXT"],
   ];
   for (const [column, definition] of messageColumns) {
     ensureColumn(db, "messages", column, definition);
@@ -231,9 +233,9 @@ export function upsertFullMessages(msgs: MessageFull[], threadId?: string): void
   const d = getDb();
   const stmt = d.prepare(`
     INSERT INTO messages
-      (id, provider, direction, account, from_json, to_json, subject, preview, body, body_format, date, unread, has_attachments, is_group, group_name, attachments_json, cached_at, thread_id, rfc_message_id)
+      (id, provider, direction, account, from_json, to_json, subject, preview, body, body_format, date, unread, has_attachments, is_group, group_name, attachments_json, cached_at, thread_id, rfc_message_id, reply_to_json, references_json)
     VALUES
-      ($id, $provider, $direction, $account, $from_json, $to_json, $subject, $preview, $body, $body_format, $date, $unread, $has_attachments, $is_group, $group_name, $attachments_json, $cached_at, $thread_id, $rfc_message_id)
+      ($id, $provider, $direction, $account, $from_json, $to_json, $subject, $preview, $body, $body_format, $date, $unread, $has_attachments, $is_group, $group_name, $attachments_json, $cached_at, $thread_id, $rfc_message_id, $reply_to_json, $references_json)
     ON CONFLICT(provider, id) DO UPDATE SET
       direction        = excluded.direction,
       account          = CASE WHEN excluded.account != '' THEN excluded.account ELSE messages.account END,
@@ -251,6 +253,8 @@ export function upsertFullMessages(msgs: MessageFull[], threadId?: string): void
       cached_at        = messages.cached_at,
       thread_id        = excluded.thread_id,
       rfc_message_id   = COALESCE(excluded.rfc_message_id, messages.rfc_message_id),
+      reply_to_json    = COALESCE(excluded.reply_to_json, messages.reply_to_json),
+      references_json  = COALESCE(excluded.references_json, messages.references_json),
       ${FROM_JSON_MERGE}
   `);
 
@@ -277,6 +281,8 @@ export function upsertFullMessages(msgs: MessageFull[], threadId?: string): void
         $cached_at: now,
         $thread_id: threadId ?? null,
         $rfc_message_id: msg.rfcMessageId ?? null,
+        $reply_to_json: msg.replyTo ? JSON.stringify(msg.replyTo) : null,
+        $references_json: msg.references ? JSON.stringify(msg.references) : null,
       });
     }
   });
@@ -329,6 +335,8 @@ function rowToFull(row: any): MessageFull {
     bodyFormat: (row.body_format as "text" | "html") ?? "text",
     attachments: row.attachments_json ? JSON.parse(row.attachments_json) : [],
     ...(row.rfc_message_id ? { rfcMessageId: row.rfc_message_id } : {}),
+    ...(row.reply_to_json ? { replyTo: JSON.parse(row.reply_to_json) } : {}),
+    ...(row.references_json ? { references: JSON.parse(row.references_json) } : {}),
   };
 }
 

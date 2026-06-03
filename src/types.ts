@@ -32,6 +32,10 @@ export interface MessageFull extends MessageEnvelope {
   attachments: Attachment[];
   /** RFC 822 Message-ID header (e.g. "<abc123@mail.example.com>") */
   rfcMessageId?: string;
+  /** Reply-To header recipients, when the provider exposes them. */
+  replyTo?: Contact[];
+  /** RFC 822 References header chain, ordered oldest to newest. */
+  references?: string[];
   direction: "in" | "out";
 }
 
@@ -79,9 +83,13 @@ export interface SendOptions {
   account?: string;
   /** RFC 822 Message-ID of the message being replied to (for In-Reply-To/References headers) */
   inReplyTo?: string;
+  /** RFC 822 References header chain for threaded replies. */
+  references?: string[];
   /** Provider-specific CLI flag overrides (password, host, port, etc.) */
   providerFlags?: Record<string, unknown>;
 }
+
+export interface ReplyOptions extends SendOptions {}
 
 export interface SendResult {
   ok: boolean;
@@ -142,6 +150,9 @@ export interface MessagingProvider {
 
   /** Send a message to a recipientId (email address, phone number, username) */
   send(recipientId: string, body: string, opts?: SendOptions): Promise<SendResult>;
+
+  /** Reply to an existing cached message. Providers may override for native threading. */
+  reply?(messageId: string, body: string, opts?: ReplyOptions): Promise<SendResult>;
 
   /** List recent messages */
   inbox(opts?: InboxOptions): Promise<MessageEnvelope[]>;

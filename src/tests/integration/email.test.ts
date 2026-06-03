@@ -1,5 +1,11 @@
 import { describe, expect, test } from "bun:test";
-import { emailMessageId, parseEmailMessageId } from "../../providers/email.ts";
+import {
+  buildEmailReferences,
+  emailMessageId,
+  emailReplySubject,
+  parseEmailMessageId,
+  resolveEmailReplyRecipient,
+} from "../../providers/email.ts";
 import * as store from "../../store.ts";
 import type { MessageFull } from "../../types.ts";
 
@@ -121,6 +127,165 @@ describe("email cache identity", () => {
 
   test("legacy numeric IDs still parse as UIDs", () => {
     expect(parseEmailMessageId("42")).toEqual({ uid: 42 });
+  });
+
+  test("reply metadata round-trips through the cache", () => {
+    const id = emailMessageId("a@example.com", "INBOX", Date.now());
+    store.upsertFullMessages([
+      {
+        ...makeEmail(id, "a@example.com", "metadata"),
+        rfcMessageId: "<message@example.com>",
+        replyTo: [{ name: "Replies", address: "reply-to@example.com" }],
+        references: ["<root@example.com>", "<message@example.com>"],
+      },
+    ]);
+
+    const cached = store.getCachedMessage("email", id);
+    expect(cached?.rfcMessageId).toBe("<message@example.com>");
+    expect(cached?.replyTo).toEqual([{ name: "Replies", address: "reply-to@example.com" }]);
+    expect(cached?.references).toEqual(["<root@example.com>", "<message@example.com>"]);
+  });
+});
+
+describe("email reply helpers", () => {
+  function makeReplyEmail(id: string, extras?: Partial<MessageFull>): MessageFull {
+    return {
+      id,
+      provider: "email",
+      account: "me@example.com",
+      from: { name: "Sender", address: "sender@example.com" },
+      to: [{ name: "Me", address: "me@example.com" }],
+      subject: "Original subject",
+      preview: "Original subject",
+      body: "body",
+      bodyFormat: "text",
+      date: new Date().toISOString(),
+      unread: false,
+      hasAttachments: false,
+      attachments: [],
+      direction: "in",
+      ...extras,
+    };
+  }
+
+  test("emailReplySubject prefixes Re: once", () => {
+    expect(emailReplySubject("Question")).toBe("Re: Question");
+    expect(emailReplySubject("Re: Question")).toBe("Re: Question");
+    expect(emailReplySubject("RE: Question")).toBe("RE: Question");
+    expect(emailReplySubject(undefined)).toBeUndefined();
+  });
+
+  test("buildEmailReferences appends original RFC message id without duplication", () => {
+    expect(
+      buildEmailReferences({
+        references: ["<root@example.com>"],
+        rfcMessageId: "<reply@example.com>",
+      }),
+    ).toEqual(["<root@example.com>", "<reply@example.com>"]);
+    expect(
+      buildEmailReferences({
+        references: ["<root@example.com>", "<reply@example.com>"],
+        rfcMessageId: "<reply@example.com>",
+      }),
+    ).toEqual(["<root@example.com>", "<reply@example.com>"]);
+  });
+
+  test("resolveEmailReplyRecipient prefers Reply-To over From", () => {
+    const original = makeReplyEmail("reply-target", {
+      from: { name: "Sender", address: "from@example.com" },
+      replyTo: [{ name: "Replies", address: "reply-to@example.com" }],
+    });
+
+    expect(resolveEmailReplyRecipient(original, original.subject, ["me@example.com"])).toBe(
+      "reply-to@example.com",
+    );
+  });
+
+  test("resolveEmailReplyRecipient preserves previous outbound alias", () => {
+    const subject = `Alias preservation ${Date.now()}`;
+    store.upsertFullMessages([
+      makeReplyEmail(`out-${subject}`, {
+        from: { name: "Me", address: "me@example.com" },
+        to: [{ name: "Alias", address: "alias@example.net" }],
+        subject,
+        direction: "out",
+      }),
+    ]);
+    const original = makeReplyEmail(`in-${subject}`, {
+      from: { name: "Sender", address: "sender@example.com" },
+      subject: `Re: ${subject}`,
+    });
+
+    expect(resolveEmailReplyRecipient(original, original.subject, ["me@example.com"])).toBe(
+      "alias@example.net",
+    );
+  });
+
+  test("resolveEmailReplyRecipient does not override Reply-To with previous alias", () => {
+    const subject = `Reply-To wins ${Date.now()}`;
+    store.upsertFullMessages([
+      makeReplyEmail(`out-${subject}`, {
+        from: { name: "Me", address: "me@example.com" },
+        to: [{ name: "Alias", address: "alias@example.net" }],
+        subject,
+        direction: "out",
+      }),
+    ]);
+    const original = makeReplyEmail(`in-${subject}`, {
+      from: { name: "Sender", address: "sender@example.com" },
+      replyTo: [{ name: "Replies", address: "reply-to@example.com" }],
+      subject: `Re: ${subject}`,
+    });
+
+    expect(resolveEmailReplyRecipient(original, original.subject, ["me@example.com"])).toBe(
+      "reply-to@example.com",
+    );
+  });
+
+  test("resolveEmailReplyRecipient targets the peer for outbound messages", () => {
+    const original = makeReplyEmail("outbound-reply", {
+      from: { name: "Me", address: "me@example.com" },
+      to: [{ name: "Peer", address: "peer@example.com" }],
+      direction: "out",
+      subject: undefined,
+    });
+
+    expect(resolveEmailReplyRecipient(original, original.subject, ["me@example.com"])).toBe(
+      "peer@example.com",
+    );
+  });
+});
+
+describe("reply CLI structure", () => {
+  test("CLI reply command does not contain email-specific threading logic", async () => {
+    const fs = await import("node:fs/promises");
+    const cliSource = await fs.readFile(new URL("../../cli.ts", import.meta.url), "utf-8");
+    const replyMatch = cliSource.match(/\.command\("reply <provider>[\s\S]*?^\}\);/m);
+
+    expect(replyMatch).not.toBeNull();
+    const replySource = replyMatch?.[0] ?? "";
+    expect(replySource).not.toContain('providerName === "email"');
+    expect(replySource).not.toContain("getPreviousOutboundRecipient");
+    expect(replySource).not.toContain("inReplyTo: original");
+  });
+});
+
+describe("email reply structure", () => {
+  test("email reply preserves cached message when fresh read cannot upgrade metadata", async () => {
+    const fs = await import("node:fs/promises");
+    const emailSource = await fs.readFile(
+      new URL("../../providers/email.ts", import.meta.url),
+      "utf-8",
+    );
+    const replyMatch = emailSource.match(/async reply\(messageId, body, opts\)[\s\S]*?^ {2}},/m);
+
+    expect(replyMatch).not.toBeNull();
+    const replySource = replyMatch?.[0] ?? "";
+    expect(replySource).toContain("needsMetadataRefresh");
+    expect(replySource).toContain("!original.replyTo");
+    expect(replySource).toContain("!original.references");
+    expect(replySource).toContain("const fetched = await emailProvider.read");
+    expect(replySource).toContain("if (fetched) original = fetched");
   });
 });
 

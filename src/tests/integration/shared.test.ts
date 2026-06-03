@@ -5,9 +5,17 @@
  * Uses a unique provider name to avoid collisions with real data.
  */
 import { describe, expect, test } from "bun:test";
-import { cacheSentMessage, readFromCacheOrFail } from "../../providers/shared.ts";
+import { mkdtempSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import {
+  cacheSentMessage,
+  readFromCacheOrFail,
+  replyViaSend,
+  resolveDefaultReply,
+} from "../../providers/shared.ts";
 import * as store from "../../store.ts";
-import type { MessageFull } from "../../types.ts";
+import type { MessageFull, MessagingProvider, SendOptions, SendResult } from "../../types.ts";
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -130,6 +138,154 @@ describe("cacheSentMessage", () => {
     const stored = store.getCachedMessage(TEST_PROVIDER, id);
     expect(stored).not.toBeNull();
     expect(stored?.preview).toBe("this should be the preview");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// reply helpers
+// ---------------------------------------------------------------------------
+
+describe("reply helpers", () => {
+  test("resolveDefaultReply targets the original sender", () => {
+    const original = makeFull(uniqueId(), {
+      from: { name: "Original Sender", address: "sender@example.com" },
+    });
+
+    expect(resolveDefaultReply(original)).toEqual({ recipientId: "sender@example.com" });
+  });
+
+  test("resolveDefaultReply rejects messages without sender addresses", () => {
+    const original = makeFull(uniqueId(), { from: null });
+
+    expect(() => resolveDefaultReply(original)).toThrow("no sender or conversation address");
+  });
+
+  test("resolveDefaultReply targets the conversation for group messages", () => {
+    const original = makeFull(uniqueId(), {
+      from: { name: "Group Sender", address: "sender-id" },
+      to: [{ name: "Group", address: "group-id" }],
+      isGroup: true,
+    });
+
+    expect(resolveDefaultReply(original)).toEqual({ recipientId: "group-id" });
+  });
+
+  test("resolveDefaultReply targets Signal-style group IDs stored as sender", () => {
+    const original = makeFull(uniqueId(), {
+      from: { name: "Sender [Group]", address: "group:signal-group-id" },
+      to: [],
+      isGroup: true,
+      groupName: "Group",
+    });
+
+    expect(resolveDefaultReply(original)).toEqual({ recipientId: "group:signal-group-id" });
+  });
+
+  test("resolveDefaultReply targets WhatsApp-style group names when addressed to self", () => {
+    const original = makeFull(uniqueId(), {
+      from: { name: "Participant", address: "participant-id" },
+      to: [{ name: "me", address: "me" }],
+      isGroup: true,
+      groupName: "Family Chat",
+    });
+
+    expect(resolveDefaultReply(original)).toEqual({ recipientId: "group:Family Chat" });
+  });
+
+  test("resolveDefaultReply targets the peer for outbound direct messages", () => {
+    const original = makeFull(uniqueId(), {
+      from: { name: "Me", address: "me" },
+      to: [{ name: "Peer", address: "peer-id" }],
+      direction: "out",
+    });
+
+    expect(resolveDefaultReply(original)).toEqual({ recipientId: "peer-id" });
+  });
+
+  test("replyViaSend delegates to provider.send with shared reply target", async () => {
+    const id = uniqueId();
+    store.upsertFullMessages([
+      makeFull(id, { from: { name: "Sender", address: "sender@example.com" } }),
+    ]);
+
+    let captured: { recipientId: string; body: string; opts?: SendOptions } | null = null;
+    const provider: MessagingProvider = {
+      name: TEST_PROVIDER,
+      displayName: "Test Provider",
+      isConfigured: () => true,
+      send: async (recipientId, body, opts): Promise<SendResult> => {
+        captured = { recipientId, body, opts };
+        return { ok: true, provider: TEST_PROVIDER, recipientId, messageId: "sent-1" };
+      },
+      inbox: async () => [],
+      read: async () => null,
+    };
+
+    const result = await replyViaSend(provider, id, "reply body", { subject: "ignored" });
+
+    expect(result.ok).toBe(true);
+    expect(captured).not.toBeNull();
+    const sent = captured as unknown as { recipientId: string; body: string; opts?: SendOptions };
+    expect(sent.recipientId).toBe("sender@example.com");
+    expect(sent.body).toBe("reply body");
+    expect(sent.opts).toEqual({ subject: "ignored" });
+  });
+
+  test("replyViaSend targets the peer for outbound cached direct messages", async () => {
+    const id = uniqueId();
+    store.upsertFullMessages([
+      makeFull(id, {
+        from: { name: "Me", address: "me" },
+        to: [{ name: "Peer", address: "peer-id" }],
+        direction: "out",
+      }),
+    ]);
+
+    let capturedRecipient = "";
+    const provider: MessagingProvider = {
+      name: TEST_PROVIDER,
+      displayName: "Test Provider",
+      isConfigured: () => true,
+      send: async (recipientId): Promise<SendResult> => {
+        capturedRecipient = recipientId;
+        return { ok: true, provider: TEST_PROVIDER, recipientId, messageId: "sent-outbound" };
+      },
+      inbox: async () => [],
+      read: async () => null,
+    };
+
+    const result = await replyViaSend(provider, id, "reply body");
+
+    expect(result.ok).toBe(true);
+    expect(capturedRecipient).toBe("peer-id");
+  });
+
+  test("replyViaSend reads --file bodies for providers without native file handling", async () => {
+    const id = uniqueId();
+    store.upsertFullMessages([
+      makeFull(id, { from: { name: "Sender", address: "sender@example.com" } }),
+    ]);
+    const dir = mkdtempSync(join(tmpdir(), "onemessage-reply-test-"));
+    const filePath = join(dir, "reply.txt");
+    writeFileSync(filePath, "body from file", "utf-8");
+
+    let capturedBody = "";
+    const provider: MessagingProvider = {
+      name: TEST_PROVIDER,
+      displayName: "Test Provider",
+      isConfigured: () => true,
+      send: async (recipientId, body): Promise<SendResult> => {
+        capturedBody = body;
+        return { ok: true, provider: TEST_PROVIDER, recipientId, messageId: "sent-2" };
+      },
+      inbox: async () => [],
+      read: async () => null,
+    };
+
+    const result = await replyViaSend(provider, id, "", { file: filePath });
+
+    expect(result.ok).toBe(true);
+    expect(capturedBody).toBe("body from file");
   });
 });
 

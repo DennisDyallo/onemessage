@@ -8,11 +8,24 @@
  *   - Outbound message envelope creation (signal, sms)
  */
 
+import { readFileSync } from "node:fs";
 import { daemonRequest, ensureDaemon } from "../daemons/shared.ts";
 import { getProvider } from "../registry.ts";
 import type { GetCachedInboxArgs } from "../store.ts";
 import * as store from "../store.ts";
-import type { MessageEnvelope, MessageFull } from "../types.ts";
+import type {
+  MessageEnvelope,
+  MessageFull,
+  MessagingProvider,
+  ReplyOptions,
+  SendOptions,
+  SendResult,
+} from "../types.ts";
+
+export interface ReplyResolution {
+  recipientId: string;
+  sendOptions?: SendOptions;
+}
 
 // ---------------------------------------------------------------------------
 // CLI binary check
@@ -158,6 +171,77 @@ export function readFromCacheOrFail(providerName: string, messageId: string): Me
 }
 
 // ---------------------------------------------------------------------------
+// Reply resolution
+// ---------------------------------------------------------------------------
+
+export function resolveDefaultReply(original: MessageFull): ReplyResolution {
+  const conversationAddress = original.to.find(
+    (contact) => contact.address && contact.address !== "me",
+  )?.address;
+  const recipientId = original.isGroup
+    ? ((original.from?.address?.startsWith("group:") ? original.from.address : undefined) ??
+      conversationAddress ??
+      (original.groupName ? `group:${original.groupName}` : undefined))
+    : original.direction === "out"
+      ? conversationAddress
+      : original.from?.address;
+  if (!recipientId) {
+    throw new Error("Cannot reply: original message has no sender or conversation address.");
+  }
+
+  return { recipientId };
+}
+
+export async function replyViaSend(
+  provider: MessagingProvider,
+  messageId: string,
+  body: string,
+  opts?: ReplyOptions,
+): Promise<SendResult> {
+  let finalBody = body;
+  if (opts?.file) {
+    try {
+      finalBody = readFileSync(opts.file, "utf-8");
+    } catch (err: unknown) {
+      return {
+        ok: false,
+        provider: provider.name,
+        recipientId: "",
+        error: `Cannot read "${opts.file}": ${err instanceof Error ? err.message : String(err)}`,
+      };
+    }
+  }
+
+  const original = readFromCacheOrFail(provider.name, messageId);
+  if (!original) {
+    return {
+      ok: false,
+      provider: provider.name,
+      recipientId: "",
+      error: `Message "${messageId}" not found in cache.`,
+    };
+  }
+
+  let resolution: ReplyResolution;
+  try {
+    resolution = resolveDefaultReply(original);
+  } catch (err: unknown) {
+    return {
+      ok: false,
+      provider: provider.name,
+      recipientId: "",
+      error: err instanceof Error ? err.message : String(err),
+    };
+  }
+
+  return provider.send(resolution.recipientId, finalBody, {
+    ...opts,
+    ...resolution.sendOptions,
+    providerFlags: opts?.providerFlags,
+  });
+}
+
+// ---------------------------------------------------------------------------
 // Outbound message envelope
 // ---------------------------------------------------------------------------
 
@@ -169,25 +253,41 @@ export function readFromCacheOrFail(providerName: string, messageId: string): Me
 export function cacheSentMessage(opts: {
   provider: string;
   messageId?: string;
+  account?: string;
   fromAddress: string;
   recipientId: string;
   body: string;
+  bodyFormat?: "text" | "html";
+  subject?: string;
   hasAttachments?: boolean;
+  rfcMessageId?: string;
+  replyTo?: { name: string; address: string }[];
+  references?: string[];
+  threadId?: string;
 }): void {
-  const envelope: MessageEnvelope = {
+  const message: MessageFull = {
     id: opts.messageId ?? String(Date.now()),
     provider: opts.provider,
+    account: opts.account,
     from: { name: "", address: opts.fromAddress },
     to: [{ name: "", address: opts.recipientId }],
+    subject: opts.subject,
     preview: opts.body.slice(0, 100),
+    body: opts.body,
+    bodyFormat: opts.bodyFormat ?? "text",
     date:
       opts.messageId && /^\d+$/.test(opts.messageId)
         ? new Date(Number(opts.messageId)).toISOString()
         : new Date().toISOString(),
     unread: false,
     hasAttachments: opts.hasAttachments ?? false,
+    attachments: [],
+    direction: "out",
+    ...(opts.rfcMessageId ? { rfcMessageId: opts.rfcMessageId } : {}),
+    ...(opts.replyTo ? { replyTo: opts.replyTo } : {}),
+    ...(opts.references ? { references: opts.references } : {}),
   };
-  store.upsertMessages([envelope], "out");
+  store.upsertFullMessages([message], opts.threadId);
 }
 
 // ---------------------------------------------------------------------------

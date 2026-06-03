@@ -8,8 +8,8 @@ import { EMAIL_DEFAULTS, loadConfig } from "../config.ts";
 import { registerProvider } from "../registry.ts";
 import { validateAttachment } from "../shared/attachment-validation.ts";
 import * as store from "../store.ts";
-import type { MessageEnvelope, MessageFull, MessagingProvider } from "../types.ts";
-import { inboxViaDaemon } from "./shared.ts";
+import type { Contact, MessageEnvelope, MessageFull, MessagingProvider } from "../types.ts";
+import { cacheSentMessage, inboxViaDaemon } from "./shared.ts";
 
 const FRESHNESS_MS = 5 * 60_000; // 5 minutes
 
@@ -23,6 +23,49 @@ function isOutgoingEmail(fromAddr: string | undefined, settings: ResolvedEmail):
   const stripTag = (addr: string) => addr.replace(/\+[^@]*@/, "@").toLowerCase();
   const normalizedFrom = stripTag(fromAddr);
   return ownAddresses.some((own) => stripTag(own) === normalizedFrom);
+}
+
+function contactsFromAddressObject(addresses: ParsedMail["replyTo"]): Contact[] {
+  return (addresses?.value ?? [])
+    .map((address) => ({ name: address.name || "", address: address.address || "" }))
+    .filter((address) => address.address.length > 0);
+}
+
+function referencesFromParsed(references: ParsedMail["references"]): string[] {
+  if (!references) return [];
+  return Array.isArray(references) ? references : [references];
+}
+
+export function emailReplySubject(subject: string | undefined): string | undefined {
+  if (!subject) return undefined;
+  return /^re:\s/i.test(subject) ? subject : `Re: ${subject}`;
+}
+
+export function buildEmailReferences(
+  original: Pick<MessageFull, "references" | "rfcMessageId">,
+): string[] | undefined {
+  const references = [...(original.references ?? [])];
+  if (original.rfcMessageId && !references.includes(original.rfcMessageId)) {
+    references.push(original.rfcMessageId);
+  }
+  return references.length > 0 ? references : undefined;
+}
+
+export function resolveEmailReplyRecipient(
+  original: MessageFull,
+  subject: string | undefined,
+  ownAccounts: string[],
+): string | null {
+  if (original.direction === "out") return original.to[0]?.address ?? null;
+
+  const replyToRecipient = original.replyTo?.find((contact) => contact.address)?.address;
+  if (replyToRecipient) return replyToRecipient;
+
+  const directRecipient = original.from?.address ?? null;
+  const previousAlias = subject
+    ? store.getPreviousOutboundRecipient("email", subject, ownAccounts)
+    : null;
+  return previousAlias ?? directRecipient;
 }
 
 // ---------------------------------------------------------------------------
@@ -269,6 +312,8 @@ async function fetchFullMessage(
 
       const flags = raw.flags ?? new Set<string>();
       const fromAddr = env?.from?.[0]?.address;
+      const replyTo = contactsFromAddressObject(parsed.replyTo);
+      const references = referencesFromParsed(parsed.references);
       return {
         id: emailMessageId(account, folder, raw.uid),
         provider: "email",
@@ -296,6 +341,8 @@ async function fetchFullMessage(
           return attachment;
         }),
         ...(parsed.messageId ? { rfcMessageId: parsed.messageId } : {}),
+        ...(replyTo.length > 0 ? { replyTo } : {}),
+        ...(references.length > 0 ? { references } : {}),
         direction: isOutgoingEmail(fromAddr, s) ? "out" : "in",
       };
     } finally {
@@ -407,7 +454,8 @@ const emailProvider: MessagingProvider = {
       ...(opts?.cc && { cc: opts.cc.join(", ") }),
       ...(opts?.bcc && { bcc: opts.bcc.join(", ") }),
       ...(opts?.replyTo && { replyTo: opts.replyTo }),
-      ...(opts?.inReplyTo && { inReplyTo: opts.inReplyTo, references: opts.inReplyTo }),
+      ...(opts?.inReplyTo && { inReplyTo: opts.inReplyTo }),
+      ...(opts?.references && { references: opts.references }),
     };
 
     if (isHtml) {
@@ -418,6 +466,20 @@ const emailProvider: MessagingProvider = {
 
     try {
       const info = await transporter.sendMail(message);
+      cacheSentMessage({
+        provider: "email",
+        messageId: info.messageId,
+        account: from,
+        fromAddress: from,
+        recipientId,
+        body: finalBody,
+        bodyFormat: isHtml ? "html" : "text",
+        subject: message.subject?.toString(),
+        hasAttachments: attachments.length > 0,
+        rfcMessageId: info.messageId,
+        ...(opts?.replyTo ? { replyTo: [{ name: "", address: opts.replyTo }] } : {}),
+        ...(opts?.references ? { references: opts.references } : {}),
+      });
       return { ok: true, provider: "email", recipientId, messageId: info.messageId };
     } catch (err: unknown) {
       return {
@@ -427,6 +489,51 @@ const emailProvider: MessagingProvider = {
         error: err instanceof Error ? err.message : String(err),
       };
     }
+  },
+
+  async reply(messageId, body, opts) {
+    const s = requireSettings(opts?.providerFlags);
+    let original = store.getCachedMessage("email", messageId);
+    const needsMetadataRefresh =
+      !original ||
+      (original.direction !== "out" &&
+        (!original.rfcMessageId || !original.replyTo || !original.references));
+
+    if (needsMetadataRefresh) {
+      const fetched = await emailProvider.read(messageId, {
+        account: opts?.account,
+        fresh: true,
+        providerFlags: opts?.providerFlags,
+      });
+      if (fetched) original = fetched;
+    }
+
+    if (!original) {
+      return {
+        ok: false,
+        provider: "email",
+        recipientId: "",
+        error: `Message "${messageId}" not found in cache or mailbox.`,
+      };
+    }
+
+    const subject = opts?.subject ?? emailReplySubject(original.subject);
+    const recipientId = resolveEmailReplyRecipient(original, subject, s.accounts);
+    if (!recipientId) {
+      return {
+        ok: false,
+        provider: "email",
+        recipientId: "",
+        error: "Cannot reply: original message has no sender or Reply-To address.",
+      };
+    }
+
+    return emailProvider.send(recipientId, body, {
+      ...opts,
+      subject,
+      inReplyTo: opts?.inReplyTo ?? original.rfcMessageId,
+      references: opts?.references ?? buildEmailReferences(original),
+    });
   },
 
   async inbox(opts) {
