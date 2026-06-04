@@ -1,5 +1,5 @@
 /**
- * Unit tests for SMS direction detection via toSmsMessage().
+ * Unit tests for SMS direction detection via production toSmsMessage().
  *
  * toSmsMessage() receives an explicit "direction" field from the
  * kdeconnect-read-sms JSON output and propagates it directly to
@@ -9,44 +9,14 @@
  * set correctly for each direction.
  */
 import { describe, expect, test } from "bun:test";
-import { smsProvider } from "../../providers/sms.ts";
+import { cacheSentMessage } from "../../providers/shared.ts";
+import {
+  pruneOptimisticSmsSentDuplicates,
+  smsProvider,
+  toSmsMessage,
+} from "../../providers/sms.ts";
 import * as store from "../../store.ts";
 import type { MessageEnvelope, MessageFull } from "../../types.ts";
-
-// ---------------------------------------------------------------------------
-// Inline replica of toSmsMessage() from sms.ts
-// ---------------------------------------------------------------------------
-
-function toSmsMessage(opts: {
-  id: string;
-  contact: string;
-  body: string;
-  timestamp: string;
-  direction: "in" | "out";
-  read: boolean;
-  contactNames?: Map<string, string>;
-}): MessageFull {
-  const { id, contact, body, timestamp, direction, read, contactNames } = opts;
-  const contactName = contactNames?.get(contact) ?? contact;
-  return {
-    id,
-    provider: "sms",
-    from:
-      direction === "in" ? { name: contactName, address: contact } : { name: "me", address: "me" },
-    to:
-      direction === "in"
-        ? [{ name: "me", address: "me" }]
-        : [{ name: contactName, address: contact }],
-    preview: body.slice(0, 100),
-    body,
-    bodyFormat: "text",
-    attachments: [],
-    date: timestamp,
-    unread: !read,
-    hasAttachments: false,
-    direction,
-  };
-}
 
 // ---------------------------------------------------------------------------
 // Tests
@@ -218,6 +188,112 @@ describe("SMS contact name enrichment", () => {
     });
     expect(msg.from?.name).toBe("+46799999999");
     expect(msg.from?.address).toBe("+46799999999");
+  });
+});
+
+describe("SMS sent cache reconciliation", () => {
+  function makeOptimisticSent(
+    id: string,
+    body: string,
+    recipientId: string,
+    date: string,
+  ): MessageFull {
+    return {
+      id,
+      provider: "sms",
+      from: { name: "", address: "Pixel Test Device" },
+      to: [{ name: "", address: recipientId }],
+      preview: body,
+      body,
+      bodyFormat: "text",
+      date,
+      unread: false,
+      hasAttachments: false,
+      attachments: [],
+      direction: "out",
+    };
+  }
+
+  test("KDE-confirmed outgoing rows replace optimistic sent cache rows", () => {
+    const unique = `__test_sms_sent_dedupe_${Date.now()}__`;
+    const recipientId = "+15555550999";
+    const canonicalId = `42:${Date.now()}`;
+    const canonical: MessageFull = {
+      id: canonicalId,
+      provider: "sms",
+      from: { name: "me", address: "me" },
+      to: [{ name: recipientId, address: recipientId }],
+      preview: unique,
+      body: unique,
+      bodyFormat: "text",
+      date: new Date().toISOString(),
+      unread: false,
+      hasAttachments: false,
+      attachments: [],
+      direction: "out",
+    };
+
+    try {
+      cacheSentMessage({
+        provider: "sms",
+        fromAddress: "Pixel Test Device",
+        recipientId,
+        body: unique,
+      });
+
+      store.upsertFullMessages([canonical], "42");
+      pruneOptimisticSmsSentDuplicates([canonical]);
+
+      const matches = store.searchCached(unique, "sms", { limit: 10 });
+      expect(matches.map((message) => message.id)).toEqual([canonicalId]);
+    } finally {
+      const ids = store.searchCached(unique, "sms", { limit: 10 }).map((message) => message.id);
+      store.deleteMessages("sms", [...ids, canonicalId]);
+    }
+  });
+
+  test("dedupe removes only the closest optimistic row for repeated identical texts", () => {
+    const unique = `__test_sms_sent_repeat_${Date.now()}__`;
+    const recipientId = "+15555550888";
+    const canonicalId = `43:${Date.now()}`;
+    const canonicalDate = new Date().toISOString();
+    const closeOptimisticId = `${unique}:close`;
+    const olderOptimisticId = `${unique}:older`;
+    const canonical: MessageFull = {
+      id: canonicalId,
+      provider: "sms",
+      from: { name: "me", address: "me" },
+      to: [{ name: recipientId, address: recipientId }],
+      preview: unique,
+      body: unique,
+      bodyFormat: "text",
+      date: canonicalDate,
+      unread: false,
+      hasAttachments: false,
+      attachments: [],
+      direction: "out",
+    };
+
+    try {
+      store.upsertFullMessages([
+        makeOptimisticSent(closeOptimisticId, unique, recipientId, canonicalDate),
+        makeOptimisticSent(
+          olderOptimisticId,
+          unique,
+          recipientId,
+          new Date(Date.now() - 5 * 60_000).toISOString(),
+        ),
+      ]);
+
+      store.upsertFullMessages([canonical], "43");
+      pruneOptimisticSmsSentDuplicates([canonical]);
+
+      expect(store.getCachedMessage("sms", closeOptimisticId)).toBeNull();
+      expect(store.getCachedMessage("sms", olderOptimisticId)?.id).toBe(olderOptimisticId);
+      expect(store.getCachedMessage("sms", canonicalId)?.id).toBe(canonicalId);
+    } finally {
+      store.deleteMessages("sms", [closeOptimisticId, olderOptimisticId, canonicalId]);
+    }
   });
 });
 

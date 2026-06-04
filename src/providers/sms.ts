@@ -277,7 +277,7 @@ interface SmsThreadHistory {
 }
 
 /** Build a MessageFull for an SMS message given contact info and message data. */
-function toSmsMessage(opts: {
+export function toSmsMessage(opts: {
   id: string;
   contact: string;
   body: string;
@@ -306,6 +306,46 @@ function toSmsMessage(opts: {
     hasAttachments: false,
     direction,
   };
+}
+
+export function pruneOptimisticSmsSentDuplicates(
+  canonicalOutgoing: MessageFull[],
+  windowMs = 10 * 60_000,
+): void {
+  if (canonicalOutgoing.length === 0) return;
+
+  const d = store.getDb();
+  const selectCandidate = d.prepare(`
+    SELECT id
+    FROM messages
+    WHERE provider = 'sms'
+      AND direction = 'out'
+      AND thread_id IS NULL
+      AND body = ?
+      AND json_extract(to_json, '$[0].address') = ?
+      AND COALESCE(json_extract(from_json, '$.address'), '') != 'me'
+      AND ABS(strftime('%s', date) - strftime('%s', ?)) <= ?
+    ORDER BY ABS(strftime('%s', date) - strftime('%s', ?)) ASC
+    LIMIT 1
+  `);
+  const deleteCandidate = d.prepare("DELETE FROM messages WHERE provider = 'sms' AND id = ?");
+  const windowSeconds = Math.ceil(windowMs / 1000);
+
+  const tx = d.transaction(() => {
+    for (const msg of canonicalOutgoing) {
+      const recipient = msg.to[0]?.address;
+      if (!recipient || !msg.body) continue;
+      const candidate = selectCandidate.get(
+        msg.body,
+        recipient,
+        msg.date,
+        windowSeconds,
+        msg.date,
+      ) as { id: string } | null;
+      if (candidate) deleteCandidate.run(candidate.id);
+    }
+  });
+  tx();
 }
 
 function fetchSmsConversations(opts?: {
@@ -451,7 +491,10 @@ export function fetchSmsInbox(opts?: { unread?: boolean; fresh?: boolean; from?:
     const incoming = messages.filter((m) => m.direction === "in");
     const outgoing = messages.filter((m) => m.direction === "out");
     if (incoming.length > 0) store.upsertFullMessages(incoming);
-    if (outgoing.length > 0) store.upsertFullMessages(outgoing);
+    if (outgoing.length > 0) {
+      store.upsertFullMessages(outgoing);
+      pruneOptimisticSmsSentDuplicates(outgoing);
+    }
     console.error(`[sms] Stored ${incoming.length} in + ${outgoing.length} out messages`);
   }
   store.recordFetch("sms");
@@ -558,7 +601,10 @@ export const smsProvider: MessagingProvider = {
           const incoming = messages.filter((m) => m.direction === "in");
           const outgoing = messages.filter((m) => m.direction === "out");
           if (incoming.length > 0) store.upsertFullMessages(incoming, messageId);
-          if (outgoing.length > 0) store.upsertFullMessages(outgoing, messageId);
+          if (outgoing.length > 0) {
+            store.upsertFullMessages(outgoing, messageId);
+            pruneOptimisticSmsSentDuplicates(outgoing);
+          }
           console.error(
             `[sms] Stored ${incoming.length} in + ${outgoing.length} out messages (thread ${threadId})`,
           );
