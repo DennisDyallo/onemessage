@@ -118,12 +118,13 @@ onemessage contacts whatsapp
 | `auth <provider>` | Set up or check provider authentication |
 | `me [body]` | Send to the configured self target |
 | `contacts [provider]` | List known contacts |
+| `cache list\|get\|set\|unset` | Inspect or configure provider cache freshness |
 | `status` | Show all providers and config status |
 | `daemon start\|stop\|restart\|status` | Manage background polling daemon |
 
 **Common flags:**
 
-- `--json` — output as JSON on data-returning commands (`send`, `reply`, `inbox`, `read`, `search`, `status`, `contacts`, `daemon status`)
+- `--json` — output as JSON on data-returning commands (`send`, `reply`, `inbox`, `read`, `search`, `status`, `contacts`, `cache list`, `cache get`, `daemon status`)
 - `--limit <n>` / `-n <n>` — max messages (default: 10)
 - `--fresh` — bypass cache, fetch directly from source
 - `--unread` / `-u` — unread messages only
@@ -131,6 +132,21 @@ onemessage contacts whatsapp
 - `-s, --subject <text>` — subject line (email)
 - `-f, --file <path>` — read message body from file
 - `-a, --attach <files...>` — attach files (email)
+
+## Cache Policy
+
+`inbox` and `search` use a local SQLite cache. By default, providers refresh at most every `30s`, except Instagram, which defaults to `2h` because its upstream API is rate-limit sensitive. `--fresh` bypasses the cache for a single command.
+
+Inspect and configure cache freshness per provider:
+
+```bash
+onemessage cache list
+onemessage cache get sms --json
+onemessage cache set sms 5m
+onemessage cache unset sms
+```
+
+Durations accept integer `ms`, `s`, `m`, or `h` units. Non-Instagram providers require at least `1s`. Instagram requires at least `2h`; lower values in config are ignored and shown as rejected by `cache get`/`cache list`.
 
 ## Provider Setup
 

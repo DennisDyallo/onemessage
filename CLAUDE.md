@@ -71,7 +71,7 @@ Baileys socket creation is shared between auth and daemon via `src/providers/wha
 ### Cache layer
 
 `src/store.ts` provides a SQLite message cache. Key concepts:
-- **Freshness gating**: `isFresh(provider, maxAgeMs)` checks `fetch_log` table — providers skip re-fetch if data is recent enough. `--fresh` flag bypasses this.
+- **Freshness gating**: `isFresh(provider, maxAgeMs)` checks `fetch_log` table — providers skip re-fetch if data is recent enough. Provider TTLs come from `getProviderFreshnessMs(provider)` / top-level `cache.providers.<provider>.freshnessMs`; `--fresh` bypasses this per command.
 - **Two upsert paths**: `upsertMessages` (envelope-only, from inbox listings) and `upsertFullMessages` (with body, from receive/read operations)
 - **Thread support**: SMS conversations use `thread_id` column; thread messages are excluded from inbox listings
 
@@ -167,7 +167,7 @@ async inbox(opts) {
 
   return inboxViaDaemon({
     provider: "x",
-    freshnessMs: 30_000,
+    freshnessMs: getProviderFreshnessMs("x"),
     account: settings.account,
     fresh: opts?.fresh,
     cacheArgs: {
@@ -248,7 +248,7 @@ Before adding any feature, run it through this filter:
 7. Create `src/daemons/<name>.ts` implementing `ProviderAdapter` (use `daemons/email.ts` as template). The adapter's `fetch()` MUST call `store.recordFetch("<name>", account)` after success — the freshness gate depends on it.
 8. Add the adapter to the `adapters` array in `daemon.ts` `startAdapters()`
 9. Add `<name>?: { enabled?: boolean; pollIntervalMs?: number }` to `DaemonConfig.providers` in `config.ts`
-10. Provider `inbox()` should call `inboxViaDaemon({...})` — not invent a fresh `isFresh`/`recordFetch`/`fetchX` triplet inline.
+10. Provider `inbox()` should call `inboxViaDaemon({...})` with `freshnessMs: getProviderFreshnessMs("<name>")` — not invent a fresh `isFresh`/`recordFetch`/`fetchX` triplet inline.
 
 ## Async vs Sync CLI calls
 
