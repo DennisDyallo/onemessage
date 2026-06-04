@@ -1,4 +1,4 @@
-import { loadConfig } from "../config.ts";
+import { getMinimumProviderFreshnessMs, loadConfig } from "../config.ts";
 import { fetchInstagramInbox } from "../providers/instagram.ts";
 import { cliExists } from "../providers/shared.ts";
 import type { DaemonOrchestrator, DaemonResponse, IpcCapableAdapter } from "./adapter.ts";
@@ -9,10 +9,11 @@ export class InstagramAdapter implements IpcCapableAdapter {
   private username: string | null = null;
   private lastFetchAt = 0;
   // Per-thread rate-limit timestamps. The fetch-thread IPC is rate-limited independently
-  // per thread ID (Instagram allows fetching distinct threads at roughly 1/60s each).
+  // per thread ID.
   // Inbox rate-limit (lastFetchAt) is a separate, single-channel counter.
   private lastThreadFetchAt = new Map<string, number>();
-  private static readonly MIN_FETCH_INTERVAL_MS = 60_000; // hard 60s floor for live Instagram API calls
+  // Hard floor for live Instagram API calls, including CLI --fresh paths.
+  private static readonly MIN_FETCH_INTERVAL_MS = getMinimumProviderFreshnessMs("instagram");
 
   start(orchestrator: DaemonOrchestrator): void {
     const config = loadConfig();
@@ -50,7 +51,7 @@ export class InstagramAdapter implements IpcCapableAdapter {
     // Note on lastThreadFetchAt timing: fetchThreadMessages() swallows CLI errors and returns []
     // rather than throwing. That's intentional — even a failed/empty thread response means we DID
     // contact (or attempt to contact) Instagram, which counts toward their rate-limit detection.
-    // Advancing lastThreadFetchAt after the await is therefore correct: we want the 60s window to
+    // Advancing lastThreadFetchAt after the await is therefore correct: we want the guard window to
     // start on any API touch, not only on success. Contrast with actuallyFetch() where
     // fetchInstagramInbox() throws on hard failure (e.g. CLI not found) and the timestamp
     // correctly doesn't advance.

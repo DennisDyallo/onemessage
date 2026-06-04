@@ -388,7 +388,7 @@ describe("instagramProvider.inbox via inboxViaDaemon", () => {
   test("InstagramAdapter has MIN_FETCH_INTERVAL_MS rate limit guard (structural proof)", async () => {
     // This test proves Instagram has a defensive rate limit to prevent --fresh abuse.
     // Pre-migration, --fresh bypassed freshness checks. Post-migration, the adapter
-    // enforces a hard 60s minimum between live Instagram API calls regardless of caller.
+    // enforces the shared Instagram minimum between live Instagram API calls regardless of caller.
     //
     // Strategy: Read the adapter source, assert MIN_FETCH_INTERVAL_MS exists and is used in fetch logic.
 
@@ -401,8 +401,8 @@ describe("instagramProvider.inbox via inboxViaDaemon", () => {
     // Assert: MIN_FETCH_INTERVAL_MS constant exists
     expect(adapterSource).toContain("MIN_FETCH_INTERVAL_MS");
 
-    // Assert: MIN_FETCH_INTERVAL_MS is set to 60_000 (60s hard floor)
-    expect(adapterSource).toContain("MIN_FETCH_INTERVAL_MS = 60_000");
+    // Assert: MIN_FETCH_INTERVAL_MS uses the shared Instagram cache safety floor.
+    expect(adapterSource).toContain('getMinimumProviderFreshnessMs("instagram")');
 
     // Assert: fetch() or actuallyFetch() checks sinceLast against MIN_FETCH_INTERVAL_MS
     expect(adapterSource).toMatch(/sinceLast < \w+\.MIN_FETCH_INTERVAL_MS/);
