@@ -23,14 +23,16 @@ export class SmsAdapter implements ProviderAdapter {
   }
 
   async fetch(): Promise<void> {
-    if (!cliExists("kdeconnect-read-sms")) {
-      throw new Error("SMS polling requires kdeconnect-read-sms");
+    if (!this.isActive()) {
+      throw new Error("SMS polling requires KDE Connect SMS read support");
     }
     await fetchSmsInbox({ fresh: true });
   }
 
   isActive(): boolean {
-    return cliExists("kdeconnect-read-sms") && resolveSmsSettings() !== null;
+    return (
+      (cliExists("dbus-send") || cliExists("kdeconnect-read-sms")) && resolveSmsSettings() !== null
+    );
   }
 
   statusInfo(): Record<string, unknown> {

@@ -24,7 +24,7 @@ onemessage daemon status  # Check if background daemon is running
 - WhatsApp: @whiskeysockets/baileys (direct protocol, no external binary)
 - Email: nodemailer (SMTP) + imapflow (IMAP), designed for Proton Mail Bridge
 - Signal: shells out to `signal-cli` (external binary)
-- SMS: shells out to `kdeconnect-cli` / `kdeconnect-read-sms` (external binaries)
+- SMS: shells out to `kdeconnect-cli` for send and KDE Connect DBus (`dbus-send`) for inbox reads
 - Telegram Bot: Bot API
 - Instagram: `instagram-cli`
 - Matrix: Matrix Client-Server API
@@ -40,7 +40,7 @@ Verb-first CLI (`onemessage <command> <provider> [options]`). Entry point is `sr
 Each provider implements `MessagingProvider` (defined in `src/types.ts`): `send`, `inbox`, `read`, and optionally `search`. Providers live in `src/providers/<name>.ts` and are barrel-imported via `src/providers/index.ts`.
 
 Two provider styles exist:
-- **Shell providers** (Signal, SMS): use `runCli`/`runCliAsync` from `src/providers/shared.ts` to invoke external CLIs, parse their JSON/text output
+- **Shell providers** (Signal, SMS): use `runCli`/`runCliAsync` from `src/providers/shared.ts` to invoke external CLIs/DBus tools, parse their JSON/text output
 - **Library providers** (Email, WhatsApp): use npm packages directly
 
 ### Daemon adapter architecture
@@ -52,7 +52,7 @@ The **unified daemon** (`src/daemons/daemon.ts`) is a thin orchestrator that del
 | WhatsApp | `src/daemons/whatsapp.ts` | Real-time | Baileys WebSocket, implements `IpcCapableAdapter` for send/resolve-group/list-groups |
 | Signal | `src/daemons/signal.ts` | Real-time | signal-cli daemon subprocess |
 | Email | `src/daemons/email.ts` | Polling | IMAP via imapflow |
-| SMS | `src/daemons/sms.ts` | Polling | KDE Connect CLI |
+| SMS | `src/daemons/sms.ts` | Polling | KDE Connect DBus |
 | Telegram Bot | `src/daemons/telegram-bot.ts` | Polling | Bot API |
 | Instagram | `src/daemons/instagram.ts` | Polling | instagram-cli |
 | Matrix | `src/daemons/matrix.ts` | Polling | Matrix CS API /sync |

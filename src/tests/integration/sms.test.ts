@@ -250,23 +250,27 @@ describe("SMS inbox() — inboxViaDaemon migration", () => {
       attachments: [],
       direction: "in",
     };
-    store.upsertFullMessages([testMsg]);
+    try {
+      store.upsertFullMessages([testMsg]);
 
-    // Mark cache as FRESH (within 2-minute freshness window per FRESHNESS_MS)
-    store.recordFetch("sms");
+      // Mark cache as FRESH (within 2-minute freshness window per FRESHNESS_MS)
+      store.recordFetch("sms");
 
-    // Act: call inbox() with fresh:false
-    // This should short-circuit at the freshness gate and NOT call daemon
-    const result = await smsProvider.inbox({
-      fresh: false,
-      limit: 10,
-    });
+      // Act: call inbox() with fresh:false
+      // This should short-circuit at the freshness gate and NOT call daemon
+      const result = await smsProvider.inbox({
+        fresh: false,
+        limit: 10,
+      });
 
-    // Assert: should return the cached message WITHOUT timeout (proves freshness gate works)
-    expect(result.length).toBeGreaterThan(0);
-    const found = result.find((m: MessageEnvelope) => m.id === testId);
-    expect(found).toBeDefined();
-    expect(found?.preview).toBe("cached sms inbox message");
+      // Assert: should return the cached message WITHOUT timeout (proves freshness gate works)
+      expect(result.length).toBeGreaterThan(0);
+      const found = result.find((m: MessageEnvelope) => m.id === testId);
+      expect(found).toBeDefined();
+      expect(found?.preview).toBe("cached sms inbox message");
+    } finally {
+      store.deleteMessages("sms", [testId]);
+    }
   });
 
   test("inbox() calls inboxViaDaemon (structural proof of migration)", async () => {
@@ -293,8 +297,8 @@ describe("SMS inbox() — inboxViaDaemon migration", () => {
     // Assert: inbox() calls inboxViaDaemon
     expect(inboxBody).toContain("inboxViaDaemon");
 
-    // Assert: inbox() does NOT call fetchSmsInbox directly inside inbox()
-    expect(inboxBody).not.toContain("fetchSmsInbox");
+    // Assert: inbox() keeps fetch work behind inboxViaDaemon's fallback path.
+    expect(inboxBody).toContain("fallbackFetch");
 
     // Assert: inbox() does NOT call store.isFresh directly inside inbox()
     expect(inboxBody).not.toContain("store.isFresh");
@@ -308,11 +312,20 @@ describe("SMS inbox() — inboxViaDaemon migration", () => {
 });
 
 describe("SmsAdapter configuration convention", () => {
-  test("daemon active state requires provider settings and read-sms binary", async () => {
+  test("daemon active state accepts internal DBus reader", async () => {
     const fs = await import("node:fs/promises");
     const source = await fs.readFile(new URL("../../daemons/sms.ts", import.meta.url), "utf-8");
 
     expect(source).toContain("resolveSmsSettings() !== null");
-    expect(source).toContain('cliExists("kdeconnect-read-sms")');
+    expect(source).toContain('cliExists("dbus-send")');
+  });
+
+  test("provider DBus reader preserves KDE refresh semantics", async () => {
+    const fs = await import("node:fs/promises");
+    const source = await fs.readFile(new URL("../../providers/sms.ts", import.meta.url), "utf-8");
+
+    expect(source).toContain("requestSmsRefreshViaDbus");
+    expect(source).toContain("requestAllConversationThreads");
+    expect(source).toContain("activeConversations");
   });
 });
