@@ -94,7 +94,7 @@ function parseDbusConversationBlocks(stdout: string): string[] {
     }
     if (!current) continue;
     current.push(line);
-    if (line === "         }") {
+    if (line === "      }" || line === "         }") {
       blocks.push(current.join("\n"));
       current = null;
     }
@@ -125,38 +125,14 @@ function requestSmsRefreshViaDbus(deviceId: string): void {
   Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 3_000);
 }
 
-function fetchSmsConversationsViaDbus(opts?: { from?: string }): MessageFull[] {
-  const settings = resolveSettings();
-  if (!settings) return [];
-
-  const deviceId = resolveDeviceId(settings.device);
-  if (!deviceId) return [];
-
-  const result = runCli(
-    "dbus-send",
-    [
-      "--session",
-      "--dest=org.kde.kdeconnect",
-      "--type=method_call",
-      "--print-reply",
-      `/modules/kdeconnect/devices/${deviceId}`,
-      "org.kde.kdeconnect.device.conversations.activeConversations",
-    ],
-    { stderrFilters: KDE_STDERR_FILTERS, timeoutMs: 15_000 },
-  );
-
-  if (!result.ok || !result.stdout) {
-    if (result.stderr) process.stderr.write(`[sms] ${result.stderr}\n`);
-    return [];
-  }
-
+function parseSmsMessagesFromDbusText(stdout: string, opts?: { from?: string }): MessageFull[] {
   const contactNames = store.getContactNamesByAddress("sms");
   const config = loadConfig();
   const ownAddress = normalizePhone(config.signal?.phone ?? "");
   const fromFilter = opts?.from ? normalizePhone(opts.from) : null;
   const messages: MessageFull[] = [];
 
-  for (const block of parseDbusConversationBlocks(result.stdout)) {
+  for (const block of parseDbusConversationBlocks(stdout)) {
     const body = extractDbusString(block);
     const timestampMatches = [...block.matchAll(/int64 (\d+)/g)]
       .map((match) => match[1])
@@ -203,8 +179,74 @@ function fetchSmsConversationsViaDbus(opts?: { from?: string }): MessageFull[] {
   return messages.sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime());
 }
 
+function fetchSmsConversationsViaDbus(opts?: { from?: string }): MessageFull[] {
+  const settings = resolveSettings();
+  if (!settings) return [];
+
+  const deviceId = resolveDeviceId(settings.device);
+  if (!deviceId) return [];
+
+  const result = runCli(
+    "dbus-send",
+    [
+      "--session",
+      "--dest=org.kde.kdeconnect",
+      "--type=method_call",
+      "--print-reply",
+      `/modules/kdeconnect/devices/${deviceId}`,
+      "org.kde.kdeconnect.device.conversations.activeConversations",
+    ],
+    { stderrFilters: KDE_STDERR_FILTERS, timeoutMs: 15_000 },
+  );
+
+  if (!result.ok || !result.stdout) {
+    if (result.stderr) process.stderr.write(`[sms] ${result.stderr}\n`);
+    return [];
+  }
+
+  return parseSmsMessagesFromDbusText(result.stdout, opts);
+}
+
 function canReadSmsViaDbus(): boolean {
   return cliExists("dbus-send") && resolveSettings() !== null;
+}
+
+function fetchThreadHistoryViaDbus(threadId: number): MessageFull[] {
+  const settings = resolveSettings();
+  if (!settings || !cliExists("dbus-monitor")) return [];
+
+  const deviceId = resolveDeviceId(settings.device);
+  if (!deviceId) return [];
+
+  const result = runCli(
+    "/bin/sh",
+    [
+      "-c",
+      [
+        "tmp=$(mktemp)",
+        "dbus-monitor --session \"type='signal',interface='org.kde.kdeconnect.device.conversations'\" > \"$tmp\" 2>&1 & mon=$!",
+        "sleep 1",
+        `dbus-send --session --dest=org.kde.kdeconnect --type=method_call /modules/kdeconnect/devices/${deviceId} org.kde.kdeconnect.device.conversations.requestConversation int64:${threadId} int32:0 int32:100`,
+        "sleep 6",
+        "kill $mon 2>/dev/null",
+        'cat "$tmp"',
+        'rm -f "$tmp"',
+      ].join("; "),
+    ],
+    { stderrFilters: KDE_STDERR_FILTERS, timeoutMs: 15_000 },
+  );
+
+  if (!result.ok || !result.stdout) {
+    if (result.stderr) process.stderr.write(`[sms] ${result.stderr}\n`);
+    return [];
+  }
+
+  const messages = parseSmsMessagesFromDbusText(result.stdout).filter((message) => {
+    const [messageThreadId] = message.id.split(":");
+    return messageThreadId === String(threadId);
+  });
+
+  return messages.sort((a, b) => new Date(a.date).getTime() - new Date(b.date).getTime());
 }
 
 // ---------------------------------------------------------------------------
@@ -496,7 +538,7 @@ export const smsProvider: MessagingProvider = {
   async read(messageId, opts) {
     // If messageId contains ":", it's a specific message within a thread (threadId:subId)
     // If it's a plain number, it's a thread_id — fetch full thread history
-    if (!messageId.includes(":") && cliExists("kdeconnect-read-sms")) {
+    if (!messageId.includes(":")) {
       const threadId = parseInt(messageId, 10);
       if (!Number.isNaN(threadId)) {
         // Check cache first (unless fresh requested)
@@ -509,7 +551,11 @@ export const smsProvider: MessagingProvider = {
         }
 
         // Fetch from phone
-        const messages = fetchThreadHistory(threadId);
+        const dbusMessages = fetchThreadHistoryViaDbus(threadId);
+        const messages =
+          dbusMessages.length > 0 || !cliExists("kdeconnect-read-sms")
+            ? dbusMessages
+            : fetchThreadHistory(threadId);
         if (messages.length > 0) {
           const incoming = messages.filter((m) => m.direction === "in");
           const outgoing = messages.filter((m) => m.direction === "out");

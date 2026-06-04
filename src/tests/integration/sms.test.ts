@@ -328,4 +328,13 @@ describe("SmsAdapter configuration convention", () => {
     expect(source).toContain("requestAllConversationThreads");
     expect(source).toContain("activeConversations");
   });
+
+  test("provider DBus reader supports full thread history", async () => {
+    const fs = await import("node:fs/promises");
+    const source = await fs.readFile(new URL("../../providers/sms.ts", import.meta.url), "utf-8");
+
+    expect(source).toContain("fetchThreadHistoryViaDbus");
+    expect(source).toContain("dbus-monitor");
+    expect(source).toContain("requestConversation");
+  });
 });
