@@ -253,7 +253,7 @@ describe("SMS inbox() — inboxViaDaemon migration", () => {
     try {
       store.upsertFullMessages([testMsg]);
 
-      // Mark cache as FRESH (within 2-minute freshness window per FRESHNESS_MS)
+      // Mark cache as FRESH (within provider freshness window)
       store.recordFetch("sms");
 
       // Act: call inbox() with fresh:false
@@ -306,8 +306,8 @@ describe("SMS inbox() — inboxViaDaemon migration", () => {
     // Assert: inbox() passes provider:"sms" to helper
     expect(inboxBody).toContain('provider: "sms"');
 
-    // Assert: inbox() passes freshnessMs:FRESHNESS_MS to helper
-    expect(inboxBody).toContain("freshnessMs: FRESHNESS_MS");
+    // Assert: inbox() uses provider-specific cache policy
+    expect(inboxBody).toContain('freshnessMs: getProviderFreshnessMs("sms")');
   });
 });
 

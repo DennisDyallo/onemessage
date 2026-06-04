@@ -1,7 +1,7 @@
 import { existsSync } from "node:fs";
 import { connect } from "node:net";
 import { join } from "node:path";
-import { getConfigDir, loadConfig } from "../config.ts";
+import { getConfigDir, getProviderFreshnessMs, loadConfig } from "../config.ts";
 import { daemonRequest, isDaemonResponding } from "../daemons/shared.ts";
 import { registerProvider } from "../registry.ts";
 import { getSignalAttachmentDir } from "../shared/attachment-paths.ts";
@@ -725,7 +725,7 @@ export const signalProvider: MessagingProvider = {
 
     return inboxViaDaemon({
       provider: "signal",
-      freshnessMs: 30_000,
+      freshnessMs: getProviderFreshnessMs("signal"),
       account: settings.account,
       fresh: opts?.fresh,
       cacheArgs: {

@@ -1,4 +1,4 @@
-import { loadConfig } from "../config.ts";
+import { getProviderFreshnessMs, loadConfig } from "../config.ts";
 import { daemonRequest, ensureDaemon } from "../daemons/shared.ts";
 import { registerProvider } from "../registry.ts";
 import * as store from "../store.ts";
@@ -345,7 +345,7 @@ const instagramProvider: MessagingProvider = {
     }
     return inboxViaDaemon({
       provider: "instagram",
-      freshnessMs: 300_000,
+      freshnessMs: getProviderFreshnessMs("instagram"),
       account: settings.username,
       fresh: opts?.fresh,
       cacheArgs: {

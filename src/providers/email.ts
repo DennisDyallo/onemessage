@@ -4,14 +4,12 @@ import { ImapFlow } from "imapflow";
 import { type ParsedMail, simpleParser } from "mailparser";
 import { lookup } from "mime-types";
 import nodemailer from "nodemailer";
-import { EMAIL_DEFAULTS, loadConfig } from "../config.ts";
+import { EMAIL_DEFAULTS, getProviderFreshnessMs, loadConfig } from "../config.ts";
 import { registerProvider } from "../registry.ts";
 import { validateAttachment } from "../shared/attachment-validation.ts";
 import * as store from "../store.ts";
 import type { Contact, MessageEnvelope, MessageFull, MessagingProvider } from "../types.ts";
 import { cacheSentMessage, inboxViaDaemon } from "./shared.ts";
-
-const FRESHNESS_MS = 5 * 60_000; // 5 minutes
 
 // ---------------------------------------------------------------------------
 // Direction detection helper
@@ -576,7 +574,8 @@ const emailProvider: MessagingProvider = {
     if (!isDefaultRequest) {
       // Custom folder or criteria — daemon can't service this; fetch directly
       const needsFetch =
-        opts?.fresh || !store.isFresh("email", FRESHNESS_MS, accounts.join(","), folder);
+        opts?.fresh ||
+        !store.isFresh("email", getProviderFreshnessMs("email"), accounts.join(","), folder);
       if (needsFetch) {
         await fetchEmailInbox(s, accounts, folder, criteria, limit);
       }
@@ -586,7 +585,7 @@ const emailProvider: MessagingProvider = {
     // Default INBOX request with no custom criteria — route through daemon for contention safety
     return inboxViaDaemon({
       provider: "email",
-      freshnessMs: FRESHNESS_MS,
+      freshnessMs: getProviderFreshnessMs("email"),
       account: accounts.join(","),
       folder,
       fresh: opts?.fresh,
@@ -639,7 +638,8 @@ const emailProvider: MessagingProvider = {
 
     // Use freshness gating like inbox — check if recent fetch exists
     const needsFetch =
-      opts?.fresh || !store.isFresh("email", FRESHNESS_MS, accounts.join(","), folder);
+      opts?.fresh ||
+      !store.isFresh("email", getProviderFreshnessMs("email"), accounts.join(","), folder);
 
     if (!needsFetch) {
       const cached = store.searchCached(query, "email", { limit: opts?.limit, since: opts?.since });

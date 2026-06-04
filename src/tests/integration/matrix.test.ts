@@ -50,8 +50,8 @@ describe("matrixProvider.inbox via inboxViaDaemon", () => {
     // Assert: inbox() passes provider:"matrix" to helper
     expect(inboxBody).toContain('provider: "matrix"');
 
-    // Assert: inbox() passes freshnessMs:30_000 to helper
-    expect(inboxBody).toContain("freshnessMs: 30_000");
+    // Assert: inbox() uses provider-specific cache policy
+    expect(inboxBody).toContain('freshnessMs: getProviderFreshnessMs("matrix")');
 
     // Assert: inbox() passes account:settings.userId to helper
     expect(inboxBody).toContain("account: settings.userId");

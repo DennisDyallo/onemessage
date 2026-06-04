@@ -1,6 +1,6 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { getConfigDir, loadConfig, saveConfig } from "../config.ts";
+import { getConfigDir, getProviderFreshnessMs, loadConfig, saveConfig } from "../config.ts";
 import { registerProvider } from "../registry.ts";
 import * as store from "../store.ts";
 import type { MessageEnvelope, MessagingProvider } from "../types.ts";
@@ -338,7 +338,7 @@ const matrixProvider: MessagingProvider = {
     return inboxViaDaemon({
       provider: "matrix",
       account: settings.userId,
-      freshnessMs: 30_000,
+      freshnessMs: getProviderFreshnessMs("matrix"),
       fresh: opts?.fresh,
       cacheArgs: {
         limit: opts?.limit,

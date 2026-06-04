@@ -1,4 +1,4 @@
-import { loadConfig } from "../config.ts";
+import { getProviderFreshnessMs, loadConfig } from "../config.ts";
 import { registerProvider } from "../registry.ts";
 import * as store from "../store.ts";
 import type { MessageEnvelope, MessageFull, MessagingProvider } from "../types.ts";
@@ -244,7 +244,7 @@ export const telegramBotProvider: MessagingProvider = {
 
     return inboxViaDaemon({
       provider: "telegram-bot",
-      freshnessMs: 30_000,
+      freshnessMs: getProviderFreshnessMs("telegram-bot"),
       account: "bot",
       fresh: opts?.fresh,
       cacheArgs: {

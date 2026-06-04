@@ -50,8 +50,8 @@ describe("telegramBotProvider.inbox via inboxViaDaemon", () => {
     // Assert: inbox() passes provider:"telegram-bot" to helper
     expect(inboxBody).toContain('provider: "telegram-bot"');
 
-    // Assert: inbox() passes freshnessMs:30_000 to helper
-    expect(inboxBody).toContain("freshnessMs: 30_000");
+    // Assert: inbox() uses provider-specific cache policy
+    expect(inboxBody).toContain('freshnessMs: getProviderFreshnessMs("telegram-bot")');
 
     // Assert: inbox() passes account:"bot" to helper
     expect(inboxBody).toContain('account: "bot"');

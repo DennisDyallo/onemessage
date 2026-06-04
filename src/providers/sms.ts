@@ -1,4 +1,4 @@
-import { loadConfig } from "../config.ts";
+import { getProviderFreshnessMs, loadConfig } from "../config.ts";
 import { registerProvider } from "../registry.ts";
 import * as store from "../store.ts";
 import type { MessageFull, MessagingProvider } from "../types.ts";
@@ -461,8 +461,6 @@ export function fetchSmsInbox(opts?: { unread?: boolean; fresh?: boolean; from?:
 // Provider
 // ---------------------------------------------------------------------------
 
-const FRESHNESS_MS = 2 * 60_000; // 2 minutes
-
 export const smsProvider: MessagingProvider = {
   name: "sms",
   displayName: "SMS (KDE Connect)",
@@ -522,7 +520,7 @@ export const smsProvider: MessagingProvider = {
 
     return inboxViaDaemon({
       provider: "sms",
-      freshnessMs: FRESHNESS_MS,
+      freshnessMs: getProviderFreshnessMs("sms"),
       fresh: opts?.fresh,
       cacheArgs: {
         limit: opts?.limit,

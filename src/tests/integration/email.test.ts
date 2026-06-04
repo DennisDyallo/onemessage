@@ -52,8 +52,8 @@ describe("emailProvider.inbox via inboxViaDaemon", () => {
     // Assert: inbox() passes provider:"email" to helper
     expect(inboxBody).toContain('provider: "email"');
 
-    // Assert: inbox() passes freshnessMs:FRESHNESS_MS to helper
-    expect(inboxBody).toContain("freshnessMs: FRESHNESS_MS");
+    // Assert: inbox() uses provider-specific cache policy
+    expect(inboxBody).toContain('freshnessMs: getProviderFreshnessMs("email")');
 
     // Assert: inbox() passes account:accounts.join(",") to helper (multi-account key)
     expect(inboxBody).toContain('account: accounts.join(",")');

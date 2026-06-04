@@ -561,7 +561,7 @@ describe("whatsappProvider.inbox via inboxViaDaemon", () => {
     // Assert: inbox() passes provider:"whatsapp" to helper
     expect(inboxBody).toContain('provider: "whatsapp"');
 
-    // Assert: inbox() passes freshnessMs:60_000 to helper
-    expect(inboxBody).toContain("freshnessMs: 60_000");
+    // Assert: inbox() uses provider-specific cache policy
+    expect(inboxBody).toContain('freshnessMs: getProviderFreshnessMs("whatsapp")');
   });
 });

@@ -378,8 +378,8 @@ describe("instagramProvider.inbox via inboxViaDaemon", () => {
     // Assert: inbox() passes provider:"instagram" to helper
     expect(inboxBody).toContain('provider: "instagram"');
 
-    // Assert: inbox() passes freshnessMs:300_000 to helper
-    expect(inboxBody).toContain("freshnessMs: 300_000");
+    // Assert: inbox() uses provider-specific cache policy
+    expect(inboxBody).toContain('freshnessMs: getProviderFreshnessMs("instagram")');
 
     // Assert: inbox() passes account:settings.username to helper
     expect(inboxBody).toContain("account: settings.username");

@@ -17,6 +17,7 @@ export interface OneMessageConfig {
   whatsapp?: WhatsAppProviderConfig;
   matrix?: MatrixProviderConfig;
   daemon?: DaemonConfig;
+  cache?: CacheConfig;
 }
 
 /** Which provider + address to use for `onemessage me` (send to yourself) */
@@ -38,6 +39,29 @@ export interface DaemonConfig {
     instagram?: { enabled?: boolean; pollIntervalMs?: number };
     matrix?: { enabled?: boolean; pollIntervalMs?: number };
   };
+}
+
+export interface CacheConfig {
+  providers?: Record<string, { freshnessMs?: number }>;
+}
+
+const DEFAULT_PROVIDER_FRESHNESS_MS = 30_000;
+// Instagram polling is intentionally conservative because the upstream API is rate-limit sensitive.
+const DEFAULT_INSTAGRAM_FRESHNESS_MS = 2 * 60 * 60_000;
+
+export function getDefaultProviderFreshnessMs(provider: string): number {
+  return provider === "instagram" ? DEFAULT_INSTAGRAM_FRESHNESS_MS : DEFAULT_PROVIDER_FRESHNESS_MS;
+}
+
+export function resolveProviderFreshnessMs(provider: string, config: OneMessageConfig): number {
+  const configured = config.cache?.providers?.[provider]?.freshnessMs;
+  return typeof configured === "number" && Number.isFinite(configured) && configured > 0
+    ? configured
+    : getDefaultProviderFreshnessMs(provider);
+}
+
+export function getProviderFreshnessMs(provider: string): number {
+  return resolveProviderFreshnessMs(provider, loadConfig());
 }
 
 export interface EmailProviderConfig {

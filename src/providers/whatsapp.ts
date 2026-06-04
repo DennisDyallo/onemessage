@@ -1,5 +1,6 @@
 import { existsSync } from "node:fs";
 import { join } from "node:path";
+import { getProviderFreshnessMs } from "../config.ts";
 import { daemonRequest, ensureDaemon } from "../daemons/shared.ts";
 import { registerProvider } from "../registry.ts";
 import { validateAttachment } from "../shared/attachment-validation.ts";
@@ -117,7 +118,7 @@ export const whatsappProvider: MessagingProvider = {
   async inbox(opts) {
     return inboxViaDaemon({
       provider: "whatsapp",
-      freshnessMs: 60_000,
+      freshnessMs: getProviderFreshnessMs("whatsapp"),
       fresh: opts?.fresh,
       cacheArgs: {
         limit: opts?.limit,

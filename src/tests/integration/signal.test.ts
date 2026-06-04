@@ -257,7 +257,7 @@ describe("signalProvider.inbox via inboxViaDaemon", () => {
     // Assert: inbox() passes provider:"signal" to helper
     expect(inboxBody).toContain('provider: "signal"');
 
-    // Assert: inbox() passes freshnessMs:30_000 to helper
-    expect(inboxBody).toContain("freshnessMs: 30_000");
+    // Assert: inbox() uses provider-specific cache policy
+    expect(inboxBody).toContain('freshnessMs: getProviderFreshnessMs("signal")');
   });
 });
