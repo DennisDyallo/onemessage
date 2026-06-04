@@ -4,7 +4,17 @@ import { Command } from "commander";
 // Import providers — each self-registers via registerProvider()
 import "./providers/index.ts";
 
-import { getConfigPath, loadConfig } from "./config.ts";
+import {
+  formatDurationMs,
+  getConfigPath,
+  getDefaultProviderFreshnessMs,
+  getMinimumProviderFreshnessMs,
+  isUsableProviderFreshnessMs,
+  loadConfig,
+  parseDurationMs,
+  resolveProviderFreshnessMs,
+  saveConfig,
+} from "./config.ts";
 import { replyViaSend } from "./providers/shared.ts";
 import { getAllProviders, getProviderOrExit } from "./registry.ts";
 import { getCachedInboxPage, getContacts } from "./store.ts";
@@ -596,6 +606,150 @@ program
           console.log(`  Provider "${providerName}" setup instructions not yet available.`);
       }
     }
+  });
+
+// ---- cache ----------------------------------------------------------------
+
+type CachePolicyRow = {
+  provider: string;
+  freshnessMs: number;
+  freshness: string;
+  defaultMs: number;
+  default: string;
+  configuredMs?: number;
+  configured?: string;
+  rejectedConfiguredMs?: number;
+  rejectedConfigured?: string;
+  minimumMs?: number;
+  minimum?: string;
+};
+
+function getCachePolicyRows(providerName?: string): CachePolicyRow[] {
+  const providers = getAllProviders();
+  const names = providerName ? [providerName] : providers.map((provider) => provider.name);
+  const known = new Set(providers.map((provider) => provider.name));
+  if (providerName && !known.has(providerName)) {
+    console.error(`Unknown provider: ${providerName}`);
+    process.exit(1);
+  }
+
+  const config = loadConfig();
+  return names.map((provider) => {
+    const configuredMs = config.cache?.providers?.[provider]?.freshnessMs;
+    const defaultMs = getDefaultProviderFreshnessMs(provider);
+    const minimumMs = getMinimumProviderFreshnessMs(provider);
+    const freshnessMs = resolveProviderFreshnessMs(provider, config);
+    const hasConfigured = configuredMs !== undefined;
+    const configuredIsUsable = isUsableProviderFreshnessMs(provider, configuredMs);
+    return {
+      provider,
+      freshnessMs,
+      freshness: formatDurationMs(freshnessMs),
+      defaultMs,
+      default: formatDurationMs(defaultMs),
+      ...(configuredIsUsable ? { configuredMs, configured: formatDurationMs(configuredMs) } : {}),
+      ...(hasConfigured && !configuredIsUsable
+        ? {
+            rejectedConfiguredMs: configuredMs,
+            rejectedConfigured: formatDurationMs(Number(configuredMs)),
+            minimumMs,
+            minimum: formatDurationMs(minimumMs),
+          }
+        : {}),
+    };
+  });
+}
+
+const cacheCmd = program.command("cache").description("Inspect and configure cache policy");
+
+function printCachePolicyRows(rows: CachePolicyRow[]): void {
+  console.log();
+  for (const row of rows) {
+    const source = row.configured
+      ? `configured ${row.configured}`
+      : row.rejectedConfigured
+        ? `default ${row.default}; ignoring configured ${row.rejectedConfigured} below minimum ${row.minimum}`
+        : `default ${row.default}`;
+    console.log(`  ${pad(row.provider, 12)} ${pad(row.freshness, 8)} (${source})`);
+  }
+  console.log();
+}
+
+cacheCmd
+  .command("list")
+  .description("Show cache freshness for all providers")
+  .option("--json", "Output JSON", false)
+  .action((opts) => {
+    const rows = getCachePolicyRows();
+    if (opts.json) {
+      process.stdout.write(`${JSON.stringify(rows, null, 2)}\n`);
+      return;
+    }
+    printCachePolicyRows(rows);
+  });
+
+cacheCmd
+  .command("get [provider]")
+  .description("Show cache freshness for one provider, or all providers")
+  .option("--json", "Output JSON", false)
+  .action((providerName: string | undefined, opts) => {
+    const rows = getCachePolicyRows(providerName);
+    if (opts.json) {
+      process.stdout.write(`${JSON.stringify(rows, null, 2)}\n`);
+      return;
+    }
+
+    printCachePolicyRows(rows);
+  });
+
+cacheCmd
+  .command("set <provider> <duration>")
+  .description("Set provider cache freshness, e.g. 30s, 5m, 2h")
+  .action((providerName: string, duration: string) => {
+    const known = new Set(getAllProviders().map((provider) => provider.name));
+    if (!known.has(providerName)) {
+      console.error(`Unknown provider: ${providerName}`);
+      process.exit(1);
+    }
+
+    const freshnessMs = parseDurationMs(duration);
+    if (freshnessMs === null) {
+      console.error("Duration must be a positive number with optional unit: ms, s, m, or h.");
+      process.exit(1);
+    }
+
+    const minimumMs = getMinimumProviderFreshnessMs(providerName);
+    if (freshnessMs < minimumMs) {
+      console.error(
+        `${providerName} cache freshness must be at least ${formatDurationMs(minimumMs)}.`,
+      );
+      process.exit(1);
+    }
+
+    const config = loadConfig();
+    config.cache ??= {};
+    config.cache.providers ??= {};
+    config.cache.providers[providerName] = { freshnessMs };
+    saveConfig(config);
+    console.log(`  ${providerName} cache freshness set to ${formatDurationMs(freshnessMs)}.`);
+  });
+
+cacheCmd
+  .command("unset <provider>")
+  .description("Remove provider cache freshness override and use the default")
+  .action((providerName: string) => {
+    const known = new Set(getAllProviders().map((provider) => provider.name));
+    if (!known.has(providerName)) {
+      console.error(`Unknown provider: ${providerName}`);
+      process.exit(1);
+    }
+
+    const config = loadConfig();
+    delete config.cache?.providers?.[providerName];
+    saveConfig(config);
+    console.log(
+      `  ${providerName} cache freshness reset to default ${formatDurationMs(getDefaultProviderFreshnessMs(providerName))}.`,
+    );
   });
 
 // ---- status ---------------------------------------------------------------

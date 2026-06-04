@@ -48,20 +48,55 @@ export interface CacheConfig {
 const DEFAULT_PROVIDER_FRESHNESS_MS = 30_000;
 // Instagram polling is intentionally conservative because the upstream API is rate-limit sensitive.
 const DEFAULT_INSTAGRAM_FRESHNESS_MS = 2 * 60 * 60_000;
+const MIN_PROVIDER_FRESHNESS_MS = 1_000;
+const MIN_INSTAGRAM_FRESHNESS_MS = DEFAULT_INSTAGRAM_FRESHNESS_MS;
 
 export function getDefaultProviderFreshnessMs(provider: string): number {
   return provider === "instagram" ? DEFAULT_INSTAGRAM_FRESHNESS_MS : DEFAULT_PROVIDER_FRESHNESS_MS;
 }
 
+export function getMinimumProviderFreshnessMs(provider: string): number {
+  return provider === "instagram" ? MIN_INSTAGRAM_FRESHNESS_MS : MIN_PROVIDER_FRESHNESS_MS;
+}
+
+export function isValidFreshnessMs(value: unknown): value is number {
+  return typeof value === "number" && Number.isFinite(value) && value > 0;
+}
+
+export function isUsableProviderFreshnessMs(provider: string, value: unknown): value is number {
+  return isValidFreshnessMs(value) && value >= getMinimumProviderFreshnessMs(provider);
+}
+
 export function resolveProviderFreshnessMs(provider: string, config: OneMessageConfig): number {
   const configured = config.cache?.providers?.[provider]?.freshnessMs;
-  return typeof configured === "number" && Number.isFinite(configured) && configured > 0
+  return isUsableProviderFreshnessMs(provider, configured)
     ? configured
     : getDefaultProviderFreshnessMs(provider);
 }
 
 export function getProviderFreshnessMs(provider: string): number {
   return resolveProviderFreshnessMs(provider, loadConfig());
+}
+
+export function parseDurationMs(value: string): number | null {
+  const match = value.trim().match(/^(\d+)(ms|s|m|h)?$/i);
+  if (!match?.[1]) return null;
+
+  const amount = Number(match[1]);
+  if (!Number.isFinite(amount) || amount <= 0) return null;
+
+  const unit = match[2]?.toLowerCase() ?? "ms";
+  const multiplier = unit === "h" ? 60 * 60_000 : unit === "m" ? 60_000 : unit === "s" ? 1000 : 1;
+  const ms = Math.round(amount * multiplier);
+  return ms > 0 ? ms : null;
+}
+
+export function formatDurationMs(ms: number): string {
+  if (!Number.isFinite(ms) || ms <= 0) return `${ms}ms`;
+  if (ms % (60 * 60_000) === 0) return `${ms / (60 * 60_000)}h`;
+  if (ms % 60_000 === 0) return `${ms / 60_000}m`;
+  if (ms % 1000 === 0) return `${ms / 1000}s`;
+  return `${ms}ms`;
 }
 
 export interface EmailProviderConfig {
