@@ -53,6 +53,15 @@ function ensureFetchLogPrimaryKey(d: Database): void {
   })();
 }
 
+export function closeDb(): void {
+  // Close and drop the singleton so the next getDb() rebinds to the current
+  // getConfigDir() — used by tests to isolate the cache into a temp dir.
+  if (db) {
+    db.close();
+    db = null;
+  }
+}
+
 export function getDb(): Database {
   if (db) return db;
 

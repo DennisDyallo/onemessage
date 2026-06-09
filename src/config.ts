@@ -162,14 +162,16 @@ export const EMAIL_DEFAULTS = {
 // ---------------------------------------------------------------------------
 
 const CONFIG_DIR = join(homedir(), ".config", "onemessage");
-const CONFIG_PATH = join(CONFIG_DIR, "config.json");
 
 export function getConfigDir(): string {
-  return CONFIG_DIR;
+  // Honor an env override so tests (and alternate profiles) can point at an
+  // isolated config/cache dir instead of the real ~/.config/onemessage.
+  // Read at call-time, not module-load, so tests can set it after import.
+  return process.env.ONEMESSAGE_CONFIG_DIR || CONFIG_DIR;
 }
 
 export function getConfigPath(): string {
-  return CONFIG_PATH;
+  return join(getConfigDir(), "config.json");
 }
 
 // ---------------------------------------------------------------------------
@@ -180,24 +182,25 @@ let cached: OneMessageConfig | null = null;
 
 export function loadConfig(): OneMessageConfig {
   if (cached) return cached;
-  if (!existsSync(CONFIG_PATH)) {
+  const configPath = getConfigPath();
+  if (!existsSync(configPath)) {
     cached = {};
     return cached;
   }
   try {
-    const raw = readFileSync(CONFIG_PATH, "utf-8");
+    const raw = readFileSync(configPath, "utf-8");
     cached = JSON.parse(raw) as OneMessageConfig;
     return cached;
   } catch (err: unknown) {
     const message = err instanceof Error ? err.message : String(err);
-    process.stderr.write(`[config] Warning: could not parse ${CONFIG_PATH}: ${message}\n`);
+    process.stderr.write(`[config] Warning: could not parse ${configPath}: ${message}\n`);
     cached = {};
     return cached;
   }
 }
 
 export function saveConfig(config: OneMessageConfig): void {
-  mkdirSync(CONFIG_DIR, { recursive: true });
-  writeFileSync(CONFIG_PATH, `${JSON.stringify(config, null, 2)}\n`, "utf-8");
+  mkdirSync(getConfigDir(), { recursive: true });
+  writeFileSync(getConfigPath(), `${JSON.stringify(config, null, 2)}\n`, "utf-8");
   cached = config;
 }

@@ -1,7 +1,7 @@
 # Bug: WhatsApp outbound messages store the chat-partner's number as `from.address` (account-owner number lost)
 
 - **Reported:** 2026-06-03
-- **Status:** Fixed in code for newly ingested messages; no historical cache migration planned.
+- **Status:** ✅ **CLOSED** (2026-06-09). Fix shipped 2026-06-03 (commit `d6368c2`) for newly ingested messages; historical cache intentionally not migrated. Test-pollution follow-up resolved 2026-06-09 (see *Follow-up* below).
 - **Provider:** `whatsapp` (Baileys)
 - **Severity:** High — can route a reply/send to the wrong person; nearly caused a sensitive message to be sent to the wrong recipient.
 - **Component:** WhatsApp message ingestion / normalization → SQLite cache (`~/.config/onemessage/messages.db`, `messages.from_json` / `to_json`)
@@ -85,3 +85,26 @@ Implemented 2026-06-03.
 - `bun run lint` → passed.
 - DevTeam cross-vendor review with `codex exec -m gpt-5.5 --sandbox read-only` → clean pass on iteration 3.
 - `bun test` → `312 pass`, `0 fail`.
+
+## Follow-up (2026-06-09): test fixtures polluted the production cache & vault
+
+While verifying the scope of this bug, the `wa-normalize-*` integration tests in
+`src/tests/integration/whatsapp.test.ts` were found to call `parseAndStoreWAMessage` against
+the **real** `~/.config/onemessage/messages.db`, using the **real** John/Dennis numbers and
+names. The vault `message-sync` daemon then synced ~140 synthetic test rows into
+`Sources/Messages/WhatsApp/{John, John (tenant), Dennis}/` as if they were real messages —
+this was the "messages look like system messages" symptom in the John thread (NOT a sync
+malfunction).
+
+Remediation:
+- **DB isolation (structural fix):** `getConfigDir()` now honors `ONEMESSAGE_CONFIG_DIR`
+  (read at call-time); `getConfigPath()` / `loadConfig` / `saveConfig` route through it; added
+  `store.closeDb()` to rebind the singleton. The WhatsApp integration tests set
+  `ONEMESSAGE_CONFIG_DIR` to a `mkdtempSync` temp dir in `beforeAll` and restore + `rmSync` in
+  `afterAll`, so they never touch the production cache.
+- **Synthetic identifiers (defense-in-depth):** all store-writing tests now use
+  `46700000001`/"Test Partner" + `46700000099`/"Test Owner" — no real contact data.
+- **Cleanup:** purged the 140 `wa-normalize%` rows from the production cache and removed the
+  synced fixture files from the vault (preserving the 2 real messages mixed into one file).
+- **Verified:** `bun test` → `325 pass`, `0 fail`; production cache `wa-normalize` row count
+  is `0` after a full test run; `biome check` clean.
