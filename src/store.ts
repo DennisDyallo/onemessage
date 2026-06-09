@@ -665,13 +665,105 @@ export function backfillMessageNames(provider: string): number {
 }
 
 /**
- * Build a contact name lookup from incoming messages.
- * Returns a map of address → name for all known senders in the given provider.
- * Useful for enriching outgoing messages where the recipient name is missing.
+ * Repair rows whose sender/recipient name was mislabeled as the OWNER's identity
+ * (display name or bare number) even though the address belongs to a different,
+ * known contact — the "Dennis folder" poison from linked-device/history sync.
+ *
+ * Strictly scoped (idempotent):
+ *  - inbound `from_json.name`  and outbound `to_json[0].name`
+ *  - only where the stored name == ownerName OR == ownerAddress
+ *  - AND the row's address != ownerAddress (self-directed rows are left alone)
+ *  - AND that address exists in the contacts table (so we have a real name to use)
+ * The replacement always comes from the authoritative contacts table.
+ *
+ * Returns the number of inbound and outbound rows changed.
  */
-export function getContactNamesByAddress(provider: string): Map<string, string> {
+export function repairMisattributedOwnerNames(
+  provider: string,
+  ownerAddress: string,
+  ownerName: string,
+): { inbound: number; outbound: number } {
   const d = getDb();
-  const rows = d
+
+  const inboundStmt = d.prepare(`
+    UPDATE messages
+    SET from_json = json_set(from_json, '$.name', (
+      SELECT c.name FROM contacts c
+      WHERE c.provider = messages.provider
+        AND c.address = json_extract(messages.from_json, '$.address')
+    ))
+    WHERE provider = $provider
+      AND direction = 'in'
+      AND from_json IS NOT NULL
+      AND json_extract(from_json, '$.name') IN ($ownerName, $ownerAddress)
+      AND json_extract(from_json, '$.address') != $ownerAddress
+      AND json_extract(from_json, '$.address') IN (
+        SELECT c.address FROM contacts c WHERE c.provider = $provider
+      )
+  `);
+
+  const outboundStmt = d.prepare(`
+    UPDATE messages
+    SET to_json = json_set(to_json, '$[0].name', (
+      SELECT c.name FROM contacts c
+      WHERE c.provider = messages.provider
+        AND c.address = json_extract(messages.to_json, '$[0].address')
+    ))
+    WHERE provider = $provider
+      AND direction = 'out'
+      AND to_json IS NOT NULL
+      AND json_extract(to_json, '$[0].name') IN ($ownerName, $ownerAddress)
+      AND json_extract(to_json, '$[0].address') != $ownerAddress
+      AND json_extract(to_json, '$[0].address') IN (
+        SELECT c.address FROM contacts c WHERE c.provider = $provider
+      )
+  `);
+
+  const params = { $provider: provider, $ownerName: ownerName, $ownerAddress: ownerAddress };
+  let inbound = 0;
+  let outbound = 0;
+  d.transaction(() => {
+    inbound = inboundStmt.run(params).changes;
+    outbound = outboundStmt.run(params).changes;
+  })();
+
+  return { inbound, outbound };
+}
+
+/**
+ * Build an address → name lookup for a provider.
+ *
+ * Resolution order (authoritative first):
+ *   1. The `contacts` table — the canonical source of truth for who an address is.
+ *   2. Incoming-message `from_json.name` — last resort, ONLY for addresses the
+ *      contacts table doesn't know.
+ *
+ * Owner safety: the owner's own address is never returned, and message-derived
+ * names equal to the owner's display name are ignored (they are almost always the
+ * owner's pushName leaking onto a contact-authored message during linked-device /
+ * history sync). The contacts table is trusted even if a name matches the owner's,
+ * because a real contact may legitimately share the owner's display name.
+ */
+export function getContactNamesByAddress(
+  provider: string,
+  opts?: { ownerAddress?: string; ownerName?: string },
+): Map<string, string> {
+  const d = getDb();
+  const map = new Map<string, string>();
+
+  // 1. Authoritative: the contacts table.
+  const contactRows = d
+    .prepare(
+      `SELECT address, name FROM contacts
+       WHERE provider = ? AND name IS NOT NULL AND name != ''`,
+    )
+    .all(provider) as Array<{ address: string; name: string }>;
+  for (const row of contactRows) {
+    if (row.address && row.name) map.set(row.address, row.name);
+  }
+
+  // 2. Last resort: incoming-message names for addresses not in contacts.
+  const msgRows = d
     .prepare(
       `SELECT DISTINCT
         json_extract(from_json, '$.address') as address,
@@ -683,13 +775,18 @@ export function getContactNamesByAddress(provider: string): Map<string, string> 
         AND json_extract(from_json, '$.address') NOT LIKE 'group:%'`,
     )
     .all(provider) as Array<{ address: string; name: string }>;
-
-  const map = new Map<string, string>();
-  for (const row of rows) {
-    if (row.address && row.name) {
-      map.set(row.address, row.name);
-    }
+  const ownerNameLc = opts?.ownerName?.trim().toLowerCase();
+  for (const row of msgRows) {
+    if (!row.address || !row.name) continue;
+    if (map.has(row.address)) continue; // contacts table wins
+    // Skip message-derived names that look like the owner (poison from history sync).
+    if (ownerNameLc && row.name.trim().toLowerCase() === ownerNameLc) continue;
+    map.set(row.address, row.name);
   }
+
+  // 3. Never attribute a name to the owner's own address.
+  if (opts?.ownerAddress) map.delete(opts.ownerAddress);
+
   return map;
 }
 

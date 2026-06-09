@@ -9,6 +9,7 @@ import {
   getDb,
   isFresh,
   recordFetch,
+  repairMisattributedOwnerNames,
   searchCached,
   upsertContacts,
   upsertFullMessages,
@@ -507,6 +508,152 @@ describe("contacts", () => {
     expect(changed).toBe(0);
     const msg = getCachedMessage(p5, "bf2");
     expect(msg?.from?.name).toBe("Original Name");
+  });
+});
+
+describe("owner-name poison resolution & repair", () => {
+  const OWNER = "46737124377";
+  const OWNER_NAME = "Dennis";
+
+  test("getContactNamesByAddress prefers contacts table over poisoned message name", () => {
+    const p = "__test_poison_resolve__";
+    upsertContacts(p, [{ address: "46728418689", name: "John (tenant)" }]);
+    upsertFullMessages([
+      {
+        id: "poison-in-1",
+        provider: p,
+        // Poison: inbound from John but pushName leaked owner's name.
+        from: { name: OWNER_NAME, address: "46728418689" },
+        to: [{ name: OWNER_NAME, address: OWNER }],
+        preview: "x",
+        body: "x",
+        bodyFormat: "text" as const,
+        date: new Date().toISOString(),
+        unread: false,
+        hasAttachments: false,
+        attachments: [],
+        direction: "in" as const,
+      },
+    ]);
+    const map = getContactNamesByAddress(p, { ownerAddress: OWNER, ownerName: OWNER_NAME });
+    // Contacts table wins, not the poisoned message name.
+    expect(map.get("46728418689")).toBe("John (tenant)");
+    // Owner's own address is never in the map.
+    expect(map.has(OWNER)).toBe(false);
+  });
+
+  test("getContactNamesByAddress skips message-derived owner name for unknown address", () => {
+    const p = "__test_poison_unknown__";
+    upsertFullMessages([
+      {
+        id: "poison-in-2",
+        provider: p,
+        from: { name: OWNER_NAME, address: "999000111" }, // not in contacts
+        to: [{ name: OWNER_NAME, address: OWNER }],
+        preview: "x",
+        body: "x",
+        bodyFormat: "text" as const,
+        date: new Date().toISOString(),
+        unread: false,
+        hasAttachments: false,
+        attachments: [],
+        direction: "in" as const,
+      },
+    ]);
+    const map = getContactNamesByAddress(p, { ownerAddress: OWNER, ownerName: OWNER_NAME });
+    // Poisoned owner-name for an unknown address is dropped (not propagated).
+    expect(map.has("999000111")).toBe(false);
+  });
+
+  test("getContactNamesByAddress keeps a real contact who shares the owner's display name", () => {
+    const p = "__test_real_namesake__";
+    // A genuine contact literally named "Dennis" at their own distinct address.
+    upsertContacts(p, [{ address: "46700123456", name: "Dennis" }]);
+    const map = getContactNamesByAddress(p, { ownerAddress: OWNER, ownerName: OWNER_NAME });
+    expect(map.get("46700123456")).toBe("Dennis");
+  });
+
+  test("repairMisattributedOwnerNames fixes outbound to.name and inbound from.name", () => {
+    const p = "__test_repair_basic__";
+    upsertContacts(p, [{ address: "46728418689", name: "John (tenant)" }]);
+    upsertFullMessages([
+      {
+        id: "rep-out-1",
+        provider: p,
+        from: { name: OWNER_NAME, address: OWNER },
+        to: [{ name: OWNER_NAME, address: "46728418689" }], // poisoned recipient name
+        preview: "o",
+        body: "o",
+        bodyFormat: "text" as const,
+        date: new Date().toISOString(),
+        unread: false,
+        hasAttachments: false,
+        attachments: [],
+        direction: "out" as const,
+      },
+      {
+        id: "rep-in-1",
+        provider: p,
+        from: { name: OWNER, address: "46728418689" }, // poisoned by owner NUMBER
+        to: [{ name: OWNER_NAME, address: OWNER }],
+        preview: "i",
+        body: "i",
+        bodyFormat: "text" as const,
+        date: new Date().toISOString(),
+        unread: false,
+        hasAttachments: false,
+        attachments: [],
+        direction: "in" as const,
+      },
+    ]);
+    const r = repairMisattributedOwnerNames(p, OWNER, OWNER_NAME);
+    expect(r.outbound).toBe(1);
+    expect(r.inbound).toBe(1);
+    expect(getCachedMessage(p, "rep-out-1")?.to?.[0]?.name).toBe("John (tenant)");
+    expect(getCachedMessage(p, "rep-in-1")?.from?.name).toBe("John (tenant)");
+    // Idempotent: second run changes nothing.
+    const r2 = repairMisattributedOwnerNames(p, OWNER, OWNER_NAME);
+    expect(r2.outbound).toBe(0);
+    expect(r2.inbound).toBe(0);
+  });
+
+  test("repairMisattributedOwnerNames leaves self-directed and unknown-address rows untouched", () => {
+    const p = "__test_repair_scope__";
+    // self-directed (to == owner) and an unknown address not in contacts
+    upsertFullMessages([
+      {
+        id: "rep-self",
+        provider: p,
+        from: { name: OWNER_NAME, address: OWNER },
+        to: [{ name: OWNER_NAME, address: OWNER }], // self note
+        preview: "s",
+        body: "s",
+        bodyFormat: "text" as const,
+        date: new Date().toISOString(),
+        unread: false,
+        hasAttachments: false,
+        attachments: [],
+        direction: "out" as const,
+      },
+      {
+        id: "rep-unknown",
+        provider: p,
+        from: { name: OWNER_NAME, address: OWNER },
+        to: [{ name: OWNER_NAME, address: "555000999" }], // not in contacts
+        preview: "u",
+        body: "u",
+        bodyFormat: "text" as const,
+        date: new Date().toISOString(),
+        unread: false,
+        hasAttachments: false,
+        attachments: [],
+        direction: "out" as const,
+      },
+    ]);
+    const r = repairMisattributedOwnerNames(p, OWNER, OWNER_NAME);
+    expect(r.outbound).toBe(0);
+    expect(getCachedMessage(p, "rep-self")?.to?.[0]?.name).toBe(OWNER_NAME);
+    expect(getCachedMessage(p, "rep-unknown")?.to?.[0]?.name).toBe(OWNER_NAME);
   });
 });
 

@@ -152,7 +152,7 @@ async function translateJid(
   return jid;
 }
 
-function bareAddressFromJid(jid: string | undefined): string | undefined {
+export function bareAddressFromJid(jid: string | undefined): string | undefined {
   if (!jid) return undefined;
   const user = jid.split("@")[0] || jid;
   return user.split(":")[0] || user;
@@ -219,7 +219,17 @@ export async function parseAndStoreWAMessage(
       senderJid = await translateJid(msg.key.participant, sock, lidCache);
     }
     const senderAddress = bareAddressFromJid(senderJid) ?? senderJid;
-    const senderName = msg.pushName || senderAddress;
+    // Resolve the sender name authoritatively. The contacts-table-backed map wins;
+    // pushName is only trusted when it does NOT look like the owner's own name on a
+    // message whose sender is NOT the owner (Baileys leaks the owner's pushName onto
+    // contact-authored messages during linked-device/history sync). Anchor on the
+    // sender ADDRESS, never the display name (real contacts may share the owner's name).
+    const senderContactName = contactNames?.get(senderAddress);
+    const senderIsOwner = !!ownerAddress && senderAddress === ownerAddress;
+    const pushNameLooksLikeOwner = namesMatch(msg.pushName, ownerProfileName);
+    const safePushName =
+      msg.pushName && !(pushNameLooksLikeOwner && !senderIsOwner) ? msg.pushName : undefined;
+    const senderName = senderContactName ?? safePushName ?? senderAddress;
     const recipientAddress = bareAddressFromJid(chatJid) ?? chatJid;
     const recipientName = contactNames?.get(recipientAddress);
 

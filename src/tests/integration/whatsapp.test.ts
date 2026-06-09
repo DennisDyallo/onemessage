@@ -286,7 +286,7 @@ describe("WhatsApp production normalization", () => {
       {
         key: { remoteJid: PARTNER_JID, fromMe: false, id },
         messageTimestamp: TS,
-        pushName: "Partner",
+        pushName: "Selfie Name", // pushName differs from the saved contact name
         message: { conversation: "Hello there" },
       } as unknown as WAMessage,
       sock,
@@ -302,7 +302,9 @@ describe("WhatsApp production normalization", () => {
     if (!cached) return;
 
     expect(cached.direction).toBe("in");
-    expect(cached.from?.name).toBe("Partner");
+    // Authoritative contacts-map name wins over the sender's self-set pushName,
+    // so a contact resolves to ONE name (and one vault folder) in both directions.
+    expect(cached.from?.name).toBe(PARTNER_NAME);
     expect(cached.from?.address).toBe(PARTNER_NUM);
     expect(cached.to[0]?.name).toBe(OWNER_NAME);
     expect(cached.to[0]?.address).toBe(OWNER_NUM);
@@ -434,6 +436,57 @@ describe("WhatsApp production normalization", () => {
     expect(cached.to[0]?.name).toBe(OWNER_NAME);
     expect(cached.to[0]?.address).toBe(OWNER_NUM);
     expect(resolveDefaultReply(cached).recipientId).toBe(PARTNER_NUM);
+  });
+
+  test("inbound poisoned pushName (owner leak) on UNKNOWN sender falls back to address, never owner", async () => {
+    const id = `wa-normalize-poison-unknown-${Date.now()}`;
+    const ok = await parseAndStoreWAMessage(
+      {
+        key: { remoteJid: PARTNER_JID, fromMe: false, id },
+        messageTimestamp: TS,
+        pushName: OWNER_NAME, // Baileys leaked the owner's display name onto a contact message
+        message: { conversation: "Inbound, sender not in contacts" },
+      } as unknown as WAMessage,
+      undefined,
+      undefined,
+      undefined,
+      new Map(), // empty contact map → unknown sender
+      true,
+      { id: `${OWNER_NUM}@s.whatsapp.net`, name: OWNER_NAME },
+    );
+    expect(ok).toBe(true);
+    const cached = store.getCachedMessage("whatsapp", id);
+    expect(cached).not.toBeNull();
+    if (!cached) return;
+    expect(cached.direction).toBe("in");
+    expect(cached.from?.name).toBe(PARTNER_NUM); // address, NOT the owner's name
+    expect(cached.from?.name).not.toBe(OWNER_NAME);
+    expect(cached.from?.address).toBe(PARTNER_NUM);
+  });
+
+  test("inbound poisoned pushName on KNOWN contact resolves to contact name, not owner", async () => {
+    const id = `wa-normalize-poison-known-${Date.now()}`;
+    const ok = await parseAndStoreWAMessage(
+      {
+        key: { remoteJid: PARTNER_JID, fromMe: false, id },
+        messageTimestamp: TS,
+        pushName: OWNER_NAME, // poison
+        message: { conversation: "Inbound from a known contact" },
+      } as unknown as WAMessage,
+      undefined,
+      undefined,
+      undefined,
+      new Map([[PARTNER_NUM, PARTNER_NAME]]), // contacts-backed map knows the sender
+      false, // live (non-history) inbound
+      { id: `${OWNER_NUM}@s.whatsapp.net`, name: OWNER_NAME },
+    );
+    expect(ok).toBe(true);
+    const cached = store.getCachedMessage("whatsapp", id);
+    expect(cached).not.toBeNull();
+    if (!cached) return;
+    expect(cached.direction).toBe("in");
+    expect(cached.from?.name).toBe(PARTNER_NAME); // contacts map wins over poison
+    expect(cached.from?.address).toBe(PARTNER_NUM);
   });
 });
 

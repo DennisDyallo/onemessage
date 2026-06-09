@@ -14,7 +14,11 @@ import qrcode from "qrcode-terminal";
 
 import { getConfigDir } from "../config.ts";
 import * as store from "../store.ts";
-import { createBaileysSocket, parseAndStoreWAMessage } from "./whatsapp-shared.ts";
+import {
+  bareAddressFromJid,
+  createBaileysSocket,
+  parseAndStoreWAMessage,
+} from "./whatsapp-shared.ts";
 
 // ---------------------------------------------------------------------------
 // Public API
@@ -109,7 +113,9 @@ async function connectSocket(
       if (historySyncDone) return;
 
       batchCount++;
-      const contactNames = store.getContactNamesByAddress("whatsapp");
+      const ownerAddress = bareAddressFromJid(sock.user?.id) ?? bareAddressFromJid(creds.me?.id);
+      const ownerName = sock.user?.name ?? creds.me?.name ?? undefined;
+      const contactNames = store.getContactNamesByAddress("whatsapp", { ownerAddress, ownerName });
       let stored = 0;
       for (const msg of messages) {
         const ok = await parseAndStoreWAMessage(

@@ -3,6 +3,7 @@ import { DisconnectReason, type WAMessage, type WASocket } from "@whiskeysockets
 import { loadConfig } from "../config.ts";
 import {
   AUTH_DIR,
+  bareAddressFromJid,
   createBaileysSocket,
   parseAndStoreWAMessage,
   type WhatsAppOwnerIdentity,
@@ -311,7 +312,10 @@ export class WhatsAppAdapter implements IpcCapableAdapter {
     const resolvedGroupName = remoteJid?.endsWith("@g.us")
       ? this.groupCache.get(remoteJid)?.subject
       : undefined;
-    const contactNames = store.getContactNamesByAddress("whatsapp");
+    const ownerAddress =
+      bareAddressFromJid(this.sock?.user?.id) ?? bareAddressFromJid(this.ownerIdentity?.id);
+    const ownerName = this.sock?.user?.name ?? this.ownerIdentity?.name;
+    const contactNames = store.getContactNamesByAddress("whatsapp", { ownerAddress, ownerName });
     return parseAndStoreWAMessage(
       msg,
       this.sock ?? undefined,
