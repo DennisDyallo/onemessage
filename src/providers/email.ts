@@ -1,4 +1,5 @@
 import { existsSync, readFileSync } from "node:fs";
+import { isIP } from "node:net";
 import { basename, extname, resolve } from "node:path";
 import { ImapFlow } from "imapflow";
 import { type ParsedMail, simpleParser } from "mailparser";
@@ -67,6 +68,23 @@ export function resolveEmailReplyRecipient(
 }
 
 // ---------------------------------------------------------------------------
+// TLS servername resolution
+// ---------------------------------------------------------------------------
+
+/**
+ * A TLS servername that imapflow/Node will accept. An explicit config override
+ * always wins (for non-Proton servers that route/select certs by SNI). Otherwise:
+ * SNI to a bare IP is invalid (RFC 6066) and imapflow coerces an absent value to
+ * `false` — which newer Node rejects at the STARTTLS handshake with
+ * "servername argument must be a string". So map IP hosts to "localhost"; real
+ * hostnames pass through unchanged.
+ */
+export function resolveServername(host: string, override?: string): string {
+  if (override && override.length > 0) return override;
+  return isIP(host) ? "localhost" : host;
+}
+
+// ---------------------------------------------------------------------------
 // Resolved email settings (config + CLI overrides merged)
 // ---------------------------------------------------------------------------
 
@@ -81,6 +99,7 @@ export interface ResolvedEmail {
   smtpPort: number;
   imapPort: number;
   security: string;
+  servername?: string;
 }
 
 export function resolveSettings(cliOverrides?: Record<string, unknown>): ResolvedEmail | null {
@@ -113,6 +132,7 @@ export function resolveSettings(cliOverrides?: Record<string, unknown>): Resolve
     smtpPort: (cliOverrides?.smtpPort as number) ?? email?.smtpPort ?? EMAIL_DEFAULTS.smtpPort,
     imapPort: (cliOverrides?.imapPort as number) ?? email?.imapPort ?? EMAIL_DEFAULTS.imapPort,
     security: (cliOverrides?.security as string) ?? email?.security ?? EMAIL_DEFAULTS.security,
+    servername: (cliOverrides?.servername as string) ?? email?.servername,
   };
 }
 
@@ -138,6 +158,7 @@ async function createImapClient(s: ResolvedEmail, account: string): Promise<Imap
     host: s.host,
     port: s.imapPort,
     secure: false,
+    servername: resolveServername(s.host, s.servername),
     auth: { user: account, pass: s.password },
     tls: { rejectUnauthorized: false },
     logger: false,
@@ -426,7 +447,7 @@ const emailProvider: MessagingProvider = {
       secure: false,
       requireTLS: s.security === "STARTTLS",
       auth: { user: from, pass: s.password },
-      tls: { rejectUnauthorized: false },
+      tls: { rejectUnauthorized: false, servername: resolveServername(s.host, s.servername) },
     });
 
     const attachments = (opts?.attachments ?? []).map((filePath) => {

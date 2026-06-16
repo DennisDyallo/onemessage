@@ -114,6 +114,10 @@ export interface EmailProviderConfig {
   smtpPort?: number; // default: 1025
   imapPort?: number; // default: 1143
   security?: string; // default: STARTTLS
+  // TLS servername (SNI) override. Only needed for non-Proton servers that
+  // route/select certificates by SNI. Defaults: IP host → "localhost",
+  // hostname → the host itself. See resolveServername in providers/email.ts.
+  servername?: string;
 }
 
 export interface TelegramBotProviderConfig {
