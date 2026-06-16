@@ -85,6 +85,17 @@ function printMessage(msg: MessageFull, json: boolean): void {
   console.log(msg.body);
 }
 
+function printSearchEmptyGuidance(providerName: string | undefined): never {
+  if (providerName) {
+    console.error(`No messages matched for provider "${providerName}".`);
+    console.error(`Try a broader query: onemessage search ${providerName} "<query>"`);
+  } else {
+    console.error("No messages matched across configured providers.");
+    console.error('Try a broader query: onemessage search "<query>"');
+  }
+  process.exit(1);
+}
+
 /**
  * Collect provider-specific CLI flags into a providerFlags object.
  * Only includes keys that were actually passed (not undefined).
@@ -280,7 +291,7 @@ addProviderFlags(
 addProviderFlags(
   program
     .command("inbox [provider]")
-    .description("List recent messages (all providers if none specified)")
+    .description("Browse recent messages; use search for retrieval")
     .option("-n, --limit <n>", "Max messages", "10")
     .option("-u, --unread", "Unread only", false)
     .option("--since <date>", "Messages since date")
@@ -450,14 +461,26 @@ addProviderFlags(
 addProviderFlags(
   program
     .command("search [provider] <query>")
-    .description("Search messages")
+    .description("Retrieve messages by query")
     .option("-n, --limit <n>", "Max results", "10")
     .option("--folder <name>", "Folder/chat")
     .option("--account <id>", "Specific account")
     .option("--since <date>", "Messages since date")
     .option("--fresh", "Force re-fetch from source (bypass cache)", false)
     .option("--json", "Output JSON", false),
-).action(async (providerNameOrQuery, queryOrUndefined, opts) => {
+)
+  .addHelpText(
+    "after",
+    `
+Canonical retrieval:
+  onemessage search [provider] <query>
+
+Examples:
+  onemessage search email "invoice"
+  onemessage search "Alice"
+`,
+  )
+  .action(async (providerNameOrQuery, queryOrUndefined, opts) => {
   let providerName: string | undefined;
   let query: string;
 
@@ -474,6 +497,11 @@ addProviderFlags(
   const providers = providerName
     ? [getProviderOrExit(providerName)]
     : getAllProviders().filter((p) => p.isConfigured());
+
+  if (providers.length === 0) {
+    console.error("No configured providers. Run: onemessage status");
+    process.exit(1);
+  }
 
   const allMessages: MessageEnvelope[] = [];
   for (const provider of providers) {
@@ -496,8 +524,15 @@ addProviderFlags(
   }
 
   allMessages.sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime());
+  if (allMessages.length === 0) {
+    if (opts.json) {
+      process.stdout.write("[]\n");
+      return;
+    }
+    printSearchEmptyGuidance(providerName);
+  }
   printEnvelopes(allMessages.slice(0, limit), opts.json);
-});
+  });
 
 // ---- auth -----------------------------------------------------------------
 

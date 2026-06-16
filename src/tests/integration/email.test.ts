@@ -1,4 +1,7 @@
 import { describe, expect, test } from "bun:test";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import {
   buildEmailReferences,
   emailMessageId,
@@ -8,6 +11,20 @@ import {
 } from "../../providers/email.ts";
 import * as store from "../../store.ts";
 import type { MessageFull } from "../../types.ts";
+
+function runCli(home: string, args: string[]) {
+  const configDir = join(home, ".config", "onemessage");
+  return Bun.spawnSync(["bun", "src/cli.ts", ...args], {
+    cwd: process.cwd(),
+    env: {
+      ...process.env,
+      HOME: home,
+      ONEMESSAGE_CONFIG_DIR: configDir,
+    },
+    stdout: "pipe",
+    stderr: "pipe",
+  });
+}
 
 // ---------------------------------------------------------------------------
 // inbox() migration — inboxViaDaemon integration
@@ -267,6 +284,100 @@ describe("reply CLI structure", () => {
     expect(replySource).not.toContain('providerName === "email"');
     expect(replySource).not.toContain("getPreviousOutboundRecipient");
     expect(replySource).not.toContain("inReplyTo: original");
+  });
+});
+
+describe("search CLI UX", () => {
+  test("search help points to the canonical retrieval syntax", () => {
+    const home = mkdtempSync(join(tmpdir(), "onemessage-search-help-"));
+    try {
+      const result = runCli(home, ["search", "--help"]);
+      expect(result.exitCode).toBe(0);
+      const output = result.stdout.toString();
+      expect(output).toContain("Retrieve messages by query");
+      expect(output).toContain("Canonical retrieval:");
+      expect(output).toContain("onemessage search [provider] <query>");
+      expect(output).toContain('onemessage search email "invoice"');
+      expect(output).not.toContain("List recent messages");
+    } finally {
+      rmSync(home, { recursive: true, force: true });
+    }
+  });
+
+  test("search returns cached matches and empty-result guidance", () => {
+    const home = mkdtempSync(join(tmpdir(), "onemessage-search-cli-"));
+    const configDir = join(home, ".config", "onemessage");
+    const prevHome = process.env.HOME;
+    const prevConfigDir = process.env.ONEMESSAGE_CONFIG_DIR;
+
+    try {
+      mkdirSync(configDir, { recursive: true });
+      writeFileSync(
+        join(configDir, "config.json"),
+        JSON.stringify(
+          {
+            email: {
+              password: "bridge-password",
+              accounts: ["alice@example.com"],
+              default: "alice@example.com",
+              defaultFolder: "INBOX",
+            },
+          },
+          null,
+          2,
+        ),
+      );
+
+      process.env.HOME = home;
+      process.env.ONEMESSAGE_CONFIG_DIR = configDir;
+      store.closeDb();
+
+      const cachedAt = new Date().toISOString();
+      store.upsertFullMessages([
+        {
+          id: "email-search-1",
+          provider: "email",
+          account: "alice@example.com",
+          from: { name: "Alice", address: "alice@example.com" },
+          to: [{ name: "Me", address: "me@example.com" }],
+          subject: "Invoice for June",
+          preview: "Invoice for June",
+          body: "Invoice body",
+          bodyFormat: "text",
+          date: cachedAt,
+          unread: false,
+          hasAttachments: false,
+          attachments: [],
+          direction: "in",
+        },
+      ]);
+      store.recordFetch("email", "alice@example.com", "INBOX");
+
+      const hit = runCli(home, ["search", "email", "Invoice"]);
+      expect(hit.exitCode).toBe(0);
+      const hitOutput = hit.stdout.toString();
+      expect(hitOutput).toContain("Invoice for June");
+      expect(hitOutput).toContain("Alice");
+
+      const miss = runCli(home, ["search", "email", "missing term"]);
+      expect(miss.exitCode).toBe(1);
+      const missOutput = miss.stderr.toString();
+      expect(missOutput).toContain('No messages matched for provider "email".');
+      expect(missOutput).toContain('Try a broader query: onemessage search email "<query>"');
+    } finally {
+      store.closeDb();
+      if (prevHome === undefined) {
+        delete process.env.HOME;
+      } else {
+        process.env.HOME = prevHome;
+      }
+      if (prevConfigDir === undefined) {
+        delete process.env.ONEMESSAGE_CONFIG_DIR;
+      } else {
+        process.env.ONEMESSAGE_CONFIG_DIR = prevConfigDir;
+      }
+      rmSync(home, { recursive: true, force: true });
+    }
   });
 });
 
