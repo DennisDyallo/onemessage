@@ -5,7 +5,7 @@
  * and by daemon.ts itself for PID/socket paths.
  */
 
-import { existsSync, readFileSync, unlinkSync } from "node:fs";
+import { existsSync, openSync, readFileSync, unlinkSync } from "node:fs";
 import { connect } from "node:net";
 import { dirname, join } from "node:path";
 import { getConfigDir } from "../config.ts";
@@ -129,9 +129,12 @@ export async function ensureDaemon(): Promise<void> {
 
   removeStaleDaemonRuntimeFiles();
 
+  // B4: redirect the detached daemon's stdout/stderr to a log file instead of
+  // discarding them — silent stdio is what hid the Signal crash-loop for ~2 weeks.
+  const logFd = openSync(join(getConfigDir(), "daemon.log"), "a");
   const proc = Bun.spawn(["bun", "run", "src/daemons/daemon.ts"], {
     cwd: PROJECT_ROOT,
-    stdio: ["ignore", "ignore", "ignore"],
+    stdio: ["ignore", logFd, logFd],
     detached: true,
   });
   proc.unref();

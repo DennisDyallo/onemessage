@@ -1,8 +1,8 @@
-import { existsSync } from "node:fs";
+import { existsSync, readFileSync, statSync, unlinkSync, writeFileSync } from "node:fs";
 import { connect } from "node:net";
 import { join } from "node:path";
 import { getConfigDir, getProviderFreshnessMs, loadConfig } from "../config.ts";
-import { daemonRequest, isDaemonResponding } from "../daemons/shared.ts";
+import { isProcessAlive } from "../daemons/shared.ts";
 import { registerProvider } from "../registry.ts";
 import { getSignalAttachmentDir } from "../shared/attachment-paths.ts";
 import { validateAttachment } from "../shared/attachment-validation.ts";
@@ -53,15 +53,221 @@ export function getSignalJsonRpcSocketPath(): string {
   return join(getConfigDir(), "signal-cli.sock");
 }
 
+// ---------------------------------------------------------------------------
+// Signal-cli child reconciliation (stale-socket resilience)
+//
+// macOS lsof cannot attribute a UNIX socket by path, so liveness is decided by
+// a tri-state connect probe and ownership by a PID-file token written only once
+// our spawned child has actually bound the socket. See
+// Plans/playful-meandering-lighthouse.md §2 for the full design + audit trail.
+// ---------------------------------------------------------------------------
+
+/** PID-file token: the only proof that a live signal-cli child is *ours*. */
+export function getSignalPidFilePath(): string {
+  return join(getConfigDir(), "signal-cli.pid");
+}
+
+export function readSignalChildPid(): number | null {
+  try {
+    const pid = Number.parseInt(readFileSync(getSignalPidFilePath(), "utf-8").trim(), 10);
+    return Number.isNaN(pid) ? null : pid;
+  } catch {
+    return null;
+  }
+}
+
+export function writeSignalChildPid(pid: number): void {
+  writeFileSync(getSignalPidFilePath(), String(pid));
+}
+
+/** Compare-and-clear: only unlink the token if it still holds `expectedPid`, so a
+ *  stale exit handler can never erase a newer child's token. */
+export function clearSignalChildPid(expectedPid?: number): void {
+  try {
+    if (expectedPid !== undefined && readSignalChildPid() !== expectedPid) return;
+    unlinkSync(getSignalPidFilePath());
+  } catch {
+    // ignore — already gone or unwritable
+  }
+}
+
+export type SignalLiveness = "accepting" | "dead" | "uncertain";
+
+/**
+ * Tri-state connect probe — the sole authority on whether anyone is listening.
+ * "dead" (absent / ECONNREFUSED / ENOENT) is definitive ⇒ safe to unlink.
+ * "uncertain" (timeout / other error) ⇒ never unlink, back off.
+ */
+export function probeSignalSocket(
+  socketPath = getSignalJsonRpcSocketPath(),
+  timeoutMs = 500,
+): Promise<SignalLiveness> {
+  return new Promise((resolve) => {
+    if (!existsSync(socketPath)) return resolve("dead");
+    let settled = false;
+    let timer: ReturnType<typeof setTimeout>;
+    const sock = connect(socketPath);
+    const done = (r: SignalLiveness) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      try {
+        sock.destroy();
+      } catch {}
+      resolve(r);
+    };
+    timer = setTimeout(() => done("uncertain"), timeoutMs);
+    sock.once("connect", () => done("accepting"));
+    sock.once("error", (e: NodeJS.ErrnoException) =>
+      done(e.code === "ECONNREFUSED" || e.code === "ENOENT" ? "dead" : "uncertain"),
+    );
+  });
+}
+
+function psField(pid: number, field: string): string | null {
+  try {
+    const r = Bun.spawnSync(["ps", "-ww", "-p", String(pid), "-o", `${field}=`]);
+    if (r.exitCode !== 0) return null;
+    const out = r.stdout.toString().trim();
+    return out.length > 0 ? out : null;
+  } catch {
+    return null;
+  }
+}
+
+/** ~2s tolerance for `ps -o lstart=` second-granularity vs token mtime. */
+const SIGNAL_LSTART_SKEW_MS = 2_000;
+
+/**
+ * True iff `pid` is alive AND a signal-cli for `account` AND started no later
+ * than our PID-token's mtime (the start-time guard closes PID reuse). Biased
+ * toward `false` (a wrong kill is worse than a recoverable "not ours").
+ */
+export function isSignalCliForAccount(pid: number, account: string): boolean {
+  if (!isProcessAlive(pid)) return false;
+  const command = psField(pid, "command");
+  if (!command) return false;
+  const tokens = command.split(/\s+/);
+  const isSignalCli = tokens.some((t) => /(^|\/)signal-cli$/.test(t));
+  if (!isSignalCli || !tokens.includes(account)) return false;
+  try {
+    const lstart = psField(pid, "lstart");
+    if (!lstart) return false;
+    const started = new Date(lstart).getTime();
+    if (Number.isNaN(started)) return false;
+    const tokenMtime = statSync(getSignalPidFilePath()).mtimeMs;
+    return started <= tokenMtime + SIGNAL_LSTART_SKEW_MS;
+  } catch {
+    return false;
+  }
+}
+
+async function waitForPidExit(pid: number, timeoutMs: number): Promise<boolean> {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    if (!isProcessAlive(pid)) return true;
+    await new Promise((r) => setTimeout(r, 100));
+  }
+  return !isProcessAlive(pid);
+}
+
+/**
+ * Reap a confirmed-ours orphan: re-check identity before each kill, confirm the
+ * process exited, then unlink only once the socket probes "dead".
+ */
+export async function reapSignalOrphan(
+  pid: number,
+  account: string,
+  socketPath: string,
+  isOurs: (p: number, a: string) => boolean = isSignalCliForAccount,
+  probe: (path?: string, timeoutMs?: number) => Promise<SignalLiveness> = probeSignalSocket,
+  kill: (p: number, sig?: number) => void = (p, sig) => process.kill(p, sig),
+  waitExit: (p: number, t: number) => Promise<boolean> = waitForPidExit,
+): Promise<boolean> {
+  if (!isOurs(pid, account)) return false; // recycled / changed since check → abort
+  try {
+    kill(pid);
+  } catch {}
+  let exited = await waitExit(pid, 3_000);
+  if (!exited) {
+    if (isOurs(pid, account)) {
+      try {
+        kill(pid, 9);
+      } catch {}
+    }
+    exited = await waitExit(pid, 2_000);
+  }
+  if (!exited) return false; // won't die → do NOT unlink, caller backs off
+  if ((await probe(socketPath)) !== "dead") return false; // replacement listener / uncertain → keep
+  try {
+    unlinkSync(socketPath);
+  } catch {}
+  if (existsSync(socketPath)) return false; // unlink failed → don't claim clear (avoid bind loop)
+  return true;
+}
+
+export type SignalReclaimResult = "clear" | "busy";
+
+/**
+ * Make the socket path bindable without ever duplicating the daemon. Returns
+ * "clear" (spawn) or "busy" (a live listener we don't own, or uncertainty —
+ * back off). Runs under the unified-daemon parent singleton, so a live token
+ * child here is always the previous (dead) parent's orphan.
+ */
+export async function reclaimSignalSocket(
+  account: string,
+  socketPath = getSignalJsonRpcSocketPath(),
+  probe: (path?: string, timeoutMs?: number) => Promise<SignalLiveness> = probeSignalSocket,
+  isOurs: (p: number, a: string) => boolean = isSignalCliForAccount,
+  recordedPid: () => number | null = readSignalChildPid,
+  reap: typeof reapSignalOrphan = reapSignalOrphan,
+): Promise<SignalReclaimResult> {
+  // STEP 1: a live recorded child of ours must be reaped first, regardless of
+  // socket state — a live child keeps processing even if its socket vanished, so
+  // spawning a second one would duplicate the daemon.
+  const mine = recordedPid();
+  if (mine !== null && isOurs(mine, account)) {
+    const reaped = await reap(mine, account, socketPath, isOurs, probe);
+    return reaped ? "clear" : "busy";
+  }
+
+  // STEP 2: no live child of ours — handle the socket file.
+  if (!existsSync(socketPath)) return "clear";
+  const live = await probe(socketPath);
+  if (live === "uncertain") return "busy"; // can't be sure → never clobber
+  if (live === "accepting") {
+    process.stderr.write(
+      `[signal-daemon] socket has a live listener that is not ours (token=${mine}); refusing\n`,
+    );
+    return "busy";
+  }
+  // live === "dead": file present but no listener → stale stub
+  try {
+    unlinkSync(socketPath);
+  } catch {}
+  return existsSync(socketPath) ? "busy" : "clear"; // unlink failed (perms) → don't bind into a loop
+}
+
+type SignalSendPhase = "preTransmit" | "postTransmit";
+
+/** Send failure tagged by phase: preTransmit ⇒ provably never sent (safe to
+ *  retry/fallback); postTransmit ⇒ delivery unknown (surface, never auto-resend). */
+export class SignalSendError extends Error {
+  phase: SignalSendPhase;
+  constructor(message: string, phase: SignalSendPhase) {
+    super(message);
+    this.name = "SignalSendError";
+    this.phase = phase;
+  }
+}
+
 interface SignalJsonRpcSendResult {
   timestamp?: number;
   results?: Array<{ type?: string }>;
 }
 
-async function signalJsonRpcSend(params: Record<string, unknown>): Promise<string | null> {
+async function signalJsonRpcSend(params: Record<string, unknown>): Promise<string> {
   const socketPath = getSignalJsonRpcSocketPath();
-  if (!existsSync(socketPath)) return null;
-
   const id = `onemessage-${Date.now()}`;
   const req = {
     jsonrpc: "2.0",
@@ -71,14 +277,29 @@ async function signalJsonRpcSend(params: Record<string, unknown>): Promise<strin
   };
 
   const resp = await new Promise<Record<string, unknown>>((resolve, reject) => {
+    // `wrote` flips immediately before the first write — failures while false are
+    // preTransmit (nothing left the process), everything after is postTransmit.
+    let wrote = false;
+    let settled = false;
+    let timeout: ReturnType<typeof setTimeout>;
+    const finish = (fn: () => void) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timeout);
+      fn();
+    };
+
     const socket = connect(socketPath, () => {
+      wrote = true;
       socket.write(`${JSON.stringify(req)}\n`);
     });
 
     let data = "";
-    const timeout = setTimeout(() => {
+    timeout = setTimeout(() => {
       socket.destroy();
-      reject(new Error("signal-cli JSON-RPC request timed out"));
+      finish(() =>
+        reject(new SignalSendError("signal-cli JSON-RPC request timed out", "postTransmit")),
+      );
     }, 30_000);
 
     socket.on("data", (chunk) => {
@@ -88,9 +309,8 @@ async function signalJsonRpcSend(params: Record<string, unknown>): Promise<strin
         try {
           const parsed = JSON.parse(line) as Record<string, unknown>;
           if (parsed.id === id) {
-            clearTimeout(timeout);
             socket.end();
-            resolve(parsed);
+            finish(() => resolve(parsed));
             return;
           }
         } catch {
@@ -100,21 +320,29 @@ async function signalJsonRpcSend(params: Record<string, unknown>): Promise<strin
     });
 
     socket.on("end", () => {
-      clearTimeout(timeout);
-      reject(new Error(`signal-cli JSON-RPC socket ended without response: ${data.slice(0, 200)}`));
+      finish(() =>
+        reject(
+          new SignalSendError(
+            `signal-cli JSON-RPC socket ended without response: ${data.slice(0, 200)}`,
+            wrote ? "postTransmit" : "preTransmit",
+          ),
+        ),
+      );
     });
-    socket.on("error", (err) => {
-      clearTimeout(timeout);
-      reject(err);
+    socket.on("error", (err: NodeJS.ErrnoException) => {
+      finish(() =>
+        reject(new SignalSendError(err.message, wrote ? "postTransmit" : "preTransmit")),
+      );
     });
   });
 
   const err = resp.error as { message?: string } | undefined;
-  if (err) throw new Error(err.message ?? JSON.stringify(err));
+  if (err) throw new SignalSendError(err.message ?? JSON.stringify(err), "postTransmit");
 
   const result = resp.result as SignalJsonRpcSendResult | undefined;
   const failed = result?.results?.find((r) => r.type && r.type !== "SUCCESS");
-  if (failed) throw new Error(`signal-cli JSON-RPC send failed: ${failed.type}`);
+  if (failed)
+    throw new SignalSendError(`signal-cli JSON-RPC send failed: ${failed.type}`, "postTransmit");
 
   return result?.timestamp ? String(result.timestamp) : "";
 }
@@ -409,6 +637,8 @@ export interface SignalDaemonHandle {
   stop(): void;
   /** True while the subprocess is running */
   readonly running: boolean;
+  /** Lifecycle state — "blocked" when the socket is held by a process we don't own */
+  readonly status: "starting" | "running" | "blocked" | "stopped";
 }
 
 /**
@@ -429,15 +659,54 @@ export function buildSignalDaemonArgs(account: string): string[] {
   ];
 }
 
-async function unifiedDaemonOwnsSignal(): Promise<boolean> {
-  if (!(await isDaemonResponding(500))) return false;
+const SIGNAL_MAX_BUSY_RETRIES = 6;
+const SIGNAL_READY_TIMEOUT_MS = 10_000;
+
+/** Kill a spawned child and confirm it died (SIGTERM → SIGKILL escalation). */
+async function killAndConfirm(
+  proc: ReturnType<typeof Bun.spawn>,
+  timeoutMs = 3_000,
+): Promise<void> {
   try {
-    const res = await daemonRequest({ type: "status" }, { timeoutMs: 1_000 });
-    const signal = res?.data?.signal as { running?: boolean; mode?: string } | undefined;
-    return signal?.mode === "daemon";
-  } catch {
-    return false;
+    proc.kill();
+  } catch {}
+  const exited = await Promise.race([
+    proc.exited.then(() => true),
+    new Promise<boolean>((r) => setTimeout(() => r(false), timeoutMs)),
+  ]);
+  if (!exited) {
+    try {
+      proc.kill(9);
+    } catch {}
+    await Promise.race([proc.exited, new Promise((r) => setTimeout(r, 1_000))]);
   }
+}
+
+/**
+ * Resolve true only once OUR child holds the socket bind. Polls the connect
+ * probe while racing `proc.exited`; a short grace re-check rules out the window
+ * where a foreign listener accepts while our child is still alive pre-exit
+ * (signal-cli exits on bind failure, so a lost race makes our child exit).
+ */
+async function waitForChildBound(
+  proc: ReturnType<typeof Bun.spawn>,
+  socketPath: string,
+  timeoutMs: number,
+): Promise<boolean> {
+  let alive = true;
+  proc.exited.then(() => {
+    alive = false;
+  });
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    if (!alive) return false;
+    if ((await probeSignalSocket(socketPath)) === "accepting") {
+      await new Promise((r) => setTimeout(r, 150)); // grace
+      return alive; // still alive after grace ⇒ our child won the exclusive bind
+    }
+    await new Promise((r) => setTimeout(r, 150));
+  }
+  return false;
 }
 
 /**
@@ -458,23 +727,26 @@ export function startSignalDaemon(opts: {
   restartDelayMs?: number;
 }): SignalDaemonHandle {
   const restartDelay = opts.restartDelayMs ?? 5_000;
+  const socketPath = getSignalJsonRpcSocketPath();
   let proc: ReturnType<typeof Bun.spawn> | null = null;
   let stopped = false;
   let restartTimer: ReturnType<typeof setTimeout> | null = null;
+  let busyRetries = 0;
+  let status: SignalDaemonHandle["status"] = "starting";
 
-  function spawn() {
-    if (stopped) return;
+  function scheduleRestart(delay = restartDelay) {
+    if (stopped || restartTimer) return;
+    restartTimer = setTimeout(() => {
+      restartTimer = null;
+      void spawn();
+    }, delay);
+  }
 
-    process.stderr.write(`[signal-daemon] starting signal-cli daemon for ${opts.account}\n`);
-
-    proc = Bun.spawn(buildSignalDaemonArgs(opts.account), {
-      stdout: "pipe",
-      stderr: "pipe",
-    });
-
+  // Attach stdout/stderr line readers to a freshly-spawned, ready child.
+  function attachReaders(child: ReturnType<typeof Bun.spawn>) {
     // Stream stdout line-by-line
     (async () => {
-      const stdout = proc?.stdout;
+      const stdout = child.stdout;
       if (!stdout || typeof stdout === "number") return;
       const reader = stdout.getReader();
       const decoder = new TextDecoder();
@@ -511,7 +783,7 @@ export function startSignalDaemon(opts: {
 
     // Drain stderr (filter noise)
     (async () => {
-      const stderr = proc?.stderr;
+      const stderr = child.stderr;
       if (!stderr || typeof stderr === "number") return;
       const reader = stderr.getReader();
       const decoder = new TextDecoder();
@@ -540,40 +812,123 @@ export function startSignalDaemon(opts: {
         // ignore
       }
     })();
+  }
 
-    // Handle process exit
-    proc.exited.then((exitCode) => {
+  async function spawn() {
+    if (stopped) return;
+    status = "starting";
+
+    // B1: reconcile the socket before binding (reaps a live ours-orphan first).
+    const reclaim = await reclaimSignalSocket(opts.account, socketPath);
+    if (stopped) return;
+    if (reclaim === "busy") {
+      busyRetries++;
+      if (busyRetries >= SIGNAL_MAX_BUSY_RETRIES) {
+        status = "blocked";
+        opts.onError?.(
+          `signal socket ${socketPath} is held by a process that is not ours; refusing to start a duplicate — resolve manually (see daemon.log)`,
+        );
+      }
+      process.stderr.write(`[signal-daemon] socket busy (retry ${busyRetries}); backing off\n`);
+      scheduleRestart();
+      return;
+    }
+    busyRetries = 0;
+
+    process.stderr.write(`[signal-daemon] starting signal-cli daemon for ${opts.account}\n`);
+
+    // B3: a synchronous Bun.spawn throw must reschedule, not kill the loop.
+    let child: ReturnType<typeof Bun.spawn>;
+    try {
+      child = Bun.spawn(buildSignalDaemonArgs(opts.account), {
+        stdout: "pipe",
+        stderr: "pipe",
+      });
+    } catch (err) {
       proc = null;
+      opts.onError?.(`signal-cli spawn failed: ${err}`);
+      scheduleRestart();
+      return;
+    }
+    proc = child;
+    const childPid = child.pid;
+
+    // Write the token ONLY after our child actually holds the bind, so
+    // "token-alive + accepting ⇒ ours" holds for the send gate.
+    const ready = await waitForChildBound(child, socketPath, SIGNAL_READY_TIMEOUT_MS);
+    if (stopped) {
+      await killAndConfirm(child);
+      proc = null;
+      clearSignalChildPid(childPid);
+      return;
+    }
+    if (!ready) {
+      await killAndConfirm(child);
+      proc = null;
+      opts.onError?.("signal-cli did not bind its socket; will retry");
+      scheduleRestart();
+      return;
+    }
+    try {
+      writeSignalChildPid(childPid);
+    } catch (err) {
+      await killAndConfirm(child);
+      proc = null;
+      opts.onError?.(`failed to record signal-cli pid, killed child: ${err}`);
+      scheduleRestart();
+      return;
+    }
+    if (stopped) {
+      await killAndConfirm(child);
+      proc = null;
+      clearSignalChildPid(childPid);
+      return;
+    }
+
+    status = "running";
+    attachReaders(child);
+
+    // Handle process exit — compare-and-clear the token, then reschedule.
+    child.exited.then((exitCode) => {
+      if (proc === child) proc = null;
+      clearSignalChildPid(childPid);
       if (stopped) return;
 
       const msg = `signal-cli daemon exited with code ${exitCode}`;
       process.stderr.write(`[signal-daemon] ${msg}, restarting in ${restartDelay}ms\n`);
       opts.onError?.(msg);
-
-      restartTimer = setTimeout(() => {
-        restartTimer = null;
-        spawn();
-      }, restartDelay);
+      scheduleRestart();
     });
   }
 
-  spawn();
+  void spawn();
 
   return {
     stop() {
       stopped = true;
+      status = "stopped";
       if (restartTimer) {
         clearTimeout(restartTimer);
         restartTimer = null;
       }
-      if (proc) {
-        proc.kill();
+      // We hold the actual Bun.Subprocess handle, so killing it is unambiguous
+      // (no foreign-PID risk). Compare-and-clear the token afterward.
+      const child = proc;
+      const pid = child?.pid;
+      if (child) {
+        try {
+          child.kill();
+        } catch {}
         proc = null;
       }
+      if (pid !== undefined) clearSignalChildPid(pid);
       process.stderr.write("[signal-daemon] stopped\n");
     },
     get running() {
       return proc !== null;
+    },
+    get status() {
+      return status;
     },
   };
 }
@@ -665,33 +1020,49 @@ export const signalProvider: MessagingProvider = {
       args.push(recipientId);
     }
 
-    try {
-      const messageId = await signalJsonRpcSend(jsonRpcParams);
-      if (messageId === null) throw new Error("signal-cli JSON-RPC socket not found");
-      cacheSentMessage({
-        provider: "signal",
-        messageId: messageId || undefined,
-        fromAddress: settings.account,
-        recipientId,
-        body,
-        hasAttachments: !!opts?.attachments?.length,
-      });
-      return { ok: true, provider: "signal", recipientId, messageId };
-    } catch (err) {
-      const message = err instanceof Error ? err.message : String(err);
-      if (existsSync(getSignalJsonRpcSocketPath()) || (await unifiedDaemonOwnsSignal())) {
-        return {
-          ok: false,
+    // B2: use the JSON-RPC fast path ONLY when we own the live listener. The
+    // socket path is a singleton; a foreign same-account-or-not daemon could be
+    // bound to it, so sending blindly over it risks a wrong-account send. The
+    // token + identity prove ownership; the probe proves liveness.
+    const tokenPid = readSignalChildPid();
+    const weOwnIt =
+      tokenPid !== null &&
+      isSignalCliForAccount(tokenPid, settings.account) &&
+      (await probeSignalSocket()) === "accepting";
+
+    if (weOwnIt) {
+      try {
+        const messageId = await signalJsonRpcSend(jsonRpcParams);
+        cacheSentMessage({
           provider: "signal",
+          messageId: messageId || undefined,
+          fromAddress: settings.account,
           recipientId,
-          error: `Signal daemon JSON-RPC send failed: ${message}`,
-        };
+          body,
+          hasAttachments: !!opts?.attachments?.length,
+        });
+        return { ok: true, provider: "signal", recipientId, messageId };
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        // Only fall back when the request provably never left this process. Any
+        // ambiguity (post-write timeout/disconnect) is surfaced, never resent.
+        const safeToRetry = err instanceof SignalSendError && err.phase === "preTransmit";
+        if (!safeToRetry) {
+          return {
+            ok: false,
+            provider: "signal",
+            recipientId,
+            error: `Signal send failed (delivery unknown, not retried): ${message}`,
+          };
+        }
+        process.stderr.write(
+          `[signal] JSON-RPC unreachable before transmit; falling back to signal-cli send: ${message}\n`,
+        );
       }
-      process.stderr.write(
-        `[signal] JSON-RPC unavailable, falling back to signal-cli send: ${message}\n`,
-      );
     }
 
+    // Direct send — account-correct by construction (`-a <account>`). Used when we
+    // don't own the daemon socket, or after a provably-pre-transmit JSON-RPC failure.
     const result = runSignalCli(args);
 
     if (result.ok) {

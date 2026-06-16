@@ -67,7 +67,13 @@ export class SignalAdapter implements ProviderAdapter {
   }
 
   statusInfo(): Record<string, unknown> {
-    if (this.daemonHandle) return { mode: "daemon", running: this.daemonHandle.running };
+    if (this.daemonHandle) {
+      return {
+        mode: "daemon",
+        running: this.daemonHandle.running,
+        state: this.daemonHandle.status,
+      };
+    }
     return {};
   }
 
