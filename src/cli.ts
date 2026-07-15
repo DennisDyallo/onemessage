@@ -141,6 +141,10 @@ function addProviderFlags(cmd: Command): Command {
     .option("--access-token <token>", "Access token (matrix)");
 }
 
+function withSenderAlias(opts: Record<string, unknown>): Record<string, unknown> {
+  return opts.sender === undefined && opts.from !== undefined ? { ...opts, sender: opts.from } : opts;
+}
+
 // ---------------------------------------------------------------------------
 // CLI
 // ---------------------------------------------------------------------------
@@ -165,10 +169,12 @@ addProviderFlags(
     .option("--cc <addresses...>", "CC recipients (email)")
     .option("--bcc <addresses...>", "BCC recipients (email)")
     .option("--reply-to <address>", "Reply-To address (email)")
+    .option("--from <address>", "Alias for --sender (email)")
     .option("--account <id>", "Sender account (overrides default)")
     .option("--json", "Output JSON", false),
 ).action(async (providerName, recipientId, body, opts) => {
   const provider = getProviderOrExit(providerName);
+  const resolvedOpts = withSenderAlias(opts);
 
   if (!body && !opts.file) {
     console.error("Provide a message body or --file.");
@@ -183,8 +189,8 @@ addProviderFlags(
     cc: opts.cc,
     bcc: opts.bcc,
     replyTo: opts.replyTo,
-    account: opts.account ?? opts.sender,
-    providerFlags: collectProviderFlags(opts),
+    account: opts.account ?? resolvedOpts.sender,
+    providerFlags: collectProviderFlags(resolvedOpts),
   });
 
   if (opts.json) {
@@ -252,10 +258,12 @@ addProviderFlags(
     .option("-f, --file <path>", "Read body from file")
     .option("--html", "Treat body as HTML", false)
     .option("-a, --attach <files...>", "Attach file(s)")
+    .option("--from <address>", "Alias for --sender (email)")
     .option("--account <id>", "Sender account (overrides default)")
     .option("--json", "Output JSON", false),
 ).action(async (providerName, messageId, body, opts) => {
   const provider = getProviderOrExit(providerName);
+  const resolvedOpts = withSenderAlias(opts);
 
   if (!body && !opts.file) {
     console.error("Provide a reply body or --file.");
@@ -267,8 +275,8 @@ addProviderFlags(
     html: opts.html,
     file: opts.file,
     attachments: opts.attach,
-    account: opts.account ?? opts.sender,
-    providerFlags: collectProviderFlags(opts),
+    account: opts.account ?? resolvedOpts.sender,
+    providerFlags: collectProviderFlags(resolvedOpts),
   };
   const result = provider.reply
     ? await provider.reply(messageId, body ?? "", replyOptions)
