@@ -142,7 +142,9 @@ function addProviderFlags(cmd: Command): Command {
 }
 
 function withSenderAlias(opts: Record<string, unknown>): Record<string, unknown> {
-  return opts.sender === undefined && opts.from !== undefined ? { ...opts, sender: opts.from } : opts;
+  return opts.sender === undefined && opts.from !== undefined
+    ? { ...opts, sender: opts.from }
+    : opts;
 }
 
 // ---------------------------------------------------------------------------
@@ -464,6 +466,75 @@ addProviderFlags(
   printMessage(msg, opts.json);
 });
 
+// ---- instagram sync internals ---------------------------------------------
+
+const instagramCmd = program
+  .command("instagram")
+  .description("Instagram cache and sync operations");
+
+instagramCmd
+  .command("inventory")
+  .description("Refresh/read Instagram thread inventory through the daemon")
+  .option("--account <id>", "Instagram account username")
+  .option("--max-pages <n>", "Maximum source inbox pages", "2")
+  .option("--json", "Output JSON", false)
+  .action(async (opts) => {
+    const { daemonRequest, ensureDaemon } = await import("./daemons/shared.ts");
+    await ensureDaemon();
+    const res = await daemonRequest({
+      type: "instagram-inventory",
+      account: opts.account,
+      maxPages: parseInt(opts.maxPages, 10) || 2,
+    });
+    if (!res?.ok) {
+      console.error(res?.error ?? "Instagram inventory failed");
+      process.exit(1);
+    }
+    if (opts.json) {
+      process.stdout.write(`${JSON.stringify(res.data, null, 2)}\n`);
+    } else {
+      console.log(
+        `Instagram inventory: ${res.data?.performed ? "fetched" : (res.data?.reason ?? "cache")}`,
+      );
+    }
+  });
+
+instagramCmd
+  .command("thread-delta <threadId>")
+  .description("Fetch a bounded Instagram thread delta through the daemon")
+  .option("--account <id>", "Instagram account username")
+  .option("--anchor-id <id>", "Stop after finding this already-exported message ID")
+  .option("--cursor <token>", "Continue from an Instagram thread cursor")
+  .option("--max-pages <n>", "Maximum source thread pages", "2")
+  .option("--max-messages <n>", "Maximum returned messages", "40")
+  .option("--page-limit <n>", "Messages per source page", "20")
+  .option("--json", "Output JSON", false)
+  .action(async (threadId, opts) => {
+    const { daemonRequest, ensureDaemon } = await import("./daemons/shared.ts");
+    await ensureDaemon();
+    const res = await daemonRequest({
+      type: "instagram-thread-delta",
+      threadId,
+      account: opts.account,
+      anchorId: opts.anchorId,
+      cursor: opts.cursor,
+      maxPages: parseInt(opts.maxPages, 10) || 2,
+      maxMessages: parseInt(opts.maxMessages, 10) || 40,
+      pageLimit: parseInt(opts.pageLimit, 10) || 20,
+    });
+    if (!res?.ok) {
+      console.error(res?.error ?? "Instagram thread delta failed");
+      process.exit(1);
+    }
+    if (opts.json) {
+      process.stdout.write(`${JSON.stringify(res.data, null, 2)}\n`);
+    } else {
+      console.log(
+        `Instagram thread delta: ${res.data?.performed ? (res.data?.stopReason ?? "fetched") : (res.data?.reason ?? "cache")}`,
+      );
+    }
+  });
+
 // ---- search ---------------------------------------------------------------
 
 addProviderFlags(
@@ -489,57 +560,57 @@ Examples:
 `,
   )
   .action(async (providerNameOrQuery, queryOrUndefined, opts) => {
-  let providerName: string | undefined;
-  let query: string;
+    let providerName: string | undefined;
+    let query: string;
 
-  const allNames = getAllProviders().map((p) => p.name);
-  if (queryOrUndefined && allNames.includes(providerNameOrQuery)) {
-    providerName = providerNameOrQuery;
-    query = queryOrUndefined;
-  } else {
-    query = providerNameOrQuery;
-  }
-
-  const limit = parseInt(opts.limit, 10) || 10;
-  const providerFlags = collectProviderFlags(opts);
-  const providers = providerName
-    ? [getProviderOrExit(providerName)]
-    : getAllProviders().filter((p) => p.isConfigured());
-
-  if (providers.length === 0) {
-    console.error("No configured providers. Run: onemessage status");
-    process.exit(1);
-  }
-
-  const allMessages: MessageEnvelope[] = [];
-  for (const provider of providers) {
-    if (!provider.search) continue;
-    try {
-      allMessages.push(
-        ...(await provider.search(query, {
-          limit,
-          folder: opts.folder,
-          account: opts.account,
-          since: opts.since,
-          fresh: opts.fresh,
-          providerFlags,
-        })),
-      );
-    } catch (err: unknown) {
-      const message = err instanceof Error ? err.message : String(err);
-      process.stderr.write(`[${provider.name}] Search error: ${message}\n`);
+    const allNames = getAllProviders().map((p) => p.name);
+    if (queryOrUndefined && allNames.includes(providerNameOrQuery)) {
+      providerName = providerNameOrQuery;
+      query = queryOrUndefined;
+    } else {
+      query = providerNameOrQuery;
     }
-  }
 
-  allMessages.sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime());
-  if (allMessages.length === 0) {
-    if (opts.json) {
-      process.stdout.write("[]\n");
-      return;
+    const limit = parseInt(opts.limit, 10) || 10;
+    const providerFlags = collectProviderFlags(opts);
+    const providers = providerName
+      ? [getProviderOrExit(providerName)]
+      : getAllProviders().filter((p) => p.isConfigured());
+
+    if (providers.length === 0) {
+      console.error("No configured providers. Run: onemessage status");
+      process.exit(1);
     }
-    printSearchEmptyGuidance(providerName);
-  }
-  printEnvelopes(allMessages.slice(0, limit), opts.json);
+
+    const allMessages: MessageEnvelope[] = [];
+    for (const provider of providers) {
+      if (!provider.search) continue;
+      try {
+        allMessages.push(
+          ...(await provider.search(query, {
+            limit,
+            folder: opts.folder,
+            account: opts.account,
+            since: opts.since,
+            fresh: opts.fresh,
+            providerFlags,
+          })),
+        );
+      } catch (err: unknown) {
+        const message = err instanceof Error ? err.message : String(err);
+        process.stderr.write(`[${provider.name}] Search error: ${message}\n`);
+      }
+    }
+
+    allMessages.sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime());
+    if (allMessages.length === 0) {
+      if (opts.json) {
+        process.stdout.write("[]\n");
+        return;
+      }
+      printSearchEmptyGuidance(providerName);
+    }
+    printEnvelopes(allMessages.slice(0, limit), opts.json);
   });
 
 // ---- auth -----------------------------------------------------------------

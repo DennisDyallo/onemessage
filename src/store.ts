@@ -533,7 +533,9 @@ export function getThreadMessages(
   const limit = opts?.limit ?? 100;
   const rows = d
     .prepare(
-      "SELECT * FROM messages WHERE provider = ? AND thread_id = ? ORDER BY date ASC LIMIT ?",
+      `SELECT * FROM (
+        SELECT * FROM messages WHERE provider = ? AND thread_id = ? ORDER BY date DESC LIMIT ?
+      ) ORDER BY date ASC`,
     )
     .all(provider, threadId, limit);
   return rows.map(rowToFull);

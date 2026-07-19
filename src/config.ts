@@ -36,7 +36,12 @@ export interface DaemonConfig {
     email?: { enabled?: boolean; pollIntervalMs?: number };
     sms?: { enabled?: boolean; pollIntervalMs?: number };
     "telegram-bot"?: { enabled?: boolean; pollIntervalMs?: number };
-    instagram?: { enabled?: boolean; pollIntervalMs?: number };
+    instagram?: {
+      enabled?: boolean;
+      pollIntervalMs?: number;
+      maxRequestsPerDay?: number;
+      minRequestSpacingMs?: number;
+    };
     matrix?: { enabled?: boolean; pollIntervalMs?: number };
   };
 }

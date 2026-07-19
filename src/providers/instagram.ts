@@ -81,6 +81,11 @@ interface InboxThread {
   unread: boolean;
 }
 
+interface InboxResult {
+  threads: InboxThread[];
+  hasMore?: boolean;
+}
+
 interface ReadMessage {
   id: string;
   itemType: string;
@@ -96,6 +101,7 @@ interface ReadResult {
   threadId: string;
   messages: ReadMessage[];
   cursor?: string;
+  hasMore?: boolean;
   markedSeen?: boolean;
 }
 
@@ -156,49 +162,74 @@ function readMessageToFull(msg: ReadMessage, threadId: string, threadTitle: stri
 // Fetch and cache (callable by daemon)
 // ---------------------------------------------------------------------------
 
-const MAX_THREADS_PER_SYNC = 1;
-const THREAD_MESSAGE_LIMIT = 10;
-const INTER_REQUEST_DELAY_MIN_MS = 3_000;
-const INTER_REQUEST_DELAY_MAX_MS = 6_000;
-
-function randomDelay(): Promise<void> {
-  const ms =
-    Math.floor(Math.random() * (INTER_REQUEST_DELAY_MAX_MS - INTER_REQUEST_DELAY_MIN_MS + 1)) +
-    INTER_REQUEST_DELAY_MIN_MS;
-  return new Promise((resolve) => setTimeout(resolve, ms));
-}
+const THREAD_MESSAGE_LIMIT = 20;
+const INBOX_THREAD_LIMIT = 100;
 
 export async function fetchThreadMessages(
   threadId: string,
   threadTitle: string,
   username: string,
 ): Promise<MessageFull[]> {
-  const result = await runInstagramCliAsync(
-    ["read", threadId, "-o", "json", "-u", username, "--limit", String(THREAD_MESSAGE_LIMIT)],
-    CLI_TIMEOUT_MS,
-  );
+  const page = await fetchThreadMessagesPage(threadId, threadTitle, username, {
+    limit: THREAD_MESSAGE_LIMIT,
+  });
+  return page.messages;
+}
+
+export async function fetchThreadMessagesPage(
+  threadId: string,
+  threadTitle: string,
+  username: string,
+  opts?: { cursor?: string; limit?: number },
+): Promise<{ messages: MessageFull[]; cursor?: string; hasMore: boolean }> {
+  const args = [
+    "read",
+    threadId,
+    "-o",
+    "json",
+    "-u",
+    username,
+    "--limit",
+    String(opts?.limit ?? THREAD_MESSAGE_LIMIT),
+  ];
+  if (opts?.cursor) args.push("--cursor", opts.cursor);
+
+  const result = await runInstagramCliAsync(args, CLI_TIMEOUT_MS);
 
   if (!result.ok) {
-    console.error(
-      `[instagram] Failed to read thread ${threadId}: ${result.stderr || `exit ${result.exitCode}`}`,
+    throw new Error(
+      `instagram-cli read failed: ${result.stderr || result.stdout || `exit ${result.exitCode}`}`,
     );
-    return [];
   }
 
   const parsed = parseCliJson<ReadResult>(result.stdout);
   if (!parsed.ok || !parsed.data?.messages) {
-    console.error(
-      `[instagram] Failed to parse thread ${threadId}: ${parsed.error ?? "no messages"}`,
-    );
-    return [];
+    throw new Error(`instagram-cli read error: ${parsed.error ?? "no messages"}`);
   }
 
-  return parsed.data.messages.map((msg) => readMessageToFull(msg, threadId, threadTitle));
+  return {
+    messages: parsed.data.messages.map((msg) => readMessageToFull(msg, threadId, threadTitle)),
+    cursor: parsed.data.cursor,
+    hasMore: parsed.data.hasMore ?? Boolean(parsed.data.cursor),
+  };
 }
 
-export async function fetchInstagramInbox(username: string): Promise<void> {
+export async function fetchInstagramInbox(
+  username: string,
+  opts?: { pages?: number; limit?: number },
+): Promise<MessageEnvelope[]> {
   const result = await runInstagramCliAsync(
-    ["inbox", "-o", "json", "--limit", "20", "-u", username],
+    [
+      "inbox",
+      "-o",
+      "json",
+      "--limit",
+      String(opts?.limit ?? INBOX_THREAD_LIMIT),
+      "--pages",
+      String(opts?.pages ?? 1),
+      "-u",
+      username,
+    ],
     CLI_TIMEOUT_MS,
   );
 
@@ -208,16 +239,12 @@ export async function fetchInstagramInbox(username: string): Promise<void> {
     );
   }
 
-  const parsed = parseCliJson<InboxThread[]>(result.stdout);
+  const parsed = parseCliJson<InboxThread[] | InboxResult>(result.stdout);
   if (!parsed.ok || !parsed.data) {
     throw new Error(`instagram-cli inbox error: ${parsed.error ?? "unknown"}`);
   }
 
-  const threads = parsed.data;
-
-  const sorted = [...threads].sort(
-    (a, b) => new Date(b.lastActivity).getTime() - new Date(a.lastActivity).getTime(),
-  );
+  const threads = Array.isArray(parsed.data) ? parsed.data : parsed.data.threads;
 
   // Store all thread envelopes so the daemon can read them by thread ID
   const envelopes = threads.map(threadToEnvelope);
@@ -225,20 +252,8 @@ export async function fetchInstagramInbox(username: string): Promise<void> {
     store.upsertMessages(envelopes, "in");
   }
 
-  // Fetch individual messages for most-active threads (grouped under thread ID)
-  // Delay between inbox fetch and thread reads to avoid burst patterns
-  for (const thread of sorted.slice(0, MAX_THREADS_PER_SYNC)) {
-    await randomDelay();
-    const messages = await fetchThreadMessages(thread.id, thread.title, username);
-    if (messages.length > 0) {
-      const incoming = messages.filter((m) => m.from?.address !== "me");
-      const outgoing = messages.filter((m) => m.from?.address === "me");
-      if (incoming.length > 0) store.upsertFullMessages(incoming, thread.id);
-      if (outgoing.length > 0) store.upsertFullMessages(outgoing, thread.id);
-    }
-  }
-
   store.recordFetch("instagram", username);
+  return envelopes;
 }
 
 // ---------------------------------------------------------------------------

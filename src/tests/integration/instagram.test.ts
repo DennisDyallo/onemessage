@@ -385,6 +385,25 @@ describe("instagramProvider.inbox via inboxViaDaemon", () => {
     expect(inboxBody).toContain("account: settings.username");
   });
 
+  test("fetchInstagramInbox stores envelopes only and does not hydrate threads", async () => {
+    const fs = await import("node:fs/promises");
+    const instagramSource = await fs.readFile(
+      new URL("../../providers/instagram.ts", import.meta.url),
+      "utf-8",
+    );
+
+    const fetchMatch = instagramSource.match(
+      /export async function fetchInstagramInbox[\s\S]*?^}/m,
+    );
+    expect(fetchMatch).not.toBeNull();
+    const fetchBody = fetchMatch?.[0] ?? "";
+
+    expect(fetchBody).toContain("store.upsertMessages");
+    expect(fetchBody).toContain("store.recordFetch");
+    expect(fetchBody).not.toContain("fetchThreadMessages");
+    expect(fetchBody).not.toContain("upsertFullMessages");
+  });
+
   test("InstagramAdapter has MIN_FETCH_INTERVAL_MS rate limit guard (structural proof)", async () => {
     // This test proves Instagram has a defensive rate limit to prevent --fresh abuse.
     // Pre-migration, --fresh bypassed freshness checks. Post-migration, the adapter
@@ -410,8 +429,70 @@ describe("instagramProvider.inbox via inboxViaDaemon", () => {
     // Assert: actuallyFetch exists (DRY helper for rate-limited fetch)
     expect(adapterSource).toContain("async actuallyFetch");
 
-    // Assert: lastFetchAt is updated AFTER await (not before)
-    expect(adapterSource).toContain("this.lastFetchAt = Date.now(); // record AFTER success");
+    // Assert: lastFetchAt is updated before live attempt so failures do not retry every poll tick.
+    expect(adapterSource).toContain("this.lastFetchAt = now; // record BEFORE live attempt");
+  });
+
+  test("InstagramAdapter daemon polling is explicit opt-in", async () => {
+    const fs = await import("node:fs/promises");
+    const adapterSource = await fs.readFile(
+      new URL("../../daemons/instagram.ts", import.meta.url),
+      "utf-8",
+    );
+
+    expect(adapterSource).toContain("config.daemon?.providers?.instagram?.enabled === true");
+    expect(adapterSource).not.toContain("config.daemon?.providers?.instagram?.enabled !== false");
+  });
+
+  test("InstagramAdapter persists cooldown state for auth and rate failures", async () => {
+    const fs = await import("node:fs/promises");
+    const adapterSource = await fs.readFile(
+      new URL("../../daemons/instagram.ts", import.meta.url),
+      "utf-8",
+    );
+
+    expect(adapterSource).toContain('store.setCursor("instagram", username, "last_attempt_at"');
+    expect(adapterSource).toContain('store.setCursor("instagram", username, "last_error_class"');
+    expect(adapterSource).toContain('store.setCursor("instagram", username, "cooldown_until"');
+    expect(adapterSource).toContain('message.includes("login_required")');
+    expect(adapterSource).toContain('message.includes("checkpoint")');
+    expect(adapterSource).toContain('message.includes("rate")');
+    expect(adapterSource).toContain('message.includes("403")');
+  });
+
+  test("Instagram thread refresh failures throw instead of becoming empty threads", async () => {
+    const fs = await import("node:fs/promises");
+    const instagramSource = await fs.readFile(
+      new URL("../../providers/instagram.ts", import.meta.url),
+      "utf-8",
+    );
+    const fetchThreadMatch = instagramSource.match(
+      /export async function fetchThreadMessagesPage[\s\S]*?^}/m,
+    );
+    expect(fetchThreadMatch).not.toBeNull();
+    const fetchThreadBody = fetchThreadMatch?.[0] ?? "";
+
+    expect(fetchThreadBody).toContain("throw new Error");
+    expect(fetchThreadBody).toContain("instagram-cli read failed");
+    expect(fetchThreadBody).toContain("instagram-cli read error");
+    expect(fetchThreadBody).not.toContain("return []");
+  });
+
+  test("InstagramAdapter records thread refresh attempts before live calls", async () => {
+    const fs = await import("node:fs/promises");
+    const adapterSource = await fs.readFile(
+      new URL("../../daemons/instagram.ts", import.meta.url),
+      "utf-8",
+    );
+
+    const threadMatch = adapterSource.match(/async actuallyFetchThread[\s\S]*?^ {2}}/m);
+    expect(threadMatch).not.toBeNull();
+    const threadBody = threadMatch?.[0] ?? "";
+
+    expect(threadBody).toContain("this.lastThreadFetchAt.set(threadId, now)");
+    expect(threadBody).toContain('store.setCursor("instagram", username, "last_attempt_at"');
+    expect(threadBody).toContain("classifyInstagramError(err)");
+    expect(threadBody).toContain('store.setCursor("instagram", username, "cooldown_until"');
   });
 
   test("read() --fresh routes through daemon IPC (structural proof of rate-limit fix)", async () => {
@@ -464,8 +545,10 @@ describe("instagramProvider.inbox via inboxViaDaemon", () => {
     // Assert: implements IpcCapableAdapter
     expect(adapterSource).toContain("implements IpcCapableAdapter");
 
-    // Assert: ipcTypes() returns fetch-thread
-    expect(adapterSource).toContain('return ["fetch-thread"]');
+    // Assert: ipcTypes() returns the legacy fetch-thread endpoint and the delta sync endpoints
+    expect(adapterSource).toContain('"fetch-thread"');
+    expect(adapterSource).toContain('"instagram-inventory"');
+    expect(adapterSource).toContain('"instagram-thread-delta"');
 
     // Assert: handleIpc exists
     expect(adapterSource).toContain("async handleIpc");
