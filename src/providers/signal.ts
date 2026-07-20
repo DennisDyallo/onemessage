@@ -13,6 +13,7 @@ import {
   cacheSentMessage,
   cliExists,
   inboxViaDaemon,
+  normalizeRecipientForProvider,
   readFromCacheOrFail,
   runCli,
   runCliAsync,
@@ -967,12 +968,17 @@ export const signalProvider: MessagingProvider = {
   },
 
   async send(recipientId, body, opts) {
+    const normalized = normalizeRecipientForProvider("signal", recipientId);
+    if (!normalized.ok) {
+      return { ok: false, provider: "signal", recipientId, error: normalized.error };
+    }
+    const sendRecipientId = normalized.recipientId;
     const settings = resolveSettings(opts?.providerFlags);
     if (!settings) {
       return {
         ok: false,
         provider: "signal",
-        recipientId,
+        recipientId: sendRecipientId,
         error: "Signal not configured. Run: onemessage auth signal",
       };
     }
@@ -981,7 +987,7 @@ export const signalProvider: MessagingProvider = {
       return {
         ok: false,
         provider: "signal",
-        recipientId,
+        recipientId: sendRecipientId,
         error: "signal-cli not found. Install: brew install signal-cli",
       };
     }
@@ -996,8 +1002,8 @@ export const signalProvider: MessagingProvider = {
       }
     }
 
-    if (recipientId.startsWith("group:")) {
-      let groupId = recipientId.slice(6);
+    if (sendRecipientId.startsWith("group:")) {
+      let groupId = sendRecipientId.slice(6);
       if (!isBase64GroupId(groupId)) {
         try {
           groupId = resolveGroupId(groupId, settings.account);
@@ -1005,19 +1011,19 @@ export const signalProvider: MessagingProvider = {
           return {
             ok: false,
             provider: "signal",
-            recipientId,
+            recipientId: sendRecipientId,
             error: e instanceof Error ? e.message : String(e),
           };
         }
       }
       jsonRpcParams.groupId = groupId;
       args.push("-g", groupId);
-    } else if (recipientId === settings.account) {
+    } else if (sendRecipientId === settings.account) {
       jsonRpcParams.noteToSelf = true;
       args.push("--note-to-self");
     } else {
-      jsonRpcParams.recipient = [recipientId];
-      args.push(recipientId);
+      jsonRpcParams.recipient = [sendRecipientId];
+      args.push(sendRecipientId);
     }
 
     // B2: use the JSON-RPC fast path ONLY when we own the live listener. The
@@ -1037,11 +1043,11 @@ export const signalProvider: MessagingProvider = {
           provider: "signal",
           messageId: messageId || undefined,
           fromAddress: settings.account,
-          recipientId,
+          recipientId: sendRecipientId,
           body,
           hasAttachments: !!opts?.attachments?.length,
         });
-        return { ok: true, provider: "signal", recipientId, messageId };
+        return { ok: true, provider: "signal", recipientId: sendRecipientId, messageId };
       } catch (err) {
         const message = err instanceof Error ? err.message : String(err);
         // Only fall back when the request provably never left this process. Any
@@ -1051,7 +1057,7 @@ export const signalProvider: MessagingProvider = {
           return {
             ok: false,
             provider: "signal",
-            recipientId,
+            recipientId: sendRecipientId,
             error: `Signal send failed (delivery unknown, not retried): ${message}`,
           };
         }
@@ -1072,16 +1078,16 @@ export const signalProvider: MessagingProvider = {
           provider: "signal",
           messageId,
           fromAddress: settings.account,
-          recipientId,
+          recipientId: sendRecipientId,
           body,
         });
       }
-      return { ok: true, provider: "signal", recipientId, messageId };
+      return { ok: true, provider: "signal", recipientId: sendRecipientId, messageId };
     } else {
       return {
         ok: false,
         provider: "signal",
-        recipientId,
+        recipientId: sendRecipientId,
         error: result.stderr || result.stdout || `Exit code ${result.exitCode}`,
       };
     }

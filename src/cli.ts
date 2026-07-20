@@ -963,8 +963,15 @@ daemonCmd
   .command("stop")
   .description("Stop the running daemon")
   .action(async () => {
-    const { DAEMON_PID, daemonRequest, isDaemonResponding, isProcessAlive, readDaemonPid } =
-      await import("./daemons/shared.ts");
+    const {
+      DAEMON_PID,
+      daemonRequest,
+      diagnoseDaemonHealth,
+      formatDaemonHealth,
+      isDaemonResponding,
+      isProcessAlive,
+      readDaemonPid,
+    } = await import("./daemons/shared.ts");
     const { existsSync, unlinkSync } = await import("node:fs");
 
     if (!existsSync(DAEMON_PID)) {
@@ -990,7 +997,9 @@ daemonCmd
     }
 
     if (isProcessAlive(pid)) {
+      const health = await diagnoseDaemonHealth();
       console.error(`  Daemon is not responding; refusing to kill unverified PID ${pid}.`);
+      console.error(`  ${formatDaemonHealth(health)}`);
       return;
     }
 
@@ -1004,23 +1013,21 @@ daemonCmd
   .command("restart")
   .description("Restart the daemon (launchctl if managed, otherwise stop + start)")
   .action(async () => {
-    const PLIST = `${process.env.HOME}/Library/LaunchAgents/com.onemessage.daemon.plist`;
     const { existsSync } = await import("node:fs");
     const {
       DAEMON_PID,
       DAEMON_SOCK,
       daemonRequest,
+      diagnoseDaemonHealth,
+      formatDaemonHealth,
       isDaemonResponding,
       isDaemonRunning,
       isProcessAlive,
       readDaemonPid,
+      restartDaemonViaLaunchctl,
     } = await import("./daemons/shared.ts");
 
-    if (existsSync(PLIST)) {
-      // Managed by launchd — unload/load so launchd owns the restart (no competing spawns)
-      Bun.spawnSync(["launchctl", "unload", PLIST], { stdio: ["ignore", "inherit", "inherit"] });
-      await new Promise((r) => setTimeout(r, 2000));
-      Bun.spawnSync(["launchctl", "load", PLIST], { stdio: ["ignore", "inherit", "inherit"] });
+    if (restartDaemonViaLaunchctl()) {
       // Wait for socket
       const maxWait = 10_000;
       let waited = 0;
@@ -1032,7 +1039,9 @@ daemonCmd
         await new Promise((r) => setTimeout(r, 200));
         waited += 200;
       }
-      console.error("  Daemon failed to start within 10 seconds.");
+      console.error(
+        `  Daemon failed to start within 10 seconds. ${formatDaemonHealth(await diagnoseDaemonHealth())}`,
+      );
       return;
     }
 
@@ -1052,7 +1061,9 @@ daemonCmd
           console.log(`  Sent SIGTERM to daemon (pid=${statusPid}).`);
         }
       } else if (isProcessAlive(pid)) {
+        const health = await diagnoseDaemonHealth();
         console.error(`  Daemon is not responding; refusing to restart unverified PID ${pid}.`);
+        console.error(`  ${formatDaemonHealth(health)}`);
         return;
       } else {
         try {
@@ -1084,7 +1095,9 @@ daemonCmd
       await new Promise((r) => setTimeout(r, 200));
       waited2 += 200;
     }
-    console.error("  Daemon failed to start within 10 seconds.");
+    console.error(
+      `  Daemon failed to start within 10 seconds. ${formatDaemonHealth(await diagnoseDaemonHealth())}`,
+    );
   });
 
 daemonCmd
@@ -1092,13 +1105,16 @@ daemonCmd
   .description("Show daemon status")
   .option("--json", "Output JSON", false)
   .action(async (opts) => {
-    const { isDaemonRunning, daemonRequest } = await import("./daemons/shared.ts");
+    const { daemonRequest, diagnoseDaemonHealth, formatDaemonHealth } = await import(
+      "./daemons/shared.ts"
+    );
 
-    if (!isDaemonRunning()) {
+    const health = await diagnoseDaemonHealth();
+    if (health.state !== "healthy") {
       if (opts.json) {
-        process.stdout.write(`${JSON.stringify({ running: false })}\n`);
+        process.stdout.write(`${JSON.stringify({ running: false, health }, null, 2)}\n`);
       } else {
-        console.log("  Daemon is not running.");
+        console.log(`  ${formatDaemonHealth(health)}`);
       }
       return;
     }
@@ -1158,9 +1174,10 @@ daemonCmd
     } catch (err: unknown) {
       const message = err instanceof Error ? err.message : String(err);
       if (opts.json) {
-        process.stdout.write(`${JSON.stringify({ running: true, error: message })}\n`);
+        process.stdout.write(`${JSON.stringify({ running: true, health, error: message })}\n`);
       } else {
         console.error(`  Daemon is running but not responding: ${message}`);
+        console.error(`  ${formatDaemonHealth(await diagnoseDaemonHealth())}`);
       }
     }
   });

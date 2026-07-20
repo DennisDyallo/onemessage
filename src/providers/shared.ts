@@ -28,6 +28,64 @@ export interface ReplyResolution {
 }
 
 // ---------------------------------------------------------------------------
+// Recipient normalization
+// ---------------------------------------------------------------------------
+
+export interface RecipientNormalizationResult {
+  ok: boolean;
+  recipientId: string;
+  error?: string;
+}
+
+const PHONE_LIKE_PROVIDERS = new Set(["signal", "sms", "whatsapp"]);
+
+export function normalizePhoneRecipient(recipientId: string): RecipientNormalizationResult {
+  const trimmed = recipientId.trim();
+  if (!trimmed) {
+    return { ok: false, recipientId, error: "Recipient is empty." };
+  }
+
+  if (trimmed.startsWith("group:") || trimmed.includes("@")) {
+    return { ok: true, recipientId: trimmed };
+  }
+
+  const compact = trimmed.replace(/[\s().-]/g, "");
+  if (!/^\+?\d+$/.test(compact) && !compact.startsWith("00")) {
+    return { ok: true, recipientId: trimmed };
+  }
+
+  if (compact.startsWith("+")) {
+    return { ok: true, recipientId: `+${compact.slice(1).replace(/\D/g, "")}` };
+  }
+
+  if (compact.startsWith("00")) {
+    return { ok: true, recipientId: `+${compact.slice(2)}` };
+  }
+
+  if (compact.startsWith("46")) {
+    return { ok: true, recipientId: `+${compact}` };
+  }
+
+  if (/^0[1-9]\d+$/.test(compact)) {
+    return { ok: true, recipientId: `+46${compact.slice(1)}` };
+  }
+
+  return {
+    ok: false,
+    recipientId: trimmed,
+    error: `Cannot infer country code for "${trimmed}". Use E.164 format, e.g. +46728418689.`,
+  };
+}
+
+export function normalizeRecipientForProvider(
+  provider: string,
+  recipientId: string,
+): RecipientNormalizationResult {
+  if (!PHONE_LIKE_PROVIDERS.has(provider)) return { ok: true, recipientId: recipientId.trim() };
+  return normalizePhoneRecipient(recipientId);
+}
+
+// ---------------------------------------------------------------------------
 // CLI binary check
 // ---------------------------------------------------------------------------
 

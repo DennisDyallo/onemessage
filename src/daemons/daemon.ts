@@ -29,6 +29,11 @@ import { SmsAdapter } from "./sms.ts";
 import { TelegramBotAdapter } from "./telegram-bot.ts";
 import { WhatsAppAdapter } from "./whatsapp.ts";
 
+type PendingIpcWrite = {
+  resume: () => void;
+  reject: (err: Error) => void;
+};
+
 // ---------------------------------------------------------------------------
 // IPC types
 // ---------------------------------------------------------------------------
@@ -80,6 +85,7 @@ export class UnifiedDaemon {
   private ipcTypeOwners = new Map<string, import("./adapter.ts").IpcCapableAdapter>();
   private ipcBuffers = new WeakMap<object, string>();
   private ipcClosing = new WeakSet<object>();
+  private ipcPendingWrites = new WeakMap<object, PendingIpcWrite>();
 
   // Lifecycle
   private startTime = Date.now();
@@ -292,7 +298,7 @@ export class UnifiedDaemon {
               try {
                 const resp = await self.handleRequest(frame);
                 try {
-                  socket.write(`${JSON.stringify(resp)}\n`);
+                  await self.writeIpcResponse(socket, resp);
                 } catch (writeErr) {
                   process.stderr.write(`[daemon] socket.write failed: ${writeErr}\n`);
                 }
@@ -302,7 +308,7 @@ export class UnifiedDaemon {
                   error: String(err),
                 };
                 try {
-                  socket.write(`${JSON.stringify(errResp)}\n`);
+                  await self.writeIpcResponse(socket, errResp);
                 } catch (writeErr) {
                   process.stderr.write(`[daemon] error response write failed: ${writeErr}\n`);
                 }
@@ -317,13 +323,60 @@ export class UnifiedDaemon {
         },
         open() {},
         close(socket) {
+          const pending = self.ipcPendingWrites.get(socket);
+          pending?.reject(new Error("socket closed before response flushed"));
+          self.ipcPendingWrites.delete(socket);
           self.ipcBuffers.delete(socket);
           self.ipcClosing.delete(socket);
+        },
+        drain(socket) {
+          self.ipcPendingWrites.get(socket)?.resume();
         },
         error(_socket, err) {
           process.stderr.write(`[daemon] socket error: ${err}\n`);
         },
       },
+    });
+  }
+
+  private writeIpcResponse(socket: Bun.Socket<unknown>, response: DaemonResponse): Promise<void> {
+    const payload = Buffer.from(`${JSON.stringify(response)}\n`, "utf-8");
+
+    return new Promise((resolve, reject) => {
+      let offset = 0;
+      let settled = false;
+
+      const fail = (err: Error) => {
+        if (settled) return;
+        settled = true;
+        this.ipcPendingWrites.delete(socket);
+        reject(err);
+      };
+
+      const writeMore = () => {
+        if (settled) return;
+        try {
+          while (offset < payload.byteLength) {
+            const written = socket.write(payload, offset, payload.byteLength - offset);
+            if (written < 0) {
+              fail(new Error("socket closed while writing response"));
+              return;
+            }
+            if (written === 0) {
+              this.ipcPendingWrites.set(socket, { resume: writeMore, reject: fail });
+              return;
+            }
+            offset += written;
+          }
+          settled = true;
+          this.ipcPendingWrites.delete(socket);
+          resolve();
+        } catch (err) {
+          fail(err instanceof Error ? err : new Error(String(err)));
+        }
+      };
+
+      writeMore();
     });
   }
 

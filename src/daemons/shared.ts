@@ -17,6 +17,110 @@ import { getConfigDir } from "../config.ts";
 export const DAEMON_PID = join(getConfigDir(), "daemon.pid");
 export const DAEMON_SOCK = join(getConfigDir(), "daemon.sock");
 
+export type DaemonHealthState =
+  | "healthy"
+  | "stopped"
+  | "invalid-pid"
+  | "stale-pid"
+  | "missing-socket"
+  | "unresponsive-socket";
+
+export interface DaemonHealth {
+  state: DaemonHealthState;
+  pid: number | null;
+  pidFileExists: boolean;
+  processAlive: boolean;
+  socketExists: boolean;
+  responding: boolean;
+  message: string;
+  suggestedCommand?: string;
+}
+
+export function classifyDaemonRuntimeState(input: {
+  pid: number | null;
+  pidFileExists: boolean;
+  processAlive: boolean;
+  socketExists: boolean;
+  responding: boolean;
+}): DaemonHealth {
+  const { pid, pidFileExists, processAlive, socketExists, responding } = input;
+
+  if (!pidFileExists) {
+    return {
+      state: "stopped",
+      pid,
+      pidFileExists,
+      processAlive,
+      socketExists,
+      responding,
+      message: "Daemon is not running (no PID file).",
+      suggestedCommand: "onemessage daemon start",
+    };
+  }
+
+  if (pid === null) {
+    return {
+      state: "invalid-pid",
+      pid,
+      pidFileExists,
+      processAlive,
+      socketExists,
+      responding,
+      message: "Daemon PID file is invalid.",
+      suggestedCommand: "onemessage daemon restart",
+    };
+  }
+
+  if (!processAlive) {
+    return {
+      state: "stale-pid",
+      pid,
+      pidFileExists,
+      processAlive,
+      socketExists,
+      responding,
+      message: `PID file points at ${pid}, but that process is not alive.`,
+      suggestedCommand: "onemessage daemon restart",
+    };
+  }
+
+  if (!socketExists) {
+    return {
+      state: "missing-socket",
+      pid,
+      pidFileExists,
+      processAlive,
+      socketExists,
+      responding,
+      message: `PID ${pid} exists, but the IPC socket is missing; daemon state is stale.`,
+      suggestedCommand: "onemessage daemon restart",
+    };
+  }
+
+  if (!responding) {
+    return {
+      state: "unresponsive-socket",
+      pid,
+      pidFileExists,
+      processAlive,
+      socketExists,
+      responding,
+      message: `PID ${pid} exists and socket exists, but the daemon is not responding.`,
+      suggestedCommand: "onemessage daemon restart",
+    };
+  }
+
+  return {
+    state: "healthy",
+    pid,
+    pidFileExists,
+    processAlive,
+    socketExists,
+    responding,
+    message: `Daemon is healthy (pid=${pid}).`,
+  };
+}
+
 // ---------------------------------------------------------------------------
 // Daemon status
 // ---------------------------------------------------------------------------
@@ -45,6 +149,54 @@ export function isDaemonRunning(): boolean {
   return pid !== null && isProcessAlive(pid);
 }
 
+export async function diagnoseDaemonHealth(timeoutMs = 1_000): Promise<DaemonHealth> {
+  const pidFileExists = existsSync(DAEMON_PID);
+  const pid = readDaemonPid();
+  const processAlive = pid !== null && isProcessAlive(pid);
+  const socketExists = existsSync(DAEMON_SOCK);
+  const responding = socketExists ? await isDaemonResponding(timeoutMs) : false;
+
+  return classifyDaemonRuntimeState({
+    pid,
+    pidFileExists,
+    processAlive,
+    socketExists,
+    responding,
+  });
+}
+
+export function formatDaemonHealth(health: DaemonHealth): string {
+  const parts = [
+    health.message,
+    `state=${health.state}`,
+    `pid=${health.pid ?? "none"}`,
+    `pidFile=${health.pidFileExists ? "present" : "missing"}`,
+    `socket=${health.socketExists ? DAEMON_SOCK : "missing"}`,
+    `responding=${health.responding ? "yes" : "no"}`,
+  ];
+  if (health.suggestedCommand) parts.push(`try: ${health.suggestedCommand}`);
+  return parts.join("; ");
+}
+
+export function launchdServiceTarget(): string {
+  const uid = process.getuid?.();
+  return uid === undefined ? "com.onemessage.daemon" : `gui/${uid}/com.onemessage.daemon`;
+}
+
+export function restartDaemonViaLaunchctl(): boolean {
+  const plist = `${process.env.HOME}/Library/LaunchAgents/com.onemessage.daemon.plist`;
+  if (!existsSync(plist)) return false;
+
+  const kick = Bun.spawnSync(["launchctl", "kickstart", "-k", launchdServiceTarget()], {
+    stdio: ["ignore", "inherit", "inherit"],
+  });
+  if (kick.exitCode === 0) return true;
+
+  Bun.spawnSync(["launchctl", "unload", plist], { stdio: ["ignore", "inherit", "inherit"] });
+  Bun.spawnSync(["launchctl", "load", plist], { stdio: ["ignore", "inherit", "inherit"] });
+  return true;
+}
+
 // ---------------------------------------------------------------------------
 // IPC client
 // ---------------------------------------------------------------------------
@@ -53,9 +205,32 @@ export function isDaemonRunning(): boolean {
 export function daemonRequest(req: object, opts?: { timeoutMs?: number }): Promise<any> {
   return new Promise((resolve, reject) => {
     let socket: ReturnType<typeof connect> | null = null;
+    let settled = false;
+
+    const finish = (fn: () => void) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timeout);
+      fn();
+    };
+
     const timeout = setTimeout(() => {
       if (socket) socket.destroy();
-      reject(new Error(`Daemon request timed out (${opts?.timeoutMs ?? 30_000}ms)`));
+      const pid = readDaemonPid();
+      const health = classifyDaemonRuntimeState({
+        pid,
+        pidFileExists: existsSync(DAEMON_PID),
+        processAlive: pid !== null && isProcessAlive(pid),
+        socketExists: existsSync(DAEMON_SOCK),
+        responding: false,
+      });
+      finish(() =>
+        reject(
+          new Error(
+            `Daemon request timed out (${opts?.timeoutMs ?? 30_000}ms). ${formatDaemonHealth(health)}`,
+          ),
+        ),
+      );
     }, opts?.timeoutMs ?? 30_000);
 
     socket = connect(DAEMON_SOCK, () => {
@@ -65,20 +240,32 @@ export function daemonRequest(req: object, opts?: { timeoutMs?: number }): Promi
     let data = "";
     socket.on("data", (chunk) => {
       data += chunk.toString();
+      const newlineIdx = data.indexOf("\n");
+      if (newlineIdx === -1) return;
+
+      const frame = data.slice(0, newlineIdx).trim();
+      if (!frame) return;
+      finish(() => {
+        try {
+          resolve(JSON.parse(frame));
+        } catch {
+          reject(new Error(`Invalid JSON from daemon: ${frame.slice(0, 200)}`));
+        }
+      });
     });
 
     socket.on("end", () => {
-      clearTimeout(timeout);
-      try {
-        resolve(JSON.parse(data));
-      } catch {
-        reject(new Error(`Invalid JSON from daemon: ${data.slice(0, 200)}`));
-      }
+      finish(() => {
+        try {
+          resolve(JSON.parse(data.trim()));
+        } catch {
+          reject(new Error(`Invalid JSON from daemon: ${data.slice(0, 200)}`));
+        }
+      });
     });
 
     socket.on("error", (err) => {
-      clearTimeout(timeout);
-      reject(err);
+      finish(() => reject(err));
     });
   });
 }
@@ -125,6 +312,14 @@ export async function ensureDaemon(): Promise<void> {
       if (await isDaemonResponding()) return;
       await new Promise((r) => setTimeout(r, 200));
     }
+
+    if (restartDaemonViaLaunchctl()) {
+      const restartDeadline = Date.now() + 10_000;
+      while (Date.now() < restartDeadline) {
+        if (isDaemonRunning() && (await isDaemonResponding())) return;
+        await new Promise((r) => setTimeout(r, 200));
+      }
+    }
   }
 
   removeStaleDaemonRuntimeFiles();
@@ -149,5 +344,6 @@ export async function ensureDaemon(): Promise<void> {
     waited += interval;
   }
 
-  throw new Error("Daemon failed to start within 10 seconds");
+  const health = await diagnoseDaemonHealth();
+  throw new Error(`Daemon failed to start within 10 seconds. ${formatDaemonHealth(health)}`);
 }

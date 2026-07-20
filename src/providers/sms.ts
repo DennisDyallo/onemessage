@@ -6,6 +6,7 @@ import {
   cacheSentMessage,
   cliExists,
   inboxViaDaemon,
+  normalizeRecipientForProvider,
   readFromCacheOrFail,
   runCli,
 } from "./shared.ts";
@@ -513,17 +514,22 @@ export const smsProvider: MessagingProvider = {
   },
 
   async send(recipientId, body, opts) {
+    const normalized = normalizeRecipientForProvider("sms", recipientId);
+    if (!normalized.ok) {
+      return { ok: false, provider: "sms", recipientId, error: normalized.error };
+    }
+    const sendRecipientId = normalized.recipientId;
     const settings = resolveSettings(opts?.providerFlags);
     if (!settings) {
       return {
         ok: false,
         provider: "sms",
-        recipientId,
+        recipientId: sendRecipientId,
         error: "SMS not configured. Run: onemessage auth sms",
       };
     }
 
-    const args = ["--name", settings.device, "--send-sms", body, "--destination", recipientId];
+    const args = ["--name", settings.device, "--send-sms", body, "--destination", sendRecipientId];
 
     if (opts?.attachments) {
       for (const attachment of opts.attachments) {
@@ -537,15 +543,15 @@ export const smsProvider: MessagingProvider = {
       cacheSentMessage({
         provider: "sms",
         fromAddress: settings.device,
-        recipientId,
+        recipientId: sendRecipientId,
         body,
         hasAttachments: (opts?.attachments?.length ?? 0) > 0,
       });
-      return { ok: true, provider: "sms", recipientId };
+      return { ok: true, provider: "sms", recipientId: sendRecipientId };
     } else {
       const error =
         result.stderr || result.stdout || `kdeconnect-cli exited with code ${result.exitCode}`;
-      return { ok: false, provider: "sms", recipientId, error };
+      return { ok: false, provider: "sms", recipientId: sendRecipientId, error };
     }
   },
 

@@ -6,7 +6,12 @@ import { registerProvider } from "../registry.ts";
 import { validateAttachment } from "../shared/attachment-validation.ts";
 import * as store from "../store.ts";
 import type { MessagingProvider, SendResult } from "../types.ts";
-import { cacheSentMessage, inboxViaDaemon, readFromCacheOrFail } from "./shared.ts";
+import {
+  cacheSentMessage,
+  inboxViaDaemon,
+  normalizeRecipientForProvider,
+  readFromCacheOrFail,
+} from "./shared.ts";
 import { AUTH_DIR } from "./whatsapp-shared.ts";
 
 type WhatsAppDaemonSendResponse =
@@ -104,15 +109,25 @@ export const whatsappProvider: MessagingProvider = {
   },
 
   async send(recipientId, body, _opts) {
+    const normalized = normalizeRecipientForProvider("whatsapp", recipientId);
+    if (!normalized.ok) {
+      return { ok: false, provider: "whatsapp", recipientId, error: normalized.error };
+    }
+
     await ensureDaemon();
-    const jid = await recipientToJid(recipientId);
+    const jid = await recipientToJid(normalized.recipientId);
     if (!jid) {
-      return { ok: false, provider: "whatsapp", recipientId, error: "Invalid recipient" };
+      return {
+        ok: false,
+        provider: "whatsapp",
+        recipientId: normalized.recipientId,
+        error: "Invalid recipient. Use E.164 format, e.g. +46728418689.",
+      };
     }
 
     const res = await daemonRequest({ type: "send", jid, text: body });
 
-    return whatsappSendResultFromDaemon(res, recipientId, body);
+    return whatsappSendResultFromDaemon(res, normalized.recipientId, body);
   },
 
   async inbox(opts) {

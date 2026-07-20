@@ -10,6 +10,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
   cacheSentMessage,
+  normalizeRecipientForProvider,
   readFromCacheOrFail,
   replyViaSend,
   resolveDefaultReply,
@@ -71,6 +72,49 @@ describe("readFromCacheOrFail", () => {
   test("returns null for nonexistent provider", () => {
     const result = readFromCacheOrFail("__no_such_provider__", "any-id");
     expect(result).toBeNull();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// recipient normalization
+// ---------------------------------------------------------------------------
+
+describe("recipient normalization", () => {
+  test("normalizes Swedish E.164-like phone numbers for WhatsApp", () => {
+    expect(normalizeRecipientForProvider("whatsapp", "46728418689")).toEqual({
+      ok: true,
+      recipientId: "+46728418689",
+    });
+  });
+
+  test("normalizes Swedish local phone numbers for all phone-like providers", () => {
+    for (const provider of ["whatsapp", "signal", "sms"]) {
+      expect(normalizeRecipientForProvider(provider, "072-841 86 89")).toEqual({
+        ok: true,
+        recipientId: "+46728418689",
+      });
+    }
+  });
+
+  test("preserves provider-native group and JID recipient formats", () => {
+    expect(normalizeRecipientForProvider("whatsapp", "group:Family").recipientId).toBe(
+      "group:Family",
+    );
+    expect(normalizeRecipientForProvider("whatsapp", "123@g.us").recipientId).toBe("123@g.us");
+  });
+
+  test("rejects ambiguous bare phone numbers with precise E.164 guidance", () => {
+    const result = normalizeRecipientForProvider("signal", "728418689");
+
+    expect(result.ok).toBe(false);
+    expect(result.error).toContain("Use E.164 format");
+  });
+
+  test("does not phone-normalize non-phone providers", () => {
+    expect(normalizeRecipientForProvider("email", "person@example.com")).toEqual({
+      ok: true,
+      recipientId: "person@example.com",
+    });
   });
 });
 

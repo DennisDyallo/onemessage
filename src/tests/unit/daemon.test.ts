@@ -6,6 +6,7 @@ import type {
   ProviderAdapter,
 } from "../../daemons/adapter.ts";
 import { extractIpcFrames, UnifiedDaemon } from "../../daemons/daemon.ts";
+import { classifyDaemonRuntimeState } from "../../daemons/shared.ts";
 import { SignalAdapter } from "../../daemons/signal.ts";
 
 // ---------------------------------------------------------------------------
@@ -65,6 +66,33 @@ class StubIpcAdapter implements IpcCapableAdapter {
 // ---------------------------------------------------------------------------
 
 describe("daemon IPC dispatch", () => {
+  test("daemon health classifies live PID with missing socket as stale missing-socket", () => {
+    const health = classifyDaemonRuntimeState({
+      pid: 123,
+      pidFileExists: true,
+      processAlive: true,
+      socketExists: false,
+      responding: false,
+    });
+
+    expect(health.state).toBe("missing-socket");
+    expect(health.message).toContain("IPC socket is missing");
+    expect(health.suggestedCommand).toBe("onemessage daemon restart");
+  });
+
+  test("daemon health classifies dead PID file as stale-pid", () => {
+    const health = classifyDaemonRuntimeState({
+      pid: 123,
+      pidFileExists: true,
+      processAlive: false,
+      socketExists: false,
+      responding: false,
+    });
+
+    expect(health.state).toBe("stale-pid");
+    expect(health.message).toContain("not alive");
+  });
+
   test("IPC framing buffers fragmented newline-delimited JSON frames", () => {
     const first = extractIpcFrames("", '{"type":"pi');
     expect(first.frames).toEqual([]);
