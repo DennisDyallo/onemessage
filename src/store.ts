@@ -3,7 +3,7 @@ import { Buffer } from "node:buffer";
 import { mkdirSync } from "node:fs";
 import { join } from "node:path";
 import { getConfigDir } from "./config.ts";
-import type { MessageEnvelope, MessageFull } from "./types.ts";
+import type { MessageEnvelope, MessageFull, ThreadMetadata } from "./types.ts";
 
 // ---------------------------------------------------------------------------
 // Database singleton
@@ -165,6 +165,24 @@ export function getDb(): Database {
     )
   `);
 
+  db.run(`
+    CREATE TABLE IF NOT EXISTS threads (
+      provider                 TEXT NOT NULL,
+      account                  TEXT NOT NULL DEFAULT '',
+      thread_id                TEXT NOT NULL,
+      title                    TEXT,
+      display_name             TEXT,
+      is_group                 INTEGER NOT NULL DEFAULT 0,
+      participant_handles_json TEXT NOT NULL DEFAULT '[]',
+      last_activity            TEXT NOT NULL,
+      updated_at               TEXT NOT NULL,
+      PRIMARY KEY (provider, account, thread_id)
+    )
+  `);
+  db.run(
+    "CREATE INDEX IF NOT EXISTS idx_threads_listing ON threads(provider, account, last_activity DESC, thread_id ASC)",
+  );
+
   return db;
 }
 
@@ -309,6 +327,105 @@ export function deleteMessages(provider: string, ids: string[]): void {
     for (const id of ids) stmt.run(provider, id);
   });
   tx();
+}
+
+export type ThreadMetadataInput = Omit<ThreadMetadata, "updatedAt" | "resolved"> & {
+  updatedAt?: string;
+};
+
+// biome-ignore lint/suspicious/noExplicitAny: SQLite rows are untyped record objects
+function rowToThreadMetadata(row: any): ThreadMetadata {
+  const participantHandles = JSON.parse(row.participant_handles_json) as string[];
+  const displayName = row.display_name ?? null;
+  const metadata = {
+    provider: row.provider,
+    account: row.account,
+    threadId: row.thread_id,
+    title: row.title ?? null,
+    displayName,
+    isGroup: row.is_group === 1,
+    participantHandles,
+    lastActivity: row.last_activity,
+    updatedAt: row.updated_at,
+    resolved: displayName !== null,
+  };
+  return metadata;
+}
+
+export function upsertThreadMetadata(input: ThreadMetadataInput): ThreadMetadata {
+  const d = getDb();
+  const updatedAt = input.updatedAt ?? new Date().toISOString();
+  d.prepare(`
+    INSERT INTO threads
+      (provider, account, thread_id, title, display_name, is_group, participant_handles_json, last_activity, updated_at)
+    VALUES
+      ($provider, $account, $thread_id, $title, $display_name, $is_group, $participant_handles_json, $last_activity, $updated_at)
+    ON CONFLICT(provider, account, thread_id) DO UPDATE SET
+      title = excluded.title,
+      display_name = excluded.display_name,
+      is_group = excluded.is_group,
+      participant_handles_json = excluded.participant_handles_json,
+      last_activity = excluded.last_activity,
+      updated_at = excluded.updated_at
+    WHERE threads.title IS NOT excluded.title
+       OR threads.display_name IS NOT excluded.display_name
+       OR threads.is_group != excluded.is_group
+       OR threads.participant_handles_json != excluded.participant_handles_json
+       OR threads.last_activity != excluded.last_activity
+  `).run({
+    $provider: input.provider,
+    $account: input.account,
+    $thread_id: input.threadId,
+    $title: input.title,
+    $display_name: input.displayName,
+    $is_group: input.isGroup ? 1 : 0,
+    $participant_handles_json: JSON.stringify(input.participantHandles),
+    $last_activity: input.lastActivity,
+    $updated_at: updatedAt,
+  });
+  const stored = getThreadMetadata(input.provider, input.account, input.threadId);
+  if (!stored)
+    throw new Error(`Failed to store thread metadata for ${input.provider}/${input.threadId}`);
+  return stored;
+}
+
+export function upsertThreadMetadataBatch(inputs: ThreadMetadataInput[]): ThreadMetadata[] {
+  const d = getDb();
+  const tx = d.transaction(() => inputs.map(upsertThreadMetadata));
+  return tx();
+}
+
+export function getThreadMetadata(
+  provider: string,
+  account: string,
+  threadId: string,
+): ThreadMetadata | null {
+  const row = getDb()
+    .prepare("SELECT * FROM threads WHERE provider = ? AND account = ? AND thread_id = ?")
+    .get(provider, account, threadId);
+  return row ? rowToThreadMetadata(row) : null;
+}
+
+export function listThreadMetadata(provider: string, account: string): ThreadMetadata[] {
+  return getDb()
+    .prepare(`
+      SELECT * FROM threads
+      WHERE provider = ? AND account = ?
+      ORDER BY last_activity DESC, thread_id ASC
+    `)
+    .all(provider, account)
+    .map(rowToThreadMetadata);
+}
+
+export function listThreadBackfillEnvelopes(provider: string): MessageEnvelope[] {
+  return getDb()
+    .prepare(`
+      SELECT * FROM messages
+      WHERE provider = ? AND thread_id IS NULL
+      ORDER BY date DESC, id ASC
+    `)
+    .all(provider)
+    .map(rowToEnvelope);
 }
 
 // ---------------------------------------------------------------------------

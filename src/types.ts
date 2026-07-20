@@ -44,6 +44,19 @@ export interface Contact {
   address: string;
 }
 
+export interface ThreadMetadata {
+  provider: string;
+  account: string;
+  threadId: string;
+  title: string | null;
+  displayName: string | null;
+  isGroup: boolean;
+  participantHandles: string[];
+  lastActivity: string;
+  updatedAt: string;
+  resolved: boolean;
+}
+
 /**
  * Attachment metadata for a message.
  *
@@ -159,6 +172,9 @@ export interface MessagingProvider {
 
   /** Read a specific message by ID */
   read(messageId: string, opts?: ReadOptions): Promise<MessageFull | null>;
+
+  /** Normalize cached thread messages before exposing them to consumers. */
+  normalizeThreadMessages?(threadId: string, messages: MessageFull[]): MessageFull[];
 
   /** Search messages (optional — not all providers support this) */
   search?(query: string, opts?: SearchOptions): Promise<MessageEnvelope[]>;

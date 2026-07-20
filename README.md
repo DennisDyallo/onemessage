@@ -279,6 +279,24 @@ onemessage search "project update" --json
 
 Messages are cached locally in SQLite at `~/.config/onemessage/messages.db`. The cache uses freshness gating — subsequent calls within 60 seconds return cached results unless you pass `--fresh`.
 
+Conversation metadata is cached separately under the stable `(provider, account, thread_id)` key. Instagram normalizes titles and participant handles at ingestion: invalid numeric and `User_<digits>` identities are never exposed as display names, duplicate display identities are marked unresolved, and unsafe per-message senders become `Instagram Participant`.
+
+The Instagram sync contract is cache-safe:
+
+```bash
+onemessage instagram inventory --json
+onemessage instagram inventory --cache-only --json
+onemessage instagram thread-delta <thread-id> --json
+```
+
+Inventory always returns deterministic cached `threads`, plus independent `performed`, `reason`, and `sourceFetchedAt` fields. `thread-delta` returns the normalized `thread` metadata alongside messages. `--cache-only` guarantees inventory cannot call `instagram-cli`.
+
+Existing envelope rows can be migrated without source calls:
+
+```bash
+bun scripts/backfill-instagram-threads.ts
+```
+
 ## Development
 
 ```bash

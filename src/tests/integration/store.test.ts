@@ -7,13 +7,16 @@ import {
   getCachedMessage,
   getContactNamesByAddress,
   getDb,
+  getThreadMetadata,
   isFresh,
+  listThreadMetadata,
   recordFetch,
   repairMisattributedOwnerNames,
   searchCached,
   upsertContacts,
   upsertFullMessages,
   upsertMessages,
+  upsertThreadMetadata,
 } from "../../store.ts";
 
 describe("direction field", () => {
@@ -74,6 +77,123 @@ describe("direction field", () => {
     const result = getCachedMessage(testProvider, "test-dir-full-1");
     expect(result).toBeDefined();
     expect(result?.direction).toBe("out");
+  });
+});
+
+describe("thread metadata", () => {
+  const provider = "__test_threads__";
+
+  test("isolates accounts and round-trips one-to-one and group metadata", () => {
+    upsertThreadMetadata({
+      provider,
+      account: "account-a",
+      threadId: "shared-id",
+      title: "Alice",
+      displayName: "Alice",
+      isGroup: false,
+      participantHandles: ["alice"],
+      lastActivity: "2026-07-19T10:00:00.000Z",
+    });
+    upsertThreadMetadata({
+      provider,
+      account: "account-b",
+      threadId: "shared-id",
+      title: "Project Team",
+      displayName: "Project Team",
+      isGroup: true,
+      participantHandles: ["alice", "bob"],
+      lastActivity: "2026-07-19T11:00:00.000Z",
+    });
+
+    const direct = getThreadMetadata(provider, "account-a", "shared-id");
+    const group = getThreadMetadata(provider, "account-b", "shared-id");
+    expect(direct?.isGroup).toBe(false);
+    expect(direct?.participantHandles).toEqual(["alice"]);
+    expect(group?.isGroup).toBe(true);
+    expect(group?.participantHandles).toEqual(["alice", "bob"]);
+  });
+
+  test("updates titles and participants without creating duplicate rows", () => {
+    const account = "updates";
+    upsertThreadMetadata({
+      provider,
+      account,
+      threadId: "thread",
+      title: "Old Name",
+      displayName: "Old Name",
+      isGroup: false,
+      participantHandles: ["old_handle"],
+      lastActivity: "2026-07-19T10:00:00.000Z",
+    });
+    upsertThreadMetadata({
+      provider,
+      account,
+      threadId: "thread",
+      title: "New Name",
+      displayName: "New Name",
+      isGroup: true,
+      participantHandles: ["new_handle", "second_handle"],
+      lastActivity: "2026-07-20T10:00:00.000Z",
+    });
+
+    const rows = listThreadMetadata(provider, account);
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({
+      title: "New Name",
+      displayName: "New Name",
+      isGroup: true,
+      participantHandles: ["new_handle", "second_handle"],
+    });
+  });
+
+  test("lists deterministically by activity then thread id", () => {
+    const account = "ordering";
+    for (const threadId of ["thread-b", "thread-a"]) {
+      upsertThreadMetadata({
+        provider,
+        account,
+        threadId,
+        title: threadId,
+        displayName: threadId,
+        isGroup: false,
+        participantHandles: [threadId],
+        lastActivity: "2026-07-20T10:00:00.000Z",
+      });
+    }
+    upsertThreadMetadata({
+      provider,
+      account,
+      threadId: "newest",
+      title: "Newest",
+      displayName: "Newest",
+      isGroup: false,
+      participantHandles: ["newest"],
+      lastActivity: "2026-07-20T11:00:00.000Z",
+    });
+
+    expect(listThreadMetadata(provider, account).map((thread) => thread.threadId)).toEqual([
+      "newest",
+      "thread-a",
+      "thread-b",
+    ]);
+  });
+
+  test("identical upserts are idempotent", () => {
+    const input = {
+      provider,
+      account: "idempotent",
+      threadId: "thread",
+      title: "Stable",
+      displayName: "Stable",
+      isGroup: false,
+      participantHandles: ["stable"],
+      lastActivity: "2026-07-20T10:00:00.000Z",
+      updatedAt: "2026-07-20T10:01:00.000Z",
+    };
+    const first = upsertThreadMetadata(input);
+    const second = upsertThreadMetadata({ ...input, updatedAt: "2026-07-20T10:02:00.000Z" });
+    expect(second.updatedAt).toBe(first.updatedAt);
+    expect(listThreadMetadata(provider, input.account)).toHaveLength(1);
   });
 });
 

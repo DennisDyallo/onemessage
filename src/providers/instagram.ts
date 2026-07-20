@@ -2,6 +2,13 @@ import { getProviderFreshnessMs, loadConfig } from "../config.ts";
 import { daemonRequest, ensureDaemon } from "../daemons/shared.ts";
 import { registerProvider } from "../registry.ts";
 import * as store from "../store.ts";
+import {
+  type InstagramThreadMetadata,
+  instagramDefaultSenderLabel,
+  markDuplicateThreadIdentitiesUnresolved,
+  normalizeInstagramMessage,
+  normalizeInstagramThread,
+} from "../thread-identity.ts";
 import type { MessageEnvelope, MessageFull, MessagingProvider } from "../types.ts";
 import {
   cacheSentMessage,
@@ -86,7 +93,7 @@ interface InboxResult {
   hasMore?: boolean;
 }
 
-interface ReadMessage {
+export interface ReadMessage {
   id: string;
   itemType: string;
   text?: string;
@@ -116,46 +123,87 @@ interface SendResult {
 // Message parsing
 // ---------------------------------------------------------------------------
 
-function threadToEnvelope(thread: InboxThread): MessageEnvelope {
-  const fromName = thread.title;
-  const fromAddr = thread.users[0] ?? thread.id;
-
+function threadToEnvelope(thread: InboxThread, metadata: InstagramThreadMetadata): MessageEnvelope {
   return {
     id: thread.id,
     provider: "instagram",
-    from: { name: fromName, address: fromAddr },
+    account: metadata.account,
+    from: {
+      name: metadata.displayName ?? "Instagram Conversation",
+      address: metadata.participantHandles[0] ?? "instagram-conversation",
+    },
     to: [{ name: "me", address: "me" }],
     preview: thread.lastMessage?.text ?? `[${thread.lastMessage?.itemType ?? "no messages"}]`,
     date: thread.lastActivity,
     unread: thread.unread,
     hasAttachments: false,
+    isGroup: metadata.isGroup,
+    groupName: metadata.isGroup ? (metadata.displayName ?? undefined) : undefined,
   };
 }
 
-function readMessageToFull(msg: ReadMessage, threadId: string, threadTitle: string): MessageFull {
-  const from = msg.isOutgoing
-    ? { name: "me", address: "me" }
-    : { name: threadTitle || msg.username, address: msg.username };
-  const to = msg.isOutgoing
-    ? [{ name: threadTitle, address: threadId }]
-    : [{ name: "me", address: "me" }];
+export function readMessageToFull(msg: ReadMessage, thread: InstagramThreadMetadata): MessageFull {
+  return normalizeInstagramMessage(
+    {
+      id: msg.id,
+      provider: "instagram",
+      account: thread.account,
+      from: msg.isOutgoing
+        ? { name: "me", address: "me" }
+        : { name: msg.username, address: msg.username },
+      to: msg.isOutgoing
+        ? [{ name: thread.displayName ?? "Instagram Conversation", address: thread.threadId }]
+        : [{ name: "me", address: "me" }],
+      preview: msg.text ?? `[${msg.itemType}]`,
+      body: msg.text ?? `[${msg.itemType}]`,
+      bodyFormat: "text",
+      date: msg.timestamp,
+      unread: false,
+      hasAttachments: msg.media !== undefined,
+      // TODO(dennis): instagram-cli does not expose media download; revisit when
+      // upstream adds the command (see distributed-dusk plan §1.4)
+      attachments: [],
+      direction: msg.isOutgoing ? "out" : "in",
+      isGroup: thread.isGroup,
+      groupName: thread.isGroup ? (thread.displayName ?? undefined) : undefined,
+    },
+    thread,
+  );
+}
 
-  return {
-    id: msg.id,
-    provider: "instagram",
-    from,
-    to,
-    preview: msg.text ?? `[${msg.itemType}]`,
-    body: msg.text ?? `[${msg.itemType}]`,
-    bodyFormat: "text",
-    date: msg.timestamp,
-    unread: false,
-    hasAttachments: msg.media !== undefined,
-    // TODO(dennis): instagram-cli does not expose media download; revisit when
-    // upstream adds the command (see distributed-dusk plan §1.4)
-    attachments: [],
-    direction: msg.isOutgoing ? "out" : "in",
-  };
+export function listNormalizedInstagramThreads(account: string): InstagramThreadMetadata[] {
+  return markDuplicateThreadIdentitiesUnresolved(
+    store.listThreadMetadata("instagram", account),
+  ).map((thread) => ({ ...thread, defaultSenderLabel: instagramDefaultSenderLabel(thread) }));
+}
+
+export function getNormalizedInstagramThread(
+  account: string,
+  threadId: string,
+): InstagramThreadMetadata | null {
+  return (
+    listNormalizedInstagramThreads(account).find((thread) => thread.threadId === threadId) ?? null
+  );
+}
+
+export function backfillInstagramThreadMetadata(
+  account: string,
+  titleOverrides: Record<string, string> = {},
+): InstagramThreadMetadata[] {
+  const candidates = store.listThreadBackfillEnvelopes("instagram").map((envelope) =>
+    normalizeInstagramThread(
+      {
+        id: envelope.id,
+        title: titleOverrides[envelope.id] ?? envelope.from?.name,
+        users: envelope.from?.address ? [envelope.from.address] : [],
+        isGroup: envelope.isGroup,
+        lastActivity: envelope.date,
+      },
+      account,
+    ),
+  );
+  store.upsertThreadMetadataBatch(candidates);
+  return listNormalizedInstagramThreads(account);
 }
 
 // ---------------------------------------------------------------------------
@@ -178,7 +226,7 @@ export async function fetchThreadMessages(
 
 export async function fetchThreadMessagesPage(
   threadId: string,
-  threadTitle: string,
+  _threadTitle: string,
   username: string,
   opts?: { cursor?: string; limit?: number },
 ): Promise<{ messages: MessageFull[]; cursor?: string; hasMore: boolean }> {
@@ -207,8 +255,11 @@ export async function fetchThreadMessagesPage(
     throw new Error(`instagram-cli read error: ${parsed.error ?? "no messages"}`);
   }
 
+  const thread = getNormalizedInstagramThread(username, threadId);
+  if (!thread) throw new Error(`Instagram thread metadata not found for ${threadId}`);
+
   return {
-    messages: parsed.data.messages.map((msg) => readMessageToFull(msg, threadId, threadTitle)),
+    messages: parsed.data.messages.map((msg) => readMessageToFull(msg, thread)),
     cursor: parsed.data.cursor,
     hasMore: parsed.data.hasMore ?? Boolean(parsed.data.cursor),
   };
@@ -246,8 +297,18 @@ export async function fetchInstagramInbox(
 
   const threads = Array.isArray(parsed.data) ? parsed.data : parsed.data.threads;
 
+  const normalized = threads.map((thread) => normalizeInstagramThread(thread, username));
+  store.upsertThreadMetadataBatch(normalized);
+  const metadataById = new Map(
+    listNormalizedInstagramThreads(username).map((thread) => [thread.threadId, thread]),
+  );
+
   // Store all thread envelopes so the daemon can read them by thread ID
-  const envelopes = threads.map(threadToEnvelope);
+  const envelopes = threads.map((thread) => {
+    const metadata = metadataById.get(thread.id);
+    if (!metadata) throw new Error(`Failed to cache Instagram thread metadata for ${thread.id}`);
+    return threadToEnvelope(thread, metadata);
+  });
   if (envelopes.length > 0) {
     store.upsertMessages(envelopes, "in");
   }
@@ -395,6 +456,15 @@ const instagramProvider: MessagingProvider = {
       }
     }
     return readFromCacheOrFail("instagram", messageId);
+  },
+
+  normalizeThreadMessages(threadId, messages) {
+    const settings = resolveSettings();
+    if (!settings) return messages;
+    const thread = getNormalizedInstagramThread(settings.username, threadId);
+    return thread
+      ? messages.map((message) => normalizeInstagramMessage(message, thread))
+      : messages;
   },
 
   async search(query, opts) {

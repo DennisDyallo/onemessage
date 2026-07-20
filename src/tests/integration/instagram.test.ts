@@ -7,51 +7,31 @@
  * from cache.
  *
  * Tests here cover:
- * 1. isOutgoing → direction mapping via readMessageToFull replica
+ * 1. isOutgoing → direction mapping via the production readMessageToFull
  * 2. The --fresh branch calls fetchThreadMessages and upserts results
  * 3. Edge cases (media-only, no text)
  */
 import { describe, expect, test } from "bun:test";
-import type { MessageFull } from "../../types.ts";
-
-// ---------------------------------------------------------------------------
-// Inline replica of readMessageToFull() from instagram.ts
-// ---------------------------------------------------------------------------
-
-interface ReadMessage {
-  id: string;
-  itemType: string;
-  text?: string;
-  media?: { id: string; mediaType: number };
-  userId: string;
-  username: string;
-  timestamp: string;
-  isOutgoing: boolean;
-}
-
-function readMessageToFull(msg: ReadMessage, threadId: string, threadTitle: string): MessageFull {
-  const from = msg.isOutgoing
-    ? { name: "me", address: "me" }
-    : { name: threadTitle || msg.username, address: msg.username };
-  const to = msg.isOutgoing
-    ? [{ name: threadTitle, address: threadId }]
-    : [{ name: "me", address: "me" }];
-
-  return {
-    id: msg.id,
-    provider: "instagram",
-    from,
-    to,
-    preview: msg.text ?? `[${msg.itemType}]`,
-    body: msg.text ?? `[${msg.itemType}]`,
-    bodyFormat: "text",
-    date: msg.timestamp,
-    unread: false,
-    hasAttachments: msg.media !== undefined,
-    attachments: [],
-    direction: msg.isOutgoing ? "out" : "in",
-  };
-}
+import { InstagramAdapter } from "../../daemons/instagram.ts";
+import {
+  backfillInstagramThreadMetadata,
+  type ReadMessage,
+  readMessageToFull,
+} from "../../providers/instagram.ts";
+import {
+  getThreadMetadata,
+  recordFetch,
+  setCursor,
+  upsertMessages,
+  upsertThreadMetadata,
+} from "../../store.ts";
+import {
+  type InstagramThreadMetadata,
+  isHumanSafeIdentity,
+  markDuplicateThreadIdentitiesUnresolved,
+  normalizeInstagramThread,
+} from "../../thread-identity.ts";
+import type { MessageFull, ThreadMetadata } from "../../types.ts";
 
 // ---------------------------------------------------------------------------
 // The --fresh read() logic (replica of what instagram.ts read() does)
@@ -97,6 +77,22 @@ async function simulateFreshRead(
 
 const NOW = new Date().toISOString();
 
+function makeThreadMetadata(threadId: string, displayName: string): InstagramThreadMetadata {
+  return {
+    provider: "instagram",
+    account: "owner",
+    threadId,
+    title: displayName,
+    displayName,
+    isGroup: false,
+    participantHandles: [displayName],
+    lastActivity: NOW,
+    updatedAt: NOW,
+    resolved: true,
+    defaultSenderLabel: `@${displayName}`,
+  };
+}
+
 describe("Instagram readMessageToFull direction", () => {
   test("incoming message has direction 'in'", () => {
     const msg: ReadMessage = {
@@ -108,7 +104,7 @@ describe("Instagram readMessageToFull direction", () => {
       timestamp: NOW,
       isOutgoing: false,
     };
-    const full = readMessageToFull(msg, "thread-abc", "alice");
+    const full = readMessageToFull(msg, makeThreadMetadata("thread-abc", "alice"));
     expect(full.direction).toBe("in");
   });
 
@@ -122,7 +118,7 @@ describe("Instagram readMessageToFull direction", () => {
       timestamp: NOW,
       isOutgoing: true,
     };
-    const full = readMessageToFull(msg, "thread-abc", "alice");
+    const full = readMessageToFull(msg, makeThreadMetadata("thread-abc", "alice"));
     expect(full.direction).toBe("out");
   });
 
@@ -136,7 +132,7 @@ describe("Instagram readMessageToFull direction", () => {
       timestamp: NOW,
       isOutgoing: false,
     };
-    const full = readMessageToFull(msg, "thread-xyz", "bob");
+    const full = readMessageToFull(msg, makeThreadMetadata("thread-xyz", "bob"));
     expect(full.from?.address).toBe("bob");
     expect(full.to[0]?.address).toBe("me");
   });
@@ -151,9 +147,9 @@ describe("Instagram readMessageToFull direction", () => {
       timestamp: NOW,
       isOutgoing: true,
     };
-    const full = readMessageToFull(msg, "thread-xyz", "bob");
+    const full = readMessageToFull(msg, makeThreadMetadata("thread-xyz", "bob"));
     expect(full.from?.address).toBe("me");
-    expect(full.to[0]?.address).toBe("thread-xyz");
+    expect(full.to[0]?.address).toBe("internal-thread:instagram:owner:thread-xyz");
   });
 
   test("media-only message (no text) falls back to itemType in preview", () => {
@@ -166,7 +162,7 @@ describe("Instagram readMessageToFull direction", () => {
       timestamp: NOW,
       isOutgoing: false,
     };
-    const full = readMessageToFull(msg, "thread-media", "carol");
+    const full = readMessageToFull(msg, makeThreadMetadata("thread-media", "carol"));
     expect(full.preview).toBe("[media]");
     expect(full.hasAttachments).toBe(true);
     expect(full.direction).toBe("in");
@@ -181,9 +177,276 @@ describe("Instagram readMessageToFull direction", () => {
       timestamp: NOW,
       isOutgoing: false,
     };
-    const full = readMessageToFull(msg, "thread-link", "dave");
+    const full = readMessageToFull(msg, makeThreadMetadata("thread-link", "dave"));
     expect(full.body).toBe("[link]");
     expect(full.direction).toBe("in");
+  });
+});
+
+describe("Instagram thread identity normalization", () => {
+  test("prefers a valid provider title", () => {
+    const thread = normalizeInstagramThread(
+      { id: "thread-1", title: "Alice Example", users: ["alice"], lastActivity: NOW },
+      "owner",
+    );
+    expect(thread).toMatchObject({ displayName: "Alice Example", isGroup: false, resolved: true });
+  });
+
+  test("falls back to a consistently formatted one-to-one handle", () => {
+    const thread = normalizeInstagramThread(
+      { id: "thread-2", title: "User_12345", users: ["alice.example"], lastActivity: NOW },
+      "owner",
+    );
+    expect(thread.displayName).toBe("@alice.example");
+  });
+
+  test("does not reinterpret a human title as an Instagram handle", () => {
+    const normalized = normalizeInstagramThread(
+      {
+        id: "thread-title",
+        title: "Sophie von Matérn",
+        users: ["sophievonmatern"],
+        lastActivity: NOW,
+      },
+      "owner",
+    );
+    const thread: InstagramThreadMetadata = {
+      ...normalized,
+      updatedAt: NOW,
+      defaultSenderLabel: "@sophievonmatern",
+    };
+    const message = readMessageToFull(
+      {
+        id: "cached-title",
+        itemType: "text",
+        text: "hello",
+        userId: "123",
+        username: "Sophie von Matérn",
+        timestamp: NOW,
+        isOutgoing: false,
+      },
+      thread,
+    );
+    expect(message.from?.name).toBe("@sophievonmatern");
+  });
+
+  test("rejects User, numeric, and raw thread identities", () => {
+    expect(isHumanSafeIdentity("User_12345")).toBe(false);
+    expect(isHumanSafeIdentity("12345")).toBe(false);
+    expect(isHumanSafeIdentity("thread-3", "thread-3")).toBe(false);
+    const unresolved = normalizeInstagramThread(
+      {
+        id: "340282366841710301",
+        title: "340282366841710301",
+        users: ["User_12345"],
+        lastActivity: NOW,
+      },
+      "owner",
+    );
+    expect(unresolved).toMatchObject({ displayName: null, resolved: false });
+  });
+
+  test("groups require a title and use per-message safe sender labels", () => {
+    const normalized = normalizeInstagramThread(
+      { id: "group-1", title: "Dance Friends", users: ["alice", "bob"], lastActivity: NOW },
+      "owner",
+    );
+    const thread: InstagramThreadMetadata = {
+      ...normalized,
+      updatedAt: NOW,
+      defaultSenderLabel: "Instagram Participant",
+    };
+    const incoming = readMessageToFull(
+      {
+        id: "message-1",
+        itemType: "text",
+        text: "hello",
+        userId: "1",
+        username: "alice",
+        timestamp: NOW,
+        isOutgoing: false,
+      },
+      thread,
+    );
+    const unsafe = readMessageToFull(
+      {
+        id: "message-2",
+        itemType: "text",
+        text: "hello",
+        userId: "2",
+        username: "User_12345",
+        timestamp: NOW,
+        isOutgoing: false,
+      },
+      thread,
+    );
+    expect(thread.displayName).toBe("Dance Friends");
+    expect(incoming.from?.name).toBe("@alice");
+    expect(unsafe.from?.name).toBe("Instagram Participant");
+  });
+
+  test("duplicate display identities are unresolved instead of merged", () => {
+    const base = (threadId: string): InstagramThreadMetadata => ({
+      provider: "instagram",
+      account: "owner",
+      threadId,
+      title: "Same Name",
+      displayName: "Same Name",
+      isGroup: false,
+      participantHandles: [`handle-${threadId}`],
+      lastActivity: NOW,
+      updatedAt: NOW,
+      resolved: true,
+      defaultSenderLabel: `@handle-${threadId}`,
+    });
+    expect(
+      markDuplicateThreadIdentitiesUnresolved([base("a"), base("b")]).every(
+        (thread) => !thread.resolved,
+      ),
+    ).toBe(true);
+  });
+
+  test("backfill from cached envelopes is idempotent", () => {
+    const account = "backfill-account";
+    const id = `backfill-${Date.now()}`;
+    upsertMessages([
+      {
+        id,
+        provider: "instagram",
+        from: { name: "Cached Person", address: "cached_person" },
+        to: [{ name: "me", address: "me" }],
+        preview: "cached",
+        date: NOW,
+        unread: false,
+        hasAttachments: false,
+      },
+    ]);
+    backfillInstagramThreadMetadata(account);
+    const first = getThreadMetadata("instagram", account, id);
+    backfillInstagramThreadMetadata(account);
+    const second = getThreadMetadata("instagram", account, id);
+    expect(second).toEqual(first);
+    expect(second?.displayName).toBe("Cached Person");
+  });
+});
+
+describe("Instagram cached inventory contract", () => {
+  function seedThread(account: string): void {
+    upsertThreadMetadata({
+      provider: "instagram",
+      account,
+      threadId: "cached-thread",
+      title: "Cached Person",
+      displayName: "Cached Person",
+      isGroup: false,
+      participantHandles: ["cached_person"],
+      lastActivity: NOW,
+    });
+  }
+
+  async function inventoryForReason(reason: "fresh-cache" | "cooldown" | "budget-exhausted") {
+    const account = `inventory-${reason}`;
+    seedThread(account);
+    let sourceCalls = 0;
+    const adapter = new InstagramAdapter({
+      fetchInbox: async () => {
+        sourceCalls++;
+        return [];
+      },
+    });
+    if (reason === "fresh-cache") recordFetch("instagram", account);
+    if (reason === "cooldown") {
+      setCursor(
+        "instagram",
+        account,
+        "cooldown_until",
+        new Date(Date.now() + 60_000).toISOString(),
+      );
+    }
+    if (reason === "budget-exhausted") {
+      setCursor("instagram", account, "request_budget_window_started_at", new Date().toISOString());
+      setCursor("instagram", account, "request_budget_count", "36");
+    }
+    const response = await adapter.handleIpc({ type: "instagram-inventory", account });
+    return { response, sourceCalls };
+  }
+
+  for (const reason of ["fresh-cache", "cooldown", "budget-exhausted"] as const) {
+    test(`returns cached metadata on ${reason} without source calls`, async () => {
+      const { response, sourceCalls } = await inventoryForReason(reason);
+      expect(response?.ok).toBe(true);
+      const data = response?.ok
+        ? (response.data as { reason: string; threads: ThreadMetadata[] })
+        : null;
+      expect(data?.reason).toBe(reason);
+      expect(data?.threads.map((thread) => thread.threadId)).toEqual(["cached-thread"]);
+      expect(sourceCalls).toBe(0);
+    });
+  }
+
+  test("cacheOnly IPC returns cached metadata without a source call", async () => {
+    const account = "inventory-cache-only";
+    seedThread(account);
+    let sourceCalls = 0;
+    const adapter = new InstagramAdapter({
+      fetchInbox: async () => {
+        sourceCalls++;
+        return [];
+      },
+    });
+
+    const response = await adapter.handleIpc({
+      type: "instagram-inventory",
+      account,
+      cacheOnly: true,
+    });
+    const data = response?.ok
+      ? (response.data as { performed: boolean; reason: string; threads: ThreadMetadata[] })
+      : null;
+    expect(data?.performed).toBe(false);
+    expect(data?.reason).toBe("cache-only");
+    expect(data?.threads.map((thread) => thread.threadId)).toEqual(["cached-thread"]);
+    expect(sourceCalls).toBe(0);
+  });
+
+  test("fetch-thread IPC preserves budget-exhausted metadata without a source call", async () => {
+    const account = "fetch-thread-budget";
+    let sourceCalls = 0;
+    setCursor("instagram", account, "request_budget_window_started_at", new Date().toISOString());
+    setCursor("instagram", account, "request_budget_count", "36");
+    const adapter = new InstagramAdapter({
+      fetchInbox: async () => [],
+      fetchThread: async () => {
+        sourceCalls++;
+        return [];
+      },
+    });
+
+    const response = await adapter.handleIpc({
+      type: "fetch-thread",
+      account,
+      threadId: "cached-thread",
+    });
+    const data = response?.ok ? (response.data as { performed: boolean; reason: string }) : null;
+    expect(data).toEqual({ performed: false, reason: "budget-exhausted" });
+    expect(sourceCalls).toBe(0);
+  });
+
+  test("thread delta includes normalized metadata when source fetch is skipped", async () => {
+    const account = "delta-metadata";
+    seedThread(account);
+    setCursor("instagram", account, "cooldown_until", new Date(Date.now() + 60_000).toISOString());
+    const adapter = new InstagramAdapter({ fetchInbox: async () => [] });
+    const response = await adapter.handleIpc({
+      type: "instagram-thread-delta",
+      account,
+      threadId: "cached-thread",
+    });
+    const data = response?.ok
+      ? (response.data as { performed: boolean; thread: ThreadMetadata })
+      : null;
+    expect(data?.performed).toBe(false);
+    expect(data?.thread.displayName).toBe("Cached Person");
   });
 });
 
@@ -206,8 +469,7 @@ describe("Instagram read() --fresh path", () => {
             timestamp: NOW,
             isOutgoing: false,
           },
-          id,
-          "alice",
+          makeThreadMetadata(id, "alice"),
         ),
       ];
     };
@@ -241,8 +503,7 @@ describe("Instagram read() --fresh path", () => {
             timestamp: NOW,
             isOutgoing: true,
           },
-          id,
-          "alice",
+          makeThreadMetadata(id, "alice"),
         ),
       ];
     };
@@ -291,8 +552,7 @@ describe("Instagram read() --fresh path", () => {
             timestamp: NOW,
             isOutgoing: false,
           },
-          id,
-          "alice",
+          makeThreadMetadata(id, "alice"),
         ),
         readMessageToFull(
           {
@@ -304,8 +564,7 @@ describe("Instagram read() --fresh path", () => {
             timestamp: NOW,
             isOutgoing: true,
           },
-          id,
-          "alice",
+          makeThreadMetadata(id, "alice"),
         ),
       ];
     };

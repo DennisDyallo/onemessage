@@ -437,7 +437,8 @@ addProviderFlags(
 
   if (opts.thread) {
     const { getThreadMessages } = await import("./store.ts");
-    const msgs = getThreadMessages(providerName, messageId);
+    const cached = getThreadMessages(providerName, messageId);
+    const msgs = provider.normalizeThreadMessages?.(messageId, cached) ?? cached;
     if (msgs.length === 0) {
       console.error(`No thread messages found for "${messageId}".`);
       process.exit(1);
@@ -477,6 +478,7 @@ instagramCmd
   .description("Refresh/read Instagram thread inventory through the daemon")
   .option("--account <id>", "Instagram account username")
   .option("--max-pages <n>", "Maximum source inbox pages", "2")
+  .option("--cache-only", "Read cached thread metadata without a source fetch", false)
   .option("--json", "Output JSON", false)
   .action(async (opts) => {
     const { daemonRequest, ensureDaemon } = await import("./daemons/shared.ts");
@@ -485,6 +487,7 @@ instagramCmd
       type: "instagram-inventory",
       account: opts.account,
       maxPages: parseInt(opts.maxPages, 10) || 2,
+      cacheOnly: opts.cacheOnly,
     });
     if (!res?.ok) {
       console.error(res?.error ?? "Instagram inventory failed");

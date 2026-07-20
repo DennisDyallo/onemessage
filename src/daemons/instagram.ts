@@ -1,7 +1,12 @@
 import { getMinimumProviderFreshnessMs, loadConfig } from "../config.ts";
-import { fetchInstagramInbox } from "../providers/instagram.ts";
+import {
+  fetchInstagramInbox,
+  getNormalizedInstagramThread,
+  listNormalizedInstagramThreads,
+} from "../providers/instagram.ts";
 import { cliExists } from "../providers/shared.ts";
 import * as store from "../store.ts";
+import type { MessageFull } from "../types.ts";
 import type { DaemonOrchestrator, DaemonResponse, IpcCapableAdapter } from "./adapter.ts";
 
 const COOLDOWN_MS = 24 * 60 * 60_000;
@@ -14,11 +19,20 @@ const DEFAULT_THREAD_PAGE_LIMIT = 20;
 
 type InstagramFetchMeta =
   | { performed: true; sourceFetchedAt: string }
-  | { performed: false; reason: "cooldown" | "fresh-cache" | "rate-limited" | "budget-exhausted" };
+  | {
+      performed: false;
+      reason: "cache-only" | "cooldown" | "fresh-cache" | "rate-limited" | "budget-exhausted";
+    };
 
 type InstagramInventoryData = InstagramFetchMeta & {
-  threads?: unknown[];
-  stopReason?: "complete" | "cooldown" | "fresh-cache" | "rate-limited" | "budget-exhausted";
+  threads: unknown[];
+  stopReason?:
+    | "complete"
+    | "cache-only"
+    | "cooldown"
+    | "fresh-cache"
+    | "rate-limited"
+    | "budget-exhausted";
 };
 
 type InstagramThreadDeltaData = InstagramFetchMeta & {
@@ -32,7 +46,13 @@ type InstagramThreadDeltaData = InstagramFetchMeta & {
     | "page-cap"
     | "message-cap"
     | "budget-exhausted";
+  thread?: unknown;
 };
+
+interface InstagramAdapterDeps {
+  fetchInbox: typeof fetchInstagramInbox;
+  fetchThread?: (threadId: string, username: string) => Promise<MessageFull[]>;
+}
 
 function classifyInstagramError(err: unknown): string {
   const message = String(err).toLowerCase();
@@ -69,6 +89,8 @@ export class InstagramAdapter implements IpcCapableAdapter {
   private requestBudgetQueue: Promise<void> = Promise.resolve();
   // Hard floor for live Instagram API calls, including CLI --fresh paths.
   private static readonly MIN_FETCH_INTERVAL_MS = getMinimumProviderFreshnessMs("instagram");
+
+  constructor(private readonly deps: InstagramAdapterDeps = { fetchInbox: fetchInstagramInbox }) {}
 
   private maxRequestsPerDay(): number {
     const configured = loadConfig().daemon?.providers?.instagram?.maxRequestsPerDay;
@@ -195,7 +217,7 @@ export class InstagramAdapter implements IpcCapableAdapter {
     store.setCursor("instagram", username, "last_attempt_at", new Date(now).toISOString());
 
     try {
-      const threads = await fetchInstagramInbox(username, {
+      const threads = await this.deps.fetchInbox(username, {
         pages: opts?.maxPages ?? DEFAULT_MAX_INVENTORY_PAGES,
       });
       const sourceFetchedAt = new Date().toISOString();
@@ -218,28 +240,43 @@ export class InstagramAdapter implements IpcCapableAdapter {
     }
   }
 
-  async actuallyFetchThread(threadId: string, username: string): Promise<void> {
+  async actuallyFetchThread(threadId: string, username: string): Promise<InstagramFetchMeta> {
     const now = Date.now();
     const cooldownUntil = readTime(store.getCursor("instagram", username, "cooldown_until"));
-    if (cooldownUntil > now) return;
+    if (cooldownUntil > now) return { performed: false, reason: "cooldown" };
 
     const lastFetch = this.lastThreadFetchAt.get(threadId) ?? 0;
     const sinceLast = now - lastFetch;
     if (sinceLast < InstagramAdapter.MIN_FETCH_INTERVAL_MS) {
       // Rate-limited: silently no-op rather than hammer Instagram. CLI sees cached data.
-      return;
+      return { performed: false, reason: "rate-limited" };
     }
 
     this.lastThreadFetchAt.set(threadId, now);
     store.setCursor("instagram", username, "last_attempt_at", new Date(now).toISOString());
+    if (!(await this.recordSourceRequest(username))) {
+      return { performed: false, reason: "budget-exhausted" };
+    }
 
-    const { fetchThreadMessages } = await import("../providers/instagram.ts");
-    let messages: Awaited<ReturnType<typeof fetchThreadMessages>>;
+    let messages: MessageFull[];
     try {
-      messages = await fetchThreadMessages(threadId, "", username);
-      store.setCursor("instagram", username, "last_success_at", new Date().toISOString());
+      messages = this.deps.fetchThread
+        ? await this.deps.fetchThread(threadId, username)
+        : await import("../providers/instagram.ts").then(({ fetchThreadMessages }) =>
+            fetchThreadMessages(threadId, "", username),
+          );
+      const sourceFetchedAt = new Date().toISOString();
+      store.setCursor("instagram", username, "last_success_at", sourceFetchedAt);
       store.setCursor("instagram", username, "last_error_class", "");
       store.setCursor("instagram", username, "cooldown_until", "");
+      if (messages.length > 0) {
+        const { upsertFullMessages } = await import("../store.ts");
+        const incoming = messages.filter((m) => m.from?.address !== "me");
+        const outgoing = messages.filter((m) => m.from?.address === "me");
+        if (incoming.length > 0) upsertFullMessages(incoming, threadId);
+        if (outgoing.length > 0) upsertFullMessages(outgoing, threadId);
+      }
+      return { performed: true, sourceFetchedAt };
     } catch (err) {
       const errorClass = classifyInstagramError(err);
       store.setCursor("instagram", username, "last_error_class", errorClass);
@@ -252,14 +289,6 @@ export class InstagramAdapter implements IpcCapableAdapter {
         );
       }
       throw err;
-    }
-
-    if (messages.length > 0) {
-      const { upsertFullMessages } = await import("../store.ts");
-      const incoming = messages.filter((m) => m.from?.address !== "me");
-      const outgoing = messages.filter((m) => m.from?.address === "me");
-      if (incoming.length > 0) upsertFullMessages(incoming, threadId);
-      if (outgoing.length > 0) upsertFullMessages(outgoing, threadId);
     }
   }
 
@@ -419,7 +448,9 @@ export class InstagramAdapter implements IpcCapableAdapter {
       return this.handleFetchThread(req as { threadId?: string; account?: string });
     }
     if (req.type === "instagram-inventory") {
-      return this.handleInventory(req as { account?: string; maxPages?: number });
+      return this.handleInventory(
+        req as { account?: string; maxPages?: number; cacheOnly?: boolean },
+      );
     }
     if (req.type === "instagram-thread-delta") {
       return this.handleThreadDelta(
@@ -440,15 +471,26 @@ export class InstagramAdapter implements IpcCapableAdapter {
   private async handleInventory(req: {
     account?: string;
     maxPages?: number;
+    cacheOnly?: boolean;
   }): Promise<DaemonResponse> {
     const username = req.account ?? this.username;
     if (!username) return { ok: false, error: "Instagram not configured" };
     try {
-      const result = await this.actuallyFetch(username, { maxPages: req.maxPages });
+      const result: InstagramFetchMeta = req.cacheOnly
+        ? { performed: false, reason: "cache-only" }
+        : await this.actuallyFetch(username, { maxPages: req.maxPages });
+      const threads = listNormalizedInstagramThreads(username);
       return {
         ok: true,
         data: {
           ...result,
+          ...(!result.performed
+            ? {
+                sourceFetchedAt:
+                  store.getCursor("instagram", username, "last_success_at") ?? undefined,
+              }
+            : {}),
+          threads,
           stopReason: result.performed ? "complete" : result.reason,
         } satisfies InstagramInventoryData,
       };
@@ -479,7 +521,10 @@ export class InstagramAdapter implements IpcCapableAdapter {
         maxMessages: req.maxMessages,
         pageLimit: req.pageLimit,
       });
-      return { ok: true, data };
+      return {
+        ok: true,
+        data: { ...data, thread: getNormalizedInstagramThread(username, req.threadId) },
+      };
     } catch (err) {
       return { ok: false, error: String(err) };
     }
@@ -499,8 +544,8 @@ export class InstagramAdapter implements IpcCapableAdapter {
     }
 
     try {
-      await this.actuallyFetchThread(req.threadId, username);
-      return { ok: true };
+      const data = await this.actuallyFetchThread(req.threadId, username);
+      return { ok: true, data };
     } catch (err) {
       return { ok: false, error: String(err) };
     }
