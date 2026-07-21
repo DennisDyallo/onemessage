@@ -16,6 +16,7 @@ export interface OneMessageConfig {
   sms?: SmsProviderConfig;
   whatsapp?: WhatsAppProviderConfig;
   matrix?: MatrixProviderConfig;
+  messenger?: MessengerProviderConfig;
   daemon?: DaemonConfig;
   cache?: CacheConfig;
 }
@@ -43,6 +44,7 @@ export interface DaemonConfig {
       minRequestSpacingMs?: number;
     };
     matrix?: { enabled?: boolean; pollIntervalMs?: number };
+    messenger?: { enabled?: boolean; pollIntervalMs?: number };
   };
 }
 
@@ -153,6 +155,12 @@ export interface MatrixProviderConfig {
   userId: string;
   accessToken: string;
   deviceId?: string;
+}
+
+export interface MessengerProviderConfig {
+  accountId: string;
+  accessToken: string;
+  baseUrl?: string;
 }
 
 // ---------------------------------------------------------------------------

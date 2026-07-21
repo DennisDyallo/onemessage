@@ -37,8 +37,12 @@ function resolveSettings(cliOverrides?: Record<string, unknown>): InstagramSetti
 // CLI helpers
 // ---------------------------------------------------------------------------
 
-const CLI = "instagram-cli";
+const DEFAULT_CLI = "instagram-cli";
 const CLI_TIMEOUT_MS = 60_000; // instagram-cli has Node.js startup overhead + thread reads
+
+function instagramCli(): string {
+  return process.env.ONEMESSAGE_INSTAGRAM_CLI ?? DEFAULT_CLI;
+}
 
 /** stderr noise from Ink/React rendering */
 const STDERR_FILTERS = [
@@ -49,11 +53,11 @@ const STDERR_FILTERS = [
 ];
 
 function runInstagramCli(args: string[], timeoutMs = CLI_TIMEOUT_MS) {
-  return runCli(CLI, args, { stderrFilters: STDERR_FILTERS, timeoutMs });
+  return runCli(instagramCli(), args, { stderrFilters: STDERR_FILTERS, timeoutMs });
 }
 
 async function runInstagramCliAsync(args: string[], timeoutMs = CLI_TIMEOUT_MS) {
-  return runCliAsync(CLI, args, { stderrFilters: STDERR_FILTERS, timeoutMs });
+  return runCliAsync(instagramCli(), args, { stderrFilters: STDERR_FILTERS, timeoutMs });
 }
 
 interface CliJsonResult<T> {
@@ -326,16 +330,17 @@ const instagramProvider: MessagingProvider = {
   displayName: "Instagram (instagram-cli)",
 
   isConfigured() {
-    return cliExists(CLI) && resolveSettings() !== null;
+    return cliExists(instagramCli()) && resolveSettings() !== null;
   },
 
   async authenticate(_opts) {
-    if (!cliExists(CLI)) {
+    const cli = instagramCli();
+    if (!cliExists(cli)) {
       console.log(`  instagram-cli not found. Install: npm install -g @i7m/instagram-cli\n`);
       return;
     }
     console.log("  Launching instagram-cli auth login...\n");
-    const proc = Bun.spawnSync([CLI, "auth", "login"], {
+    const proc = Bun.spawnSync([cli, "auth", "login"], {
       stdin: "inherit",
       stdout: "inherit",
       stderr: "inherit",
@@ -362,7 +367,7 @@ const instagramProvider: MessagingProvider = {
       };
     }
 
-    if (!cliExists(CLI)) {
+    if (!cliExists(instagramCli())) {
       return {
         ok: false,
         provider: "instagram",
@@ -405,6 +410,7 @@ const instagramProvider: MessagingProvider = {
     cacheSentMessage({
       provider: "instagram",
       messageId,
+      account: settings.username,
       fromAddress: settings.username,
       recipientId,
       body,
@@ -432,6 +438,10 @@ const instagramProvider: MessagingProvider = {
         from: opts?.from,
       },
     });
+  },
+
+  resolveCacheAccount(providerFlags) {
+    return resolveSettings(providerFlags)?.username;
   },
 
   async read(messageId, opts) {

@@ -12,7 +12,15 @@ describe("provider cache policy defaults", () => {
   });
 
   test("other providers default to thirty seconds", () => {
-    for (const provider of ["email", "signal", "sms", "telegram-bot", "whatsapp", "matrix"]) {
+    for (const provider of [
+      "email",
+      "signal",
+      "sms",
+      "telegram-bot",
+      "whatsapp",
+      "matrix",
+      "messenger",
+    ]) {
       expect(getDefaultProviderFreshnessMs(provider)).toBe(30_000);
       expect(resolveProviderFreshnessMs(provider, {})).toBe(30_000);
     }

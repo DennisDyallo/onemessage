@@ -17,6 +17,7 @@ import { isIpcCapable } from "./adapter.ts";
 import { EmailAdapter } from "./email.ts";
 import { InstagramAdapter } from "./instagram.ts";
 import { MatrixAdapter } from "./matrix.ts";
+import { MessengerAdapter } from "./messenger.ts";
 import {
   DAEMON_PID,
   DAEMON_SOCK,
@@ -215,6 +216,7 @@ export class UnifiedDaemon {
         new TelegramBotAdapter(),
         new InstagramAdapter(),
         new MatrixAdapter(),
+        new MessengerAdapter(),
       ];
 
       for (const adapter of this.adapters) {

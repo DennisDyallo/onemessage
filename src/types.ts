@@ -12,7 +12,7 @@
 export interface MessageEnvelope {
   id: string;
   provider: string;
-  account?: string; // which account this message belongs to (email only)
+  account?: string; // provider-local account this message belongs to
   from: Contact | null;
   to: Contact[];
   subject?: string;
@@ -169,6 +169,9 @@ export interface MessagingProvider {
 
   /** List recent messages */
   inbox(opts?: InboxOptions): Promise<MessageEnvelope[]>;
+
+  /** Resolve the provider-local account used to scope cached inbox rows. */
+  resolveCacheAccount?(providerFlags?: Record<string, unknown>): string | undefined;
 
   /** Read a specific message by ID */
   read(messageId: string, opts?: ReadOptions): Promise<MessageFull | null>;

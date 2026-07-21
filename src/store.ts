@@ -481,7 +481,11 @@ export type GetCachedInboxArgs = {
 export type CachedInboxCursor = {
   cachedAt: string;
   id: string;
+  provider: string;
+  account: string | null;
 };
+
+type LegacyCachedInboxCursor = Pick<CachedInboxCursor, "cachedAt" | "id">;
 
 export type CachedInboxPage = {
   messages: MessageEnvelope[];
@@ -493,13 +497,35 @@ export function encodeInboxCursor(cursor: CachedInboxCursor): string {
   return Buffer.from(JSON.stringify(cursor), "utf-8").toString("base64url");
 }
 
-export function decodeInboxCursor(token: string): CachedInboxCursor {
+export function decodeInboxCursor(token: string): CachedInboxCursor | LegacyCachedInboxCursor {
   try {
     const parsed = JSON.parse(Buffer.from(token, "base64url").toString("utf-8"));
-    if (typeof parsed?.cachedAt !== "string" || typeof parsed?.id !== "string") {
-      throw new Error("invalid cursor payload");
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+      throw new Error("payload must be an object");
     }
-    return { cachedAt: parsed.cachedAt, id: parsed.id };
+    const keys = Object.keys(parsed).sort();
+    const hasBaseFields = typeof parsed.cachedAt === "string" && typeof parsed.id === "string";
+    if (hasBaseFields && keys.join(",") === "cachedAt,id") {
+      return { cachedAt: parsed.cachedAt, id: parsed.id };
+    }
+    const validAccount = parsed.account === null || typeof parsed.account === "string";
+    if (
+      hasBaseFields &&
+      typeof parsed.provider === "string" &&
+      parsed.provider.length > 0 &&
+      validAccount &&
+      keys.join(",") === "account,cachedAt,id,provider"
+    ) {
+      return {
+        cachedAt: parsed.cachedAt,
+        id: parsed.id,
+        provider: parsed.provider,
+        account: parsed.account,
+      };
+    }
+    throw new Error(
+      "payload must contain either legacy cachedAt/id or scoped cachedAt/id/provider/account fields",
+    );
   } catch (err) {
     throw new Error(`Invalid inbox cursor: ${err instanceof Error ? err.message : String(err)}`);
   }
@@ -526,10 +552,33 @@ export function getCachedInboxPage(provider: string, opts?: GetCachedInboxArgs):
   const params: (string | number)[] = [provider];
   const limit = Math.max(1, opts?.limit ?? 10);
   const cursor = opts?.cursor ? decodeInboxCursor(opts.cursor) : undefined;
+  const accountScope = opts?.account || null;
   const changefeed = Boolean(opts?.changefeed || cursor);
 
   if (cursor && opts?.sinceCachedAt !== undefined) {
     throw new Error("cursor cannot be combined with sinceCachedAt");
+  }
+  if (cursor && "provider" in cursor && "account" in cursor) {
+    if (cursor.provider !== provider) {
+      throw new Error(
+        `Inbox cursor belongs to provider "${cursor.provider}", not "${provider}". Start again without --cursor.`,
+      );
+    }
+    if (cursor.account !== accountScope) {
+      throw new Error(
+        "Inbox cursor account scope does not match the selected account. Start again without --cursor.",
+      );
+    }
+  } else if (cursor) {
+    const anchor = d
+      .prepare("SELECT account FROM messages WHERE provider = ? AND id = ? AND cached_at = ?")
+      .get(provider, cursor.id, cursor.cachedAt) as { account?: string | null } | null;
+    const anchorAccount = anchor?.account || null;
+    if (anchor && accountScope !== null && anchorAccount !== accountScope) {
+      throw new Error(
+        "Legacy inbox cursor anchor belongs to a different account scope. Start again without --cursor.",
+      );
+    }
   }
 
   // Exclude thread sub-messages from inbox listing
@@ -580,7 +629,7 @@ export function getCachedInboxPage(provider: string, opts?: GetCachedInboxArgs):
   const last = messages.at(-1);
   const nextCursor =
     changefeed && last?.cachedAt
-      ? encodeInboxCursor({ cachedAt: last.cachedAt, id: last.id })
+      ? encodeInboxCursor({ cachedAt: last.cachedAt, id: last.id, provider, account: accountScope })
       : undefined;
 
   return { messages, nextCursor, hasMore: changefeed && rows.length > limit };
@@ -661,7 +710,7 @@ export function getThreadMessages(
 export function searchCached(
   query: string,
   provider?: string,
-  opts?: { limit?: number; since?: string },
+  opts?: { limit?: number; since?: string; account?: string },
 ): MessageEnvelope[] {
   const d = getDb();
   const conditions: string[] = [];
@@ -674,6 +723,10 @@ export function searchCached(
   if (opts?.since) {
     conditions.push("date >= ?");
     params.push(opts.since);
+  }
+  if (opts?.account) {
+    conditions.push("account = ?");
+    params.push(opts.account);
   }
 
   const pattern = `%${query}%`;

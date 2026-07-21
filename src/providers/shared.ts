@@ -314,6 +314,7 @@ export function cacheSentMessage(opts: {
   account?: string;
   fromAddress: string;
   recipientId: string;
+  recipientName?: string;
   body: string;
   bodyFormat?: "text" | "html";
   subject?: string;
@@ -328,7 +329,7 @@ export function cacheSentMessage(opts: {
     provider: opts.provider,
     account: opts.account,
     from: { name: "", address: opts.fromAddress },
-    to: [{ name: "", address: opts.recipientId }],
+    to: [{ name: opts.recipientName ?? "", address: opts.recipientId }],
     subject: opts.subject,
     preview: opts.body.slice(0, 100),
     body: opts.body,

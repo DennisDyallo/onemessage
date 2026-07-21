@@ -1,6 +1,6 @@
 # onemessage
 
-One CLI for all your messengers. Send, read, reply, and search across Email, Signal, WhatsApp, SMS, Telegram Bot, Instagram, and Matrix from a single command.
+One CLI for all your messengers. Send, read, reply, and search across Email, Signal, WhatsApp, SMS, Telegram Bot, Instagram, Matrix, and Facebook Messenger from a single command.
 
 ```
 onemessage inbox
@@ -26,6 +26,7 @@ onemessage search "invoice" --since 2025-01-01
 | Telegram Bot | Telegram Bot API token | Create a bot with BotFather |
 | Instagram | `instagram-cli` | Install/configure separately |
 | Matrix | Matrix access token | Homeserver + user ID + token |
+| Messenger | [Beeper Desktop](https://www.beeper.com/) Client API | Local API access token |
 
 ## Install
 
@@ -68,6 +69,11 @@ Create `~/.config/onemessage/config.json`:
     "homeserver": "https://matrix.example.com",
     "userId": "@you:example.com",
     "accessToken": "your-access-token"
+  },
+  "messenger": {
+    "accountId": "your-beeper-facebook-account-id",
+    "accessToken": "your-beeper-client-api-token",
+    "baseUrl": "http://127.0.0.1:23373"
   }
 }
 ```
@@ -90,6 +96,7 @@ onemessage inbox signal
 onemessage send email "friend@example.com" "Hey!" -s "Quick question"
 onemessage send signal "+46701234567" "On my way"
 onemessage send whatsapp "+46701234567" "See you there"
+onemessage send messenger "<beeper-chat-id>" "See you there"
 
 # Reply to a message (auto-fills recipient)
 onemessage reply signal 5 "Got it, thanks"
@@ -115,7 +122,7 @@ onemessage contacts whatsapp
 | `inbox [provider]` | List recent messages (all providers if omitted) |
 | `read <provider> <messageId>` | Read a full message |
 | `search [provider] <query>` | Search messages |
-| `auth <provider>` | Set up or check provider authentication |
+| `auth <provider>` | Configure a provider connection or authentication, depending on provider |
 | `me [body]` | Send to the configured self target |
 | `contacts [provider]` | List known contacts |
 | `cache list\|get\|set\|unset` | Inspect or configure provider cache freshness |
@@ -231,6 +238,39 @@ Requires a Linux desktop or macOS with KDE Connect and a paired Android phone.
    }
    ```
 
+### Facebook Messenger (Beeper Client API)
+
+Messenger uses the local Beeper Client API and scopes all message retrieval to the Facebook account selected during local connection setup. Facebook and Messenger authentication remains entirely owned by the Beeper Desktop GUI; OneMessage does not initiate a Facebook, Messenger, Beeper, or OAuth login.
+
+1. Enable the Beeper Client API and obtain a local access token.
+2. Ensure your Facebook Messenger account is already connected and authenticated in Beeper Desktop.
+3. Run the interactive setup:
+   ```bash
+   onemessage auth messenger
+   ```
+
+The default API URL is `http://127.0.0.1:23373`. This command only configures OneMessage's local connection to Beeper Desktop: it prompts for the Client API token, discovers already-connected Facebook accounts with `GET /v1/accounts`, asks you to select one when needed, and stores only its opaque account ID, the API URL, and the token in your user config.
+
+You can also configure it manually with placeholder values:
+
+```json
+{
+  "messenger": {
+    "accountId": "your-beeper-facebook-account-id",
+    "accessToken": "your-beeper-client-api-token",
+    "baseUrl": "http://127.0.0.1:23373"
+  }
+}
+```
+
+Use Beeper chat IDs as recipients:
+
+```bash
+onemessage inbox messenger
+onemessage send messenger "<beeper-chat-id>" "Hello from OneMessage"
+onemessage search messenger "project"
+```
+
 ## Background Daemon
 
 For continuous message polling (useful for vault sync, AI agents, or notifications), run the unified daemon:
@@ -249,7 +289,7 @@ onemessage daemon stop
 onemessage daemon restart
 ```
 
-The daemon maintains real-time providers where available and polls configured providers such as Email, SMS, Telegram Bot, Instagram, and Matrix. Configure polling in your config:
+The daemon maintains real-time providers where available and polls configured providers such as Email, SMS, Telegram Bot, Instagram, Matrix, and Messenger. Configure polling in your config:
 
 ```json
 {
@@ -257,7 +297,8 @@ The daemon maintains real-time providers where available and polls configured pr
     "pollIntervalMs": 120000,
     "providers": {
       "signal": { "enabled": true, "pollIntervalMs": 60000 },
-      "email": { "enabled": true, "pollIntervalMs": 300000 }
+      "email": { "enabled": true, "pollIntervalMs": 300000 },
+      "messenger": { "enabled": true, "pollIntervalMs": 60000 }
     }
   }
 }
@@ -277,7 +318,7 @@ onemessage search "project update" --json
 
 ## Message Cache
 
-Messages are cached locally in SQLite at `~/.config/onemessage/messages.db`. The cache uses freshness gating — subsequent calls within 60 seconds return cached results unless you pass `--fresh`.
+Messages are cached locally in SQLite at `~/.config/onemessage/messages.db`. The cache uses freshness gating. Messenger and other standard providers default to 30 seconds; subsequent calls inside that window return cached results unless you pass `--fresh`.
 
 Conversation metadata is cached separately under the stable `(provider, account, thread_id)` key. Instagram normalizes titles and participant handles at ingestion: invalid numeric and `User_<digits>` identities are never exposed as display names, duplicate display identities are marked unresolved, and unsafe per-message senders become `Instagram Participant`.
 

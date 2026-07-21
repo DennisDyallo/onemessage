@@ -14,3 +14,4 @@ import "./whatsapp.ts";
 import "./telegram-bot.ts";
 import "./instagram.ts";
 import "./matrix.ts";
+import "./messenger.ts";

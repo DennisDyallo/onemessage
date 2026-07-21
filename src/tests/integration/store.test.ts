@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import {
   backfillMessageNames,
+  decodeInboxCursor,
   deleteMessages,
   getCachedInbox,
   getCachedInboxPage,
@@ -1066,6 +1067,260 @@ describe("sinceCachedAt filter", () => {
     expect(page2.messages.map((m) => m.id)).toEqual(["tie-3"]);
     expect(page2.nextCursor).toBeDefined();
     expect(page2.hasMore).toBe(false);
+  });
+
+  test("scoped cursor continues within the same provider and account", () => {
+    const provider = "__test_cursor_same_scope__";
+    const account = "scope-a";
+    const cachedAt = "2026-05-30T10:00:00Z";
+    upsertMessages(
+      ["same-1", "same-2"].map((id) => ({
+        id,
+        provider,
+        account,
+        from: { name: "A", address: "a@test.com" },
+        to: [{ name: "Me", address: "me@test.com" }],
+        preview: id,
+        date: "2026-01-01T00:00:00Z",
+        unread: false,
+        hasAttachments: false,
+      })),
+      "in",
+    );
+    const db = getDb();
+    db.prepare("UPDATE messages SET cached_at = ? WHERE provider = ?").run(cachedAt, provider);
+
+    const page1 = getCachedInboxPage(provider, { account, changefeed: true, limit: 1 });
+    const page2 = getCachedInboxPage(provider, {
+      account,
+      cursor: page1.nextCursor,
+      changefeed: true,
+      limit: 1,
+    });
+
+    expect(page2.messages.map((message) => message.id)).toEqual(["same-2"]);
+    expect(decodeInboxCursor(page2.nextCursor ?? "")).toMatchObject({ provider, account });
+  });
+
+  test("scoped cursor rejects reuse with another account", () => {
+    const provider = "__test_cursor_cross_account__";
+    upsertMessages(
+      [
+        {
+          id: "cross-account-1",
+          provider,
+          account: "scope-a",
+          from: { name: "A", address: "a@test.com" },
+          to: [{ name: "Me", address: "me@test.com" }],
+          preview: "first",
+          date: "2026-01-01T00:00:00Z",
+          unread: false,
+          hasAttachments: false,
+        },
+      ],
+      "in",
+    );
+    const page = getCachedInboxPage(provider, { account: "scope-a", changefeed: true, limit: 1 });
+
+    expect(() =>
+      getCachedInboxPage(provider, {
+        account: "scope-b",
+        cursor: page.nextCursor,
+        changefeed: true,
+        limit: 1,
+      }),
+    ).toThrow("account scope does not match");
+  });
+
+  test("scoped cursor rejects reuse with another provider", () => {
+    const provider = "__test_cursor_provider_a__";
+    upsertMessages(
+      [
+        {
+          id: "cross-provider-1",
+          provider,
+          from: { name: "A", address: "a@test.com" },
+          to: [{ name: "Me", address: "me@test.com" }],
+          preview: "first",
+          date: "2026-01-01T00:00:00Z",
+          unread: false,
+          hasAttachments: false,
+        },
+      ],
+      "in",
+    );
+    const page = getCachedInboxPage(provider, { changefeed: true, limit: 1 });
+
+    expect(() =>
+      getCachedInboxPage("__test_cursor_provider_b__", {
+        cursor: page.nextCursor,
+        changefeed: true,
+        limit: 1,
+      }),
+    ).toThrow("belongs to provider");
+  });
+
+  test("legacy cursor is accepted once and migrates to a scoped cursor", () => {
+    const provider = "__test_cursor_legacy__";
+    const account = "legacy-scope";
+    const cachedAt = "2026-05-30T10:00:00Z";
+    upsertMessages(
+      ["legacy-1", "legacy-2"].map((id) => ({
+        id,
+        provider,
+        account,
+        from: { name: "A", address: "a@test.com" },
+        to: [{ name: "Me", address: "me@test.com" }],
+        preview: id,
+        date: "2026-01-01T00:00:00Z",
+        unread: false,
+        hasAttachments: false,
+      })),
+      "in",
+    );
+    const db = getDb();
+    db.prepare("UPDATE messages SET cached_at = ? WHERE provider = ?").run(cachedAt, provider);
+    const legacyCursor = Buffer.from(
+      JSON.stringify({ cachedAt, id: "legacy-1" }),
+      "utf-8",
+    ).toString("base64url");
+
+    const page = getCachedInboxPage(provider, {
+      account,
+      cursor: legacyCursor,
+      changefeed: true,
+      limit: 1,
+    });
+
+    expect(page.messages.map((message) => message.id)).toEqual(["legacy-2"]);
+    expect(decodeInboxCursor(page.nextCursor ?? "")).toEqual({
+      cachedAt,
+      id: "legacy-2",
+      provider,
+      account,
+    });
+  });
+
+  test("legacy global cursor accepts an account-tagged anchor and migrates to account null", () => {
+    const provider = "__test_cursor_legacy_global__";
+    const cachedAt = "2026-05-30T10:00:00Z";
+    upsertMessages(
+      [
+        {
+          id: "legacy-global-0-anchor",
+          provider,
+          account: "scope-a",
+          from: { name: "A", address: "a@test.com" },
+          to: [{ name: "Me", address: "me@test.com" }],
+          preview: "anchor",
+          date: "2026-01-01T00:00:00Z",
+          unread: false,
+          hasAttachments: false,
+        },
+        {
+          id: "legacy-global-1-continuation",
+          provider,
+          account: "scope-b",
+          from: { name: "B", address: "b@test.com" },
+          to: [{ name: "Me", address: "me@test.com" }],
+          preview: "continuation",
+          date: "2026-01-01T00:00:01Z",
+          unread: false,
+          hasAttachments: false,
+        },
+      ],
+      "in",
+    );
+    const db = getDb();
+    db.prepare("UPDATE messages SET cached_at = ? WHERE provider = ?").run(cachedAt, provider);
+    const legacyCursor = Buffer.from(
+      JSON.stringify({ cachedAt, id: "legacy-global-0-anchor" }),
+      "utf-8",
+    ).toString("base64url");
+
+    const page = getCachedInboxPage(provider, { cursor: legacyCursor, changefeed: true, limit: 1 });
+
+    expect(page.messages.map((message) => message.id)).toEqual(["legacy-global-1-continuation"]);
+    expect(decodeInboxCursor(page.nextCursor ?? "")).toEqual({
+      cachedAt,
+      id: "legacy-global-1-continuation",
+      provider,
+      account: null,
+    });
+  });
+
+  test("legacy cursor rejects a same-provider anchor from another account", () => {
+    const provider = "__test_cursor_legacy_cross_account__";
+    const cachedAt = "2026-05-30T10:00:00Z";
+    upsertMessages(
+      [
+        {
+          id: "legacy-cross-account-anchor",
+          provider,
+          account: "scope-a",
+          from: { name: "A", address: "a@test.com" },
+          to: [{ name: "Me", address: "me@test.com" }],
+          preview: "anchor",
+          date: "2026-01-01T00:00:00Z",
+          unread: false,
+          hasAttachments: false,
+        },
+      ],
+      "in",
+    );
+    const db = getDb();
+    db.prepare("UPDATE messages SET cached_at = ? WHERE provider = ?").run(cachedAt, provider);
+    const legacyCursor = Buffer.from(
+      JSON.stringify({ cachedAt, id: "legacy-cross-account-anchor" }),
+      "utf-8",
+    ).toString("base64url");
+
+    expect(() =>
+      getCachedInboxPage(provider, {
+        account: "scope-b",
+        cursor: legacyCursor,
+        changefeed: true,
+        limit: 1,
+      }),
+    ).toThrow("Legacy inbox cursor anchor belongs to a different account scope");
+  });
+
+  test("legacy cursor remains compatible when its anchor row is unavailable", () => {
+    const provider = "__test_cursor_legacy_missing_anchor__";
+    const account = "legacy-scope";
+    const cachedAt = "2026-05-30T10:00:00Z";
+    upsertMessages(
+      [
+        {
+          id: "legacy-1-after-missing-anchor",
+          provider,
+          account,
+          from: { name: "A", address: "a@test.com" },
+          to: [{ name: "Me", address: "me@test.com" }],
+          preview: "continuation",
+          date: "2026-01-01T00:00:00Z",
+          unread: false,
+          hasAttachments: false,
+        },
+      ],
+      "in",
+    );
+    const db = getDb();
+    db.prepare("UPDATE messages SET cached_at = ? WHERE provider = ?").run(cachedAt, provider);
+    const legacyCursor = Buffer.from(
+      JSON.stringify({ cachedAt, id: "legacy-0-anchor-no-longer-present" }),
+      "utf-8",
+    ).toString("base64url");
+
+    const page = getCachedInboxPage(provider, {
+      account,
+      cursor: legacyCursor,
+      changefeed: true,
+      limit: 1,
+    });
+
+    expect(page.messages.map((message) => message.id)).toEqual(["legacy-1-after-missing-anchor"]);
+    expect(decodeInboxCursor(page.nextCursor ?? "")).toMatchObject({ provider, account });
   });
 
   test("changefeed mode applies account filter", () => {

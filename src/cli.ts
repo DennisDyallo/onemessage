@@ -348,6 +348,22 @@ addProviderFlags(
   for (const provider of providers) {
     try {
       if (opts.pageJson) {
+        const resolvesCacheAccount = provider.resolveCacheAccount !== undefined;
+        const providerCacheAccount = provider.resolveCacheAccount?.(providerFlags);
+        if (resolvesCacheAccount && !providerCacheAccount) {
+          console.error(
+            `Cannot resolve the configured account for ${provider.displayName}. Configure the provider before using --page-json.`,
+          );
+          process.exit(1);
+        }
+        if (opts.account && providerCacheAccount && opts.account !== providerCacheAccount) {
+          console.error(
+            `--account conflicts with the configured account for ${provider.displayName}. Remove --account or use the configured provider account.`,
+          );
+          process.exit(1);
+        }
+        const cacheAccount = providerCacheAccount ?? opts.account;
+
         await provider.inbox({
           limit,
           unread: opts.unread,
@@ -355,7 +371,7 @@ addProviderFlags(
           sinceCachedAt: opts.sinceCachedAt,
           from: opts.from,
           folder: opts.folder,
-          account: opts.account,
+          account: cacheAccount,
           fresh: opts.fresh,
           all: opts.all,
           providerFlags,
@@ -374,7 +390,7 @@ addProviderFlags(
           cursor: opts.cursor,
           changefeed: true,
           from: opts.from,
-          account: opts.account,
+          account: cacheAccount,
           excludeAccounts,
         });
         process.stdout.write(`${JSON.stringify(page, null, 2)}\n`);
@@ -622,7 +638,7 @@ program
   .command("auth <provider>")
   .description("Configure or authenticate a provider")
   .option("--phone <number>", "Phone number for WhatsApp pairing code auth")
-  .option("--force", "Re-run authenticate() even if provider is already configured")
+  .option("--force", "Re-run provider setup even if already configured")
   .action(async (providerName, opts) => {
     const provider = getProviderOrExit(providerName);
     const configPath = getConfigPath();
@@ -642,10 +658,10 @@ program
         }
       }
       console.log(`\n  Config: ${configPath}`);
-      console.log(`  Re-authenticate with: onemessage auth ${providerName} --force\n`);
+      console.log(`  Reconfigure with: onemessage auth ${providerName} --force\n`);
     } else if (provider.authenticate) {
       if (opts.force && provider.isConfigured()) {
-        console.log(`  --force: re-running authenticate() for ${providerName}.\n`);
+        console.log(`  --force: re-running provider setup for ${providerName}.\n`);
       }
       await provider.authenticate({ phone: opts.phone, force: opts.force });
     } else {
