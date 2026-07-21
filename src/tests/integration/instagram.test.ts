@@ -12,13 +12,21 @@
  * 3. Edge cases (media-only, no text)
  */
 import { describe, expect, test } from "bun:test";
+import { chmodSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { InstagramAdapter } from "../../daemons/instagram.ts";
 import {
   backfillInstagramThreadMetadata,
+  fetchInstagramInbox,
+  getInstagramInboxSnapshot,
+  type InstagramInventoryThread,
   type ReadMessage,
   readMessageToFull,
 } from "../../providers/instagram.ts";
 import {
+  getCursor,
+  getThreadMessages,
   getThreadMetadata,
   recordFetch,
   setCursor,
@@ -76,6 +84,28 @@ async function simulateFreshRead(
 // ---------------------------------------------------------------------------
 
 const NOW = new Date().toISOString();
+
+async function withFakeInstagramInbox<T>(data: unknown, operation: () => Promise<T>): Promise<T> {
+  const fixtureDir = mkdtempSync(join(tmpdir(), "onemessage-instagram-legacy-inbox-"));
+  const fakeCli = join(fixtureDir, "instagram-cli");
+  writeFileSync(
+    fakeCli,
+    `#!/bin/sh
+printf '%s\\n' '${JSON.stringify({ ok: true, data })}'
+`,
+    "utf-8",
+  );
+  chmodSync(fakeCli, 0o755);
+  const originalCli = process.env.ONEMESSAGE_INSTAGRAM_CLI;
+  process.env.ONEMESSAGE_INSTAGRAM_CLI = fakeCli;
+  try {
+    return await operation();
+  } finally {
+    if (originalCli === undefined) delete process.env.ONEMESSAGE_INSTAGRAM_CLI;
+    else process.env.ONEMESSAGE_INSTAGRAM_CLI = originalCli;
+    rmSync(fixtureDir, { recursive: true, force: true });
+  }
+}
 
 function makeThreadMetadata(threadId: string, displayName: string): InstagramThreadMetadata {
   return {
@@ -351,7 +381,7 @@ describe("Instagram cached inventory contract", () => {
     const adapter = new InstagramAdapter({
       fetchInbox: async () => {
         sourceCalls++;
-        return [];
+        return { threads: [], pagesFetched: 1 };
       },
     });
     if (reason === "fresh-cache") recordFetch("instagram", account);
@@ -365,7 +395,7 @@ describe("Instagram cached inventory contract", () => {
     }
     if (reason === "budget-exhausted") {
       setCursor("instagram", account, "request_budget_window_started_at", new Date().toISOString());
-      setCursor("instagram", account, "request_budget_count", "36");
+      setCursor("instagram", account, "request_budget_count", "10");
     }
     const response = await adapter.handleIpc({ type: "instagram-inventory", account });
     return { response, sourceCalls };
@@ -391,7 +421,7 @@ describe("Instagram cached inventory contract", () => {
     const adapter = new InstagramAdapter({
       fetchInbox: async () => {
         sourceCalls++;
-        return [];
+        return { threads: [], pagesFetched: 1 };
       },
     });
 
@@ -413,9 +443,9 @@ describe("Instagram cached inventory contract", () => {
     const account = "fetch-thread-budget";
     let sourceCalls = 0;
     setCursor("instagram", account, "request_budget_window_started_at", new Date().toISOString());
-    setCursor("instagram", account, "request_budget_count", "36");
+    setCursor("instagram", account, "request_budget_count", "10");
     const adapter = new InstagramAdapter({
-      fetchInbox: async () => [],
+      fetchInbox: async () => ({ threads: [], pagesFetched: 1 }),
       fetchThread: async () => {
         sourceCalls++;
         return [];
@@ -436,7 +466,9 @@ describe("Instagram cached inventory contract", () => {
     const account = "delta-metadata";
     seedThread(account);
     setCursor("instagram", account, "cooldown_until", new Date(Date.now() + 60_000).toISOString());
-    const adapter = new InstagramAdapter({ fetchInbox: async () => [] });
+    const adapter = new InstagramAdapter({
+      fetchInbox: async () => ({ threads: [], pagesFetched: 1 }),
+    });
     const response = await adapter.handleIpc({
       type: "instagram-thread-delta",
       account,
@@ -447,6 +479,79 @@ describe("Instagram cached inventory contract", () => {
       : null;
     expect(data?.performed).toBe(false);
     expect(data?.thread.displayName).toBe("Cached Person");
+  });
+
+  test("two actual inbox pages consume two request units", async () => {
+    const account = `inventory-two-pages-${Date.now()}`;
+    const adapter = new InstagramAdapter({
+      fetchInbox: async (_username, opts) => {
+        expect(opts?.pages).toBe(2);
+        return { threads: [], pagesFetched: 2 };
+      },
+    });
+
+    const response = await adapter.handleIpc({
+      type: "instagram-inventory",
+      account,
+      maxPages: 2,
+    });
+
+    expect(response?.ok).toBe(true);
+    const data = response?.ok ? (response.data as { pagesFetched: number }) : null;
+    expect(data?.pagesFetched).toBe(2);
+    expect(getCursor("instagram", account, "request_budget_count")).toBe("2");
+  });
+
+  test("an early one-page stop refunds the unused reservation", async () => {
+    const account = `inventory-one-of-two-${Date.now()}`;
+    const adapter = new InstagramAdapter({
+      fetchInbox: async (_username, opts) => {
+        expect(opts?.pages).toBe(2);
+        return { threads: [], pagesFetched: 1 };
+      },
+    });
+
+    const response = await adapter.handleIpc({
+      type: "instagram-inventory",
+      account,
+      maxPages: 2,
+    });
+
+    expect(response?.ok).toBe(true);
+    expect(getCursor("instagram", account, "request_budget_count")).toBe("1");
+  });
+
+  test("invalid actual page counts retain the bounded reservation", async () => {
+    const account = `inventory-invalid-pages-${Date.now()}`;
+    const adapter = new InstagramAdapter({
+      fetchInbox: async () => ({ threads: [], pagesFetched: Number.NaN }),
+    });
+
+    const response = await adapter.handleIpc({
+      type: "instagram-inventory",
+      account,
+      maxPages: 2,
+    });
+
+    expect(response?.ok).toBe(true);
+    expect(getCursor("instagram", account, "request_budget_count")).toBe("2");
+  });
+
+  test("routine inventory requests one page and failed reservations remain counted", async () => {
+    const account = `inventory-failed-default-${Date.now()}`;
+    let requestedPages = 0;
+    const adapter = new InstagramAdapter({
+      fetchInbox: async (_username, opts) => {
+        requestedPages = opts?.pages ?? 0;
+        throw new Error("fixture failure");
+      },
+    });
+
+    const response = await adapter.handleIpc({ type: "instagram-inventory", account });
+
+    expect(response?.ok).toBe(false);
+    expect(requestedPages).toBe(1);
+    expect(getCursor("instagram", account, "request_budget_count")).toBe("1");
   });
 });
 
@@ -644,23 +749,188 @@ describe("instagramProvider.inbox via inboxViaDaemon", () => {
     expect(inboxBody).toContain("account: settings.username");
   });
 
-  test("fetchInstagramInbox stores envelopes only and does not hydrate threads", async () => {
-    const fs = await import("node:fs/promises");
-    const instagramSource = await fs.readFile(
-      new URL("../../providers/instagram.ts", import.meta.url),
+  test("inbox batches full thread messages and persists cache-only snapshot coverage", async () => {
+    const fixtureDir = mkdtempSync(join(tmpdir(), "onemessage-instagram-inbox-"));
+    const fakeCli = join(fixtureDir, "instagram-cli");
+    const requestLog = join(fixtureDir, "requests.txt");
+    const suffix = `${Date.now()}-${Math.random().toString(16).slice(2)}`;
+    const account = `snapshot-account-${suffix}`;
+    const threadId = `snapshot-thread-${suffix}`;
+    const incomingId = `snapshot-in-${suffix}`;
+    const outgoingId = `snapshot-out-${suffix}`;
+    const payload = {
+      ok: true,
+      data: {
+        threads: [
+          {
+            id: threadId,
+            title: "Snapshot Person",
+            users: ["snapshot_person"],
+            lastMessage: {
+              id: outgoingId,
+              itemType: "text",
+              text: "outgoing body",
+              timestamp: "2026-07-21T10:01:00.000Z",
+            },
+            lastActivity: "2026-07-21T10:01:00.000Z",
+            unread: false,
+            recentMessages: [
+              {
+                id: incomingId,
+                itemType: "text",
+                text: "incoming body",
+                userId: "fixture-user",
+                username: "snapshot_person",
+                timestamp: "2026-07-21T10:00:00.000Z",
+                isOutgoing: false,
+              },
+              {
+                id: outgoingId,
+                itemType: "text",
+                text: "outgoing body",
+                userId: "fixture-self",
+                username: account,
+                timestamp: "2026-07-21T10:01:00.000Z",
+                isOutgoing: true,
+              },
+            ],
+            hasOlderMessages: true,
+            oldestCursor: "fixture-oldest-cursor",
+          },
+        ],
+        hasMore: true,
+        pagesFetched: 2,
+      },
+    };
+    writeFileSync(
+      fakeCli,
+      `#!/bin/sh
+printf '%s\\n' "$@" > '${requestLog}'
+printf '%s\\n' '${JSON.stringify(payload)}'
+`,
       "utf-8",
     );
+    chmodSync(fakeCli, 0o755);
+    const originalCli = process.env.ONEMESSAGE_INSTAGRAM_CLI;
+    process.env.ONEMESSAGE_INSTAGRAM_CLI = fakeCli;
 
-    const fetchMatch = instagramSource.match(
-      /export async function fetchInstagramInbox[\s\S]*?^}/m,
+    try {
+      const fetched = await fetchInstagramInbox(account, { pages: 2 });
+      expect(fetched.pagesFetched).toBe(2);
+      expect(fetched.threads.map((thread) => thread.id)).toEqual([threadId]);
+
+      const messages = getThreadMessages("instagram", threadId);
+      expect(messages.map((message) => message.id)).toEqual([incomingId, outgoingId]);
+      expect(messages.map((message) => message.body)).toEqual(["incoming body", "outgoing body"]);
+      expect(messages.map((message) => message.direction)).toEqual(["in", "out"]);
+      expect(messages.every((message) => message.account === account)).toBe(true);
+
+      const snapshot = getInstagramInboxSnapshot(account, threadId);
+      expect(snapshot).toMatchObject({
+        messageIds: [incomingId, outgoingId],
+        hasOlderMessages: true,
+        oldestCursor: "fixture-oldest-cursor",
+      });
+      expect(Number.isFinite(new Date(snapshot?.fetchedAt ?? "").getTime())).toBe(true);
+
+      let sourceCalls = 0;
+      const restartedAdapter = new InstagramAdapter({
+        fetchInbox: async () => {
+          sourceCalls++;
+          return { threads: [], pagesFetched: 1 };
+        },
+      });
+      const response = await restartedAdapter.handleIpc({
+        type: "instagram-inventory",
+        account,
+        cacheOnly: true,
+      });
+      const inventoryData = response?.ok
+        ? (response.data as { threads: InstagramInventoryThread[] })
+        : null;
+      const inventory = inventoryData?.threads ?? [];
+      expect(inventory).toHaveLength(1);
+      expect(inventory[0]).toMatchObject({
+        threadId,
+        recentMessageIds: [incomingId, outgoingId],
+        hasOlderMessages: true,
+        oldestCursor: "fixture-oldest-cursor",
+      });
+      expect(inventory[0]?.snapshotFetchedAt).toBe(snapshot?.fetchedAt);
+      expect(sourceCalls).toBe(0);
+
+      const sourceRequests = readFileSync(requestLog, "utf-8").split("\n").filter(Boolean);
+      expect(sourceRequests[0]).toBe("inbox");
+      expect(sourceRequests).not.toContain("read");
+    } finally {
+      if (originalCli === undefined) delete process.env.ONEMESSAGE_INSTAGRAM_CLI;
+      else process.env.ONEMESSAGE_INSTAGRAM_CLI = originalCli;
+      rmSync(fixtureDir, { recursive: true, force: true });
+    }
+  });
+
+  test("accepts a legacy top-level thread array without claiming snapshot coverage", async () => {
+    const suffix = `${Date.now()}-${Math.random().toString(16).slice(2)}`;
+    const account = `legacy-array-account-${suffix}`;
+    const threadId = `legacy-array-thread-${suffix}`;
+    const legacyThreads = [
+      {
+        id: threadId,
+        title: "Legacy Array Person",
+        users: ["legacy_array_person"],
+        lastActivity: "2026-07-21T11:00:00.000Z",
+        unread: false,
+      },
+    ];
+
+    const result = await withFakeInstagramInbox(legacyThreads, () =>
+      fetchInstagramInbox(account, { pages: 3 }),
     );
-    expect(fetchMatch).not.toBeNull();
-    const fetchBody = fetchMatch?.[0] ?? "";
 
-    expect(fetchBody).toContain("store.upsertMessages");
-    expect(fetchBody).toContain("store.recordFetch");
-    expect(fetchBody).not.toContain("fetchThreadMessages");
-    expect(fetchBody).not.toContain("upsertFullMessages");
+    expect(result.pagesFetched).toBe(3);
+    expect(result.threads.map((thread) => thread.id)).toEqual([threadId]);
+    expect(getInstagramInboxSnapshot(account, threadId)).toBeNull();
+    expect(getThreadMessages("instagram", threadId)).toEqual([]);
+  });
+
+  test("legacy object output conservatively charges the requested page cap", async () => {
+    const suffix = `${Date.now()}-${Math.random().toString(16).slice(2)}`;
+    const account = `legacy-object-account-${suffix}`;
+    const threadId = `legacy-object-thread-${suffix}`;
+    const legacyResult = {
+      threads: [
+        {
+          id: threadId,
+          title: "Legacy Object Person",
+          users: ["legacy_object_person"],
+          lastActivity: "2026-07-21T11:01:00.000Z",
+          unread: false,
+        },
+      ],
+      hasMore: false,
+    };
+
+    await withFakeInstagramInbox(legacyResult, async () => {
+      const adapter = new InstagramAdapter();
+      const response = await adapter.handleIpc({
+        type: "instagram-inventory",
+        account,
+        maxPages: 2,
+      });
+      const data = response?.ok ? (response.data as { pagesFetched: number }) : null;
+      expect(data?.pagesFetched).toBe(2);
+    });
+
+    expect(getCursor("instagram", account, "request_budget_count")).toBe("2");
+    expect(getInstagramInboxSnapshot(account, threadId)).toBeNull();
+  });
+
+  test("rejects a present invalid pagesFetched value", async () => {
+    await expect(
+      withFakeInstagramInbox({ threads: [], hasMore: false, pagesFetched: 0 }, () =>
+        fetchInstagramInbox(`invalid-pages-account-${Date.now()}`),
+      ),
+    ).rejects.toThrow("instagram-cli inbox error");
   });
 
   test("InstagramAdapter has MIN_FETCH_INTERVAL_MS rate limit guard (structural proof)", async () => {
@@ -744,7 +1014,9 @@ describe("instagramProvider.inbox via inboxViaDaemon", () => {
       "utf-8",
     );
 
-    const threadMatch = adapterSource.match(/async actuallyFetchThread[\s\S]*?^ {2}}/m);
+    const threadMatch = adapterSource.match(
+      /private async actuallyFetchThreadSerialized[\s\S]*?^ {2}}/m,
+    );
     expect(threadMatch).not.toBeNull();
     const threadBody = threadMatch?.[0] ?? "";
 

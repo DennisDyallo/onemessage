@@ -90,11 +90,15 @@ interface InboxThread {
   };
   lastActivity: string;
   unread: boolean;
+  recentMessages?: ReadMessage[];
+  hasOlderMessages?: boolean;
+  oldestCursor?: string;
 }
 
 interface InboxResult {
   threads: InboxThread[];
   hasMore?: boolean;
+  pagesFetched?: number;
 }
 
 export interface ReadMessage {
@@ -121,6 +125,25 @@ interface SendResult {
   recipient: string;
   messageId: string;
   sent: boolean;
+}
+
+export interface InstagramInboxSnapshot {
+  messageIds: string[];
+  hasOlderMessages: boolean;
+  oldestCursor?: string;
+  fetchedAt: string;
+}
+
+export interface InstagramInventoryThread extends InstagramThreadMetadata {
+  recentMessageIds?: string[];
+  snapshotFetchedAt?: string;
+  hasOlderMessages?: boolean;
+  oldestCursor?: string;
+}
+
+export interface InstagramInboxFetchResult {
+  threads: MessageEnvelope[];
+  pagesFetched: number;
 }
 
 // ---------------------------------------------------------------------------
@@ -179,6 +202,48 @@ export function listNormalizedInstagramThreads(account: string): InstagramThread
   return markDuplicateThreadIdentitiesUnresolved(
     store.listThreadMetadata("instagram", account),
   ).map((thread) => ({ ...thread, defaultSenderLabel: instagramDefaultSenderLabel(thread) }));
+}
+
+function snapshotCursorName(threadId: string): string {
+  return `inbox_snapshot:${threadId}`;
+}
+
+export function getInstagramInboxSnapshot(
+  account: string,
+  threadId: string,
+): InstagramInboxSnapshot | null {
+  const value = store.getCursor("instagram", account, snapshotCursorName(threadId));
+  if (!value) return null;
+  try {
+    const snapshot = JSON.parse(value) as InstagramInboxSnapshot;
+    if (
+      !Array.isArray(snapshot.messageIds) ||
+      !snapshot.messageIds.every((id) => typeof id === "string") ||
+      typeof snapshot.hasOlderMessages !== "boolean" ||
+      typeof snapshot.fetchedAt !== "string" ||
+      (snapshot.oldestCursor !== undefined && typeof snapshot.oldestCursor !== "string")
+    ) {
+      return null;
+    }
+    return snapshot;
+  } catch {
+    return null;
+  }
+}
+
+export function listInstagramInventoryThreads(account: string): InstagramInventoryThread[] {
+  return listNormalizedInstagramThreads(account).map((thread) => {
+    const snapshot = getInstagramInboxSnapshot(account, thread.threadId);
+    return snapshot
+      ? {
+          ...thread,
+          recentMessageIds: snapshot.messageIds,
+          snapshotFetchedAt: snapshot.fetchedAt,
+          hasOlderMessages: snapshot.hasOlderMessages,
+          ...(snapshot.oldestCursor !== undefined ? { oldestCursor: snapshot.oldestCursor } : {}),
+        }
+      : thread;
+  });
 }
 
 export function getNormalizedInstagramThread(
@@ -272,7 +337,8 @@ export async function fetchThreadMessagesPage(
 export async function fetchInstagramInbox(
   username: string,
   opts?: { pages?: number; limit?: number },
-): Promise<MessageEnvelope[]> {
+): Promise<InstagramInboxFetchResult> {
+  const requestedPages = opts?.pages ?? 1;
   const result = await runInstagramCliAsync(
     [
       "inbox",
@@ -281,7 +347,7 @@ export async function fetchInstagramInbox(
       "--limit",
       String(opts?.limit ?? INBOX_THREAD_LIMIT),
       "--pages",
-      String(opts?.pages ?? 1),
+      String(requestedPages),
       "-u",
       username,
     ],
@@ -300,6 +366,14 @@ export async function fetchInstagramInbox(
   }
 
   const threads = Array.isArray(parsed.data) ? parsed.data : parsed.data.threads;
+  const reportedPages = Array.isArray(parsed.data) ? undefined : parsed.data.pagesFetched;
+  if (
+    !Array.isArray(threads) ||
+    (reportedPages !== undefined && (!Number.isInteger(reportedPages) || reportedPages < 1))
+  ) {
+    throw new Error(`instagram-cli inbox error: ${parsed.error ?? "unknown"}`);
+  }
+  const pagesFetched = reportedPages ?? requestedPages;
 
   const normalized = threads.map((thread) => normalizeInstagramThread(thread, username));
   store.upsertThreadMetadataBatch(normalized);
@@ -317,8 +391,31 @@ export async function fetchInstagramInbox(
     store.upsertMessages(envelopes, "in");
   }
 
+  const fetchedAt = new Date().toISOString();
+  for (const thread of threads) {
+    const metadata = metadataById.get(thread.id);
+    if (!metadata) throw new Error(`Failed to cache Instagram thread metadata for ${thread.id}`);
+
+    // Older instagram-cli builds omitted recentMessages. Preserve their envelope-only
+    // behavior rather than claiming snapshot coverage they did not provide.
+    if (thread.recentMessages === undefined) continue;
+    if (!Array.isArray(thread.recentMessages) || typeof thread.hasOlderMessages !== "boolean") {
+      throw new Error(`instagram-cli inbox error: invalid recent messages for ${thread.id}`);
+    }
+
+    const messages = thread.recentMessages.map((message) => readMessageToFull(message, metadata));
+    if (messages.length > 0) store.upsertFullMessages(messages, thread.id);
+    const snapshot: InstagramInboxSnapshot = {
+      messageIds: thread.recentMessages.map((message) => message.id),
+      hasOlderMessages: thread.hasOlderMessages,
+      ...(thread.oldestCursor !== undefined ? { oldestCursor: thread.oldestCursor } : {}),
+      fetchedAt,
+    };
+    store.setCursor("instagram", username, snapshotCursorName(thread.id), JSON.stringify(snapshot));
+  }
+
   store.recordFetch("instagram", username);
-  return envelopes;
+  return { threads: envelopes, pagesFetched };
 }
 
 // ---------------------------------------------------------------------------

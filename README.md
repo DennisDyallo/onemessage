@@ -330,7 +330,7 @@ onemessage instagram inventory --cache-only --json
 onemessage instagram thread-delta <thread-id> --json
 ```
 
-Inventory always returns deterministic cached `threads`, plus independent `performed`, `reason`, and `sourceFetchedAt` fields. `thread-delta` returns the normalized `thread` metadata alongside messages. `--cache-only` guarantees inventory cannot call `instagram-cli`.
+Inventory defaults to one source inbox page and always returns deterministic cached `threads`, plus independent `performed`, `reason`, and `sourceFetchedAt` fields. Threads include persisted snapshot coverage (`recentMessageIds`, `snapshotFetchedAt`, `hasOlderMessages`, and optional `oldestCursor`) when available, including with `--cache-only` after a daemon restart. Batched recent messages are cached as full thread messages without per-thread source reads. The default daily source-page budget is 10; inbox calls reserve their requested page cap and reconcile successful calls to `pagesFetched`, while failed attempts retain the reservation. `thread-delta` returns normalized thread metadata alongside messages. `--cache-only` guarantees inventory cannot call `instagram-cli`.
 
 Existing envelope rows can be migrated without source calls:
 

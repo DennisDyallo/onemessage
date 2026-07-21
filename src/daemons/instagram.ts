@@ -2,7 +2,7 @@ import { getMinimumProviderFreshnessMs, loadConfig } from "../config.ts";
 import {
   fetchInstagramInbox,
   getNormalizedInstagramThread,
-  listNormalizedInstagramThreads,
+  listInstagramInventoryThreads,
 } from "../providers/instagram.ts";
 import { cliExists } from "../providers/shared.ts";
 import * as store from "../store.ts";
@@ -11,9 +11,9 @@ import type { DaemonOrchestrator, DaemonResponse, IpcCapableAdapter } from "./ad
 
 const COOLDOWN_MS = 24 * 60 * 60_000;
 const REQUEST_WINDOW_MS = 24 * 60 * 60_000;
-const DEFAULT_MAX_REQUESTS_PER_DAY = 36;
+const DEFAULT_MAX_REQUESTS_PER_DAY = 10;
 const DEFAULT_MIN_REQUEST_SPACING_MS = 2_000;
-const DEFAULT_MAX_INVENTORY_PAGES = 2;
+const DEFAULT_MAX_INVENTORY_PAGES = 1;
 const DEFAULT_MAX_THREAD_PAGES = 2;
 const DEFAULT_THREAD_PAGE_LIMIT = 20;
 
@@ -26,6 +26,7 @@ type InstagramFetchMeta =
 
 type InstagramInventoryData = InstagramFetchMeta & {
   threads: unknown[];
+  pagesFetched?: number;
   stopReason?:
     | "complete"
     | "cache-only"
@@ -123,11 +124,7 @@ export class InstagramAdapter implements IpcCapableAdapter {
     return { windowStartedAt, count };
   }
 
-  private hasRequestBudget(username: string): boolean {
-    return this.readRequestBudget(username).count < this.maxRequestsPerDay();
-  }
-
-  private async recordSourceRequest(username: string): Promise<boolean> {
+  private async serializeSourceRequests<T>(operation: () => Promise<T>): Promise<T> {
     let release!: () => void;
     const previous = this.requestBudgetQueue;
     this.requestBudgetQueue = new Promise<void>((resolve) => {
@@ -136,36 +133,69 @@ export class InstagramAdapter implements IpcCapableAdapter {
 
     await previous;
     try {
-      const budget = this.readRequestBudget(username);
-      if (budget.count >= this.maxRequestsPerDay()) return false;
-
-      const now = Date.now();
-      const lastAttempt = readTime(
-        store.getCursor("instagram", username, "last_source_request_at"),
-      );
-      const delayMs = Math.max(0, this.minRequestSpacingMs() - (now - lastAttempt));
-      if (delayMs > 0) await sleep(delayMs);
-
-      const refreshedBudget = this.readRequestBudget(username);
-      if (refreshedBudget.count >= this.maxRequestsPerDay()) return false;
-
-      store.setCursor(
-        "instagram",
-        username,
-        this.requestBudgetKey("window_started_at"),
-        new Date(refreshedBudget.windowStartedAt).toISOString(),
-      );
-      store.setCursor(
-        "instagram",
-        username,
-        this.requestBudgetKey("count"),
-        String(refreshedBudget.count + 1),
-      );
-      store.setCursor("instagram", username, "last_source_request_at", new Date().toISOString());
-      return true;
+      return await operation();
     } finally {
       release();
     }
+  }
+
+  private async reserveSourceRequests(
+    username: string,
+    count: number,
+  ): Promise<{
+    windowStartedAt: number;
+    previousCount: number;
+    reservedCount: number;
+  } | null> {
+    const requested = Math.max(1, Math.floor(count));
+    const now = Date.now();
+    const lastAttempt = readTime(store.getCursor("instagram", username, "last_source_request_at"));
+    const delayMs = Math.max(0, this.minRequestSpacingMs() - (now - lastAttempt));
+    if (delayMs > 0) await sleep(delayMs);
+
+    const budget = this.readRequestBudget(username);
+    if (budget.count + requested > this.maxRequestsPerDay()) return null;
+
+    store.setCursor(
+      "instagram",
+      username,
+      this.requestBudgetKey("window_started_at"),
+      new Date(budget.windowStartedAt).toISOString(),
+    );
+    store.setCursor(
+      "instagram",
+      username,
+      this.requestBudgetKey("count"),
+      String(budget.count + requested),
+    );
+    store.setCursor("instagram", username, "last_source_request_at", new Date().toISOString());
+    return {
+      windowStartedAt: budget.windowStartedAt,
+      previousCount: budget.count,
+      reservedCount: requested,
+    };
+  }
+
+  private reconcileSourceRequests(
+    username: string,
+    reservation: { windowStartedAt: number; previousCount: number; reservedCount: number },
+    actualCount: number,
+  ): void {
+    const actual = Number.isFinite(actualCount)
+      ? Math.min(reservation.reservedCount, Math.max(1, Math.floor(actualCount)))
+      : reservation.reservedCount;
+    store.setCursor(
+      "instagram",
+      username,
+      this.requestBudgetKey("window_started_at"),
+      new Date(reservation.windowStartedAt).toISOString(),
+    );
+    store.setCursor(
+      "instagram",
+      username,
+      this.requestBudgetKey("count"),
+      String(reservation.previousCount + actual),
+    );
   }
 
   start(orchestrator: DaemonOrchestrator): void {
@@ -194,53 +224,68 @@ export class InstagramAdapter implements IpcCapableAdapter {
   private async actuallyFetch(
     username: string,
     opts?: { maxPages?: number },
-  ): Promise<InstagramFetchMeta & { threads?: unknown[] }> {
-    const now = Date.now();
-    const cooldownUntil = readTime(store.getCursor("instagram", username, "cooldown_until"));
-    if (cooldownUntil > now) return { performed: false, reason: "cooldown" };
+  ): Promise<InstagramFetchMeta & { threads?: unknown[]; pagesFetched?: number }> {
+    return this.serializeSourceRequests(async () => {
+      const now = Date.now();
+      const cooldownUntil = readTime(store.getCursor("instagram", username, "cooldown_until"));
+      if (cooldownUntil > now) return { performed: false, reason: "cooldown" };
 
-    if (store.isFresh("instagram", InstagramAdapter.MIN_FETCH_INTERVAL_MS, username)) {
-      this.lastFetchAt = now;
-      return { performed: false, reason: "fresh-cache" };
-    }
-
-    const sinceLast = now - this.lastFetchAt;
-    if (sinceLast < InstagramAdapter.MIN_FETCH_INTERVAL_MS) {
-      // Rate-limited: silently no-op rather than hammer Instagram. CLI sees cached data.
-      return { performed: false, reason: "rate-limited" };
-    }
-
-    if (!(await this.recordSourceRequest(username)))
-      return { performed: false, reason: "budget-exhausted" };
-
-    this.lastFetchAt = now; // record BEFORE live attempt so failures do not retry every poll tick
-    store.setCursor("instagram", username, "last_attempt_at", new Date(now).toISOString());
-
-    try {
-      const threads = await this.deps.fetchInbox(username, {
-        pages: opts?.maxPages ?? DEFAULT_MAX_INVENTORY_PAGES,
-      });
-      const sourceFetchedAt = new Date().toISOString();
-      store.setCursor("instagram", username, "last_success_at", sourceFetchedAt);
-      store.setCursor("instagram", username, "last_error_class", "");
-      store.setCursor("instagram", username, "cooldown_until", "");
-      return { performed: true, sourceFetchedAt, threads };
-    } catch (err) {
-      const errorClass = classifyInstagramError(err);
-      store.setCursor("instagram", username, "last_error_class", errorClass);
-      if (shouldStartCooldown(errorClass)) {
-        store.setCursor(
-          "instagram",
-          username,
-          "cooldown_until",
-          new Date(Date.now() + COOLDOWN_MS).toISOString(),
-        );
+      if (store.isFresh("instagram", InstagramAdapter.MIN_FETCH_INTERVAL_MS, username)) {
+        this.lastFetchAt = now;
+        return { performed: false, reason: "fresh-cache" };
       }
-      throw err;
-    }
+
+      const sinceLast = now - this.lastFetchAt;
+      if (sinceLast < InstagramAdapter.MIN_FETCH_INTERVAL_MS) {
+        return { performed: false, reason: "rate-limited" };
+      }
+
+      const maxPages = Math.max(1, Math.floor(opts?.maxPages ?? DEFAULT_MAX_INVENTORY_PAGES));
+      const reservation = await this.reserveSourceRequests(username, maxPages);
+      if (!reservation) return { performed: false, reason: "budget-exhausted" };
+
+      this.lastFetchAt = now; // record BEFORE live attempt so failures do not retry every poll tick
+      store.setCursor("instagram", username, "last_attempt_at", new Date(now).toISOString());
+
+      try {
+        const result = await this.deps.fetchInbox(username, { pages: maxPages });
+        this.reconcileSourceRequests(username, reservation, result.pagesFetched);
+        const sourceFetchedAt = new Date().toISOString();
+        store.setCursor("instagram", username, "last_success_at", sourceFetchedAt);
+        store.setCursor("instagram", username, "last_error_class", "");
+        store.setCursor("instagram", username, "cooldown_until", "");
+        return {
+          performed: true,
+          sourceFetchedAt,
+          threads: result.threads,
+          pagesFetched: result.pagesFetched,
+        };
+      } catch (err) {
+        const errorClass = classifyInstagramError(err);
+        store.setCursor("instagram", username, "last_error_class", errorClass);
+        if (shouldStartCooldown(errorClass)) {
+          store.setCursor(
+            "instagram",
+            username,
+            "cooldown_until",
+            new Date(Date.now() + COOLDOWN_MS).toISOString(),
+          );
+        }
+        throw err;
+      }
+    });
   }
 
   async actuallyFetchThread(threadId: string, username: string): Promise<InstagramFetchMeta> {
+    return this.serializeSourceRequests(() =>
+      this.actuallyFetchThreadSerialized(threadId, username),
+    );
+  }
+
+  private async actuallyFetchThreadSerialized(
+    threadId: string,
+    username: string,
+  ): Promise<InstagramFetchMeta> {
     const now = Date.now();
     const cooldownUntil = readTime(store.getCursor("instagram", username, "cooldown_until"));
     if (cooldownUntil > now) return { performed: false, reason: "cooldown" };
@@ -254,7 +299,7 @@ export class InstagramAdapter implements IpcCapableAdapter {
 
     this.lastThreadFetchAt.set(threadId, now);
     store.setCursor("instagram", username, "last_attempt_at", new Date(now).toISOString());
-    if (!(await this.recordSourceRequest(username))) {
+    if (!(await this.reserveSourceRequests(username, 1))) {
       return { performed: false, reason: "budget-exhausted" };
     }
 
@@ -301,6 +346,18 @@ export class InstagramAdapter implements IpcCapableAdapter {
     maxMessages?: number;
     pageLimit?: number;
   }): Promise<InstagramThreadDeltaData> {
+    return this.serializeSourceRequests(() => this.fetchThreadDeltaSerialized(req));
+  }
+
+  private async fetchThreadDeltaSerialized(req: {
+    threadId: string;
+    username: string;
+    anchorId?: string;
+    cursor?: string;
+    maxPages?: number;
+    maxMessages?: number;
+    pageLimit?: number;
+  }): Promise<InstagramThreadDeltaData> {
     const now = Date.now();
     const cooldownUntil = readTime(store.getCursor("instagram", req.username, "cooldown_until"));
     if (cooldownUntil > now) return { performed: false, reason: "cooldown" };
@@ -318,18 +375,7 @@ export class InstagramAdapter implements IpcCapableAdapter {
 
     let sourceFetchedAt = "";
     for (let page = 0; page < maxPages; page++) {
-      if (!this.hasRequestBudget(req.username)) {
-        return {
-          performed: sourceFetchedAt !== "",
-          ...(sourceFetchedAt ? { sourceFetchedAt } : { reason: "budget-exhausted" as const }),
-          messages,
-          anchorFound,
-          historyExhausted,
-          nextCursor: cursor,
-          stopReason: "budget-exhausted",
-        } as InstagramThreadDeltaData;
-      }
-      if (!(await this.recordSourceRequest(req.username))) {
+      if (!(await this.reserveSourceRequests(req.username, 1))) {
         return {
           performed: sourceFetchedAt !== "",
           ...(sourceFetchedAt ? { sourceFetchedAt } : { reason: "budget-exhausted" as const }),
@@ -479,7 +525,7 @@ export class InstagramAdapter implements IpcCapableAdapter {
       const result: InstagramFetchMeta = req.cacheOnly
         ? { performed: false, reason: "cache-only" }
         : await this.actuallyFetch(username, { maxPages: req.maxPages });
-      const threads = listNormalizedInstagramThreads(username);
+      const threads = listInstagramInventoryThreads(username);
       return {
         ok: true,
         data: {

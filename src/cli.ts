@@ -493,7 +493,7 @@ instagramCmd
   .command("inventory")
   .description("Refresh/read Instagram thread inventory through the daemon")
   .option("--account <id>", "Instagram account username")
-  .option("--max-pages <n>", "Maximum source inbox pages", "2")
+  .option("--max-pages <n>", "Maximum source inbox pages", "1")
   .option("--cache-only", "Read cached thread metadata without a source fetch", false)
   .option("--json", "Output JSON", false)
   .action(async (opts) => {
@@ -502,7 +502,7 @@ instagramCmd
     const res = await daemonRequest({
       type: "instagram-inventory",
       account: opts.account,
-      maxPages: parseInt(opts.maxPages, 10) || 2,
+      maxPages: parseInt(opts.maxPages, 10) || 1,
       cacheOnly: opts.cacheOnly,
     });
     if (!res?.ok) {
