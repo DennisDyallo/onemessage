@@ -134,11 +134,11 @@ function addProviderFlags(cmd: Command): Command {
     .option("--security <mode>", "Security mode (email)")
     .option("--bot-token <token>", "Bot token (telegram-bot)")
     .option("--phone <number>", "Phone number (signal, sms)")
-    .option("--device <name>", "Device name (sms via KDE Connect)")
+    .option("--device <name>", "Device name (sms with explicit KDE Connect backend)")
     .option("--username <name>", "Username/account (instagram)")
     .option("--homeserver <url>", "Homeserver URL (matrix)")
     .option("--user-id <id>", "User ID (matrix)")
-    .option("--access-token <token>", "Access token (matrix)");
+    .option("--access-token <token>", "Access token (Matrix or Beeper Client API)");
 }
 
 function withSenderAlias(opts: Record<string, unknown>): Record<string, unknown> {
@@ -350,7 +350,7 @@ addProviderFlags(
       if (opts.pageJson) {
         const resolvesCacheAccount = provider.resolveCacheAccount !== undefined;
         const providerCacheAccount = provider.resolveCacheAccount?.(providerFlags);
-        if (resolvesCacheAccount && !providerCacheAccount) {
+        if (resolvesCacheAccount && providerCacheAccount === undefined) {
           console.error(
             `Cannot resolve the configured account for ${provider.displayName}. Configure the provider before using --page-json.`,
           );
@@ -705,16 +705,15 @@ program
           );
           break;
         case "sms":
-          console.log(`  Requires kdeconnect-cli and a paired Android phone.\n`);
-          console.log(`  1. Pair your phone: kdeconnect-cli --pair --name "Your Phone"`);
-          console.log(`  2. List devices:    kdeconnect-cli --list-available\n`);
-          console.log(`  Then add to config:\n`);
-          console.log(`    {`);
-          console.log(`      "sms": {`);
-          console.log(`        "device": "Pixel 8"`);
-          console.log(`      }`);
-          console.log(`    }\n`);
-          console.log(`  Or: onemessage send sms "+1234567890" "hello" --device "Pixel 8"\n`);
+          console.log(
+            `  Uses the Beeper Client API and an already-connected Google Messages account.\n`,
+          );
+          console.log(`  Open Beeper Desktop, connect Google Messages, then run:\n`);
+          console.log(`    onemessage auth sms\n`);
+          console.log(
+            `  OneMessage discovers the account; it does not perform Google/Beeper login.\n`,
+          );
+          console.log(`  KDE Connect is an explicit rollback backend configured in config.json.\n`);
           break;
         case "signal":
           console.log(`  Requires signal-cli: brew install signal-cli\n`);

@@ -22,7 +22,7 @@ onemessage search "invoice" --since 2025-01-01
 | Email | [Proton Mail Bridge](https://proton.me/mail/bridge) | Desktop app — runs locally on port 1025/1143 |
 | Signal | [signal-cli](https://github.com/AsamK/signal-cli) | `brew install signal-cli` |
 | WhatsApp | None | Built-in (uses [@whiskeysockets/baileys](https://github.com/WhiskeySockets/Baileys)) |
-| SMS | [KDE Connect](https://kdeconnect.kde.org/) | `brew install --cask kdeconnect` (+ paired Android phone) |
+| SMS/RCS | [Beeper Desktop](https://www.beeper.com/) Client API + Google Messages | Local API access token; Beeper Desktop and paired phone online |
 | Telegram Bot | Telegram Bot API token | Create a bot with BotFather |
 | Instagram | `instagram-cli` | Install/configure separately |
 | Matrix | Matrix access token | Homeserver + user ID + token |
@@ -59,8 +59,13 @@ Create `~/.config/onemessage/config.json`:
     "phone": "+46701234567"
   },
   "whatsapp": {},
+  "beeper": {
+    "accessToken": "your-beeper-client-api-token",
+    "baseUrl": "http://127.0.0.1:23373"
+  },
   "sms": {
-    "device": "Pixel 8"
+    "backend": "beeper",
+    "accountId": "your-beeper-google-messages-account-id"
   },
   "telegramBot": {
     "botToken": "123456:ABC-your-token"
@@ -71,9 +76,7 @@ Create `~/.config/onemessage/config.json`:
     "accessToken": "your-access-token"
   },
   "messenger": {
-    "accountId": "your-beeper-facebook-account-id",
-    "accessToken": "your-beeper-client-api-token",
-    "baseUrl": "http://127.0.0.1:23373"
+    "accountId": "your-beeper-facebook-account-id"
   }
 }
 ```
@@ -96,6 +99,7 @@ onemessage inbox signal
 onemessage send email "friend@example.com" "Hey!" -s "Quick question"
 onemessage send signal "+46701234567" "On my way"
 onemessage send whatsapp "+46701234567" "See you there"
+onemessage send sms "+46701234567" "See you there"
 onemessage send messenger "<beeper-chat-id>" "See you there"
 
 # Reply to a message (auto-fills recipient)
@@ -216,27 +220,44 @@ Bridge runs locally — SMTP on port 1025, IMAP on port 1143. These are the defa
 
 WhatsApp runs through a background daemon that maintains the connection. The daemon starts automatically when you use WhatsApp commands.
 
-### SMS (KDE Connect)
+### SMS/RCS (Beeper Client API)
 
-Requires a Linux desktop or macOS with KDE Connect and a paired Android phone.
+The public provider remains `sms`, but its default backend is the local Beeper Client API using an already-connected Google Messages account. OneMessage does not initiate Google, Beeper, or OAuth login.
 
-1. Install KDE Connect on your computer and phone
-2. Pair the devices:
-   ```bash
-   kdeconnect-cli --pair --name "Your Phone"
-   ```
-3. Find your device name:
-   ```bash
-   kdeconnect-cli --list-available
-   ```
-4. Add to config:
-   ```json
-   {
-     "sms": {
-       "device": "Pixel 8"
-     }
-   }
-   ```
+1. Install and open Beeper Desktop.
+2. Connect Google Messages in Beeper and finish its phone pairing flow.
+3. Enable the Beeper Client API and obtain its local access token.
+4. Run `onemessage auth sms`. OneMessage reuses an existing top-level Beeper connection when available, lists only connected Google Messages accounts, and stores the selected opaque account ID.
+
+```bash
+onemessage auth sms
+onemessage send sms "+46701234567" "Hello from OneMessage"
+onemessage inbox sms
+```
+
+Direct recipients use E.164 phone numbers. Cached inbox rows expose global Beeper chat IDs, which can also be used to send or reply to direct and group SMS/RCS conversations. Google Messages chooses RCS when available and automatically falls back to SMS according to its own delivery rules; OneMessage does not force either transport.
+
+The Beeper backend requires Beeper Desktop to be running and its Client API reachable. The Android phone paired to Google Messages must be online for message synchronization and delivery. Outbound attachment upload is not implemented; `--attach` is rejected before sending. Inbound attachment metadata is cached, but attachment bytes are not downloaded.
+
+#### KDE Connect Rollback
+
+KDE Connect remains available only when explicitly selected; a configured `device` alone does not activate it, and Beeper failures never fall back to KDE automatically.
+
+1. Install KDE Connect on the computer and Android phone.
+2. Keep both devices reachable on the same local network. KDE Connect depends on direct LAN discovery/reachability, which is why it is less suitable than Beeper for remote or intermittently connected machines.
+3. Pair the devices and find the device name with `kdeconnect-cli --list-available`.
+4. Configure the rollback backend:
+
+```json
+{
+  "sms": {
+    "backend": "kdeconnect",
+    "device": "Pixel 8"
+  }
+}
+```
+
+Switch back explicitly with `"backend": "beeper"` and the previously selected `accountId`. Existing accountless KDE cache rows are retained, but they are not exposed while the Beeper backend is active; explicit KDE mode likewise exposes only accountless KDE rows, not Beeper-account rows.
 
 ### Facebook Messenger (Beeper Client API)
 
@@ -249,16 +270,18 @@ Messenger uses the local Beeper Client API and scopes all message retrieval to t
    onemessage auth messenger
    ```
 
-The default API URL is `http://127.0.0.1:23373`. This command only configures OneMessage's local connection to Beeper Desktop: it prompts for the Client API token, discovers already-connected Facebook accounts with `GET /v1/accounts`, asks you to select one when needed, and stores only its opaque account ID, the API URL, and the token in your user config.
+The default API URL is `http://127.0.0.1:23373`. This command only configures OneMessage's local connection to Beeper Desktop: it prompts for the Client API token, discovers already-connected Facebook accounts with `GET /v1/accounts`, asks you to select one when needed, and stores its opaque account ID. The API URL and token are shared in the top-level `beeper` config so SMS/RCS and Messenger use the same validated transport.
 
 You can also configure it manually with placeholder values:
 
 ```json
 {
-  "messenger": {
-    "accountId": "your-beeper-facebook-account-id",
+  "beeper": {
     "accessToken": "your-beeper-client-api-token",
     "baseUrl": "http://127.0.0.1:23373"
+  },
+  "messenger": {
+    "accountId": "your-beeper-facebook-account-id"
   }
 }
 ```
@@ -318,7 +341,7 @@ onemessage search "project update" --json
 
 ## Message Cache
 
-Messages are cached locally in SQLite at `~/.config/onemessage/messages.db`. The cache uses freshness gating. Messenger and other standard providers default to 30 seconds; subsequent calls inside that window return cached results unless you pass `--fresh`.
+Messages are cached locally in SQLite at `~/.config/onemessage/messages.db`. The cache uses freshness gating. Messenger, SMS/RCS, and other standard providers default to 30 seconds; subsequent calls inside that window return cached results unless you pass `--fresh`. Beeper-backed SMS rows, freshness, pagination cursors, reads, searches, and inbox pages are scoped to the selected Google Messages account while retaining the persisted provider namespace `sms`.
 
 Conversation metadata is cached separately under the stable `(provider, account, thread_id)` key. Instagram normalizes titles and participant handles at ingestion: invalid numeric and `User_<digits>` identities are never exposed as display names, duplicate display identities are marked unresolved, and unsafe per-message senders become `Instagram Participant`.
 

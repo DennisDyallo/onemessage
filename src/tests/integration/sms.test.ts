@@ -315,6 +315,7 @@ describe("SMS inbox() — inboxViaDaemon migration", () => {
     const testMsg: MessageFull = {
       id: testId,
       provider: "sms",
+      account: "fixture-gmessages-cache",
       from: { name: "Test Contact", address: "+15555550101" },
       to: [{ name: "Me", address: "+15555550199" }],
       preview: "cached sms inbox message",
@@ -330,13 +331,19 @@ describe("SMS inbox() — inboxViaDaemon migration", () => {
       store.upsertFullMessages([testMsg]);
 
       // Mark cache as FRESH (within provider freshness window)
-      store.recordFetch("sms");
+      store.recordFetch("sms", "fixture-gmessages-cache");
 
       // Act: call inbox() with fresh:false
       // This should short-circuit at the freshness gate and NOT call daemon
       const result = await smsProvider.inbox({
         fresh: false,
         limit: 10,
+        providerFlags: {
+          backend: "beeper",
+          accountId: "fixture-gmessages-cache",
+          accessToken: "fixture-token",
+          baseUrl: "http://127.0.0.1:23373",
+        },
       });
 
       // Assert: should return the cached message WITHOUT timeout (proves freshness gate works)
@@ -373,8 +380,8 @@ describe("SMS inbox() — inboxViaDaemon migration", () => {
     // Assert: inbox() calls inboxViaDaemon
     expect(inboxBody).toContain("inboxViaDaemon");
 
-    // Assert: inbox() keeps fetch work behind inboxViaDaemon's fallback path.
-    expect(inboxBody).toContain("fallbackFetch");
+    // Assert: Beeper failures cannot invoke the KDE rollback backend.
+    expect(inboxBody).not.toContain("fallbackFetch");
 
     // Assert: inbox() does NOT call store.isFresh directly inside inbox()
     expect(inboxBody).not.toContain("store.isFresh");
@@ -398,7 +405,10 @@ describe("SmsAdapter configuration convention", () => {
 
   test("provider DBus reader preserves KDE refresh semantics", async () => {
     const fs = await import("node:fs/promises");
-    const source = await fs.readFile(new URL("../../providers/sms.ts", import.meta.url), "utf-8");
+    const source = await fs.readFile(
+      new URL("../../providers/sms-kdeconnect.ts", import.meta.url),
+      "utf-8",
+    );
 
     expect(source).toContain("requestSmsRefreshViaDbus");
     expect(source).toContain("requestAllConversationThreads");
@@ -407,7 +417,10 @@ describe("SmsAdapter configuration convention", () => {
 
   test("provider DBus reader supports full thread history", async () => {
     const fs = await import("node:fs/promises");
-    const source = await fs.readFile(new URL("../../providers/sms.ts", import.meta.url), "utf-8");
+    const source = await fs.readFile(
+      new URL("../../providers/sms-kdeconnect.ts", import.meta.url),
+      "utf-8",
+    );
 
     expect(source).toContain("fetchThreadHistoryViaDbus");
     expect(source).toContain("dbus-monitor");

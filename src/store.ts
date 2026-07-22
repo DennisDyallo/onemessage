@@ -552,7 +552,7 @@ export function getCachedInboxPage(provider: string, opts?: GetCachedInboxArgs):
   const params: (string | number)[] = [provider];
   const limit = Math.max(1, opts?.limit ?? 10);
   const cursor = opts?.cursor ? decodeInboxCursor(opts.cursor) : undefined;
-  const accountScope = opts?.account || null;
+  const accountScope = opts?.account ?? null;
   const changefeed = Boolean(opts?.changefeed || cursor);
 
   if (cursor && opts?.sinceCachedAt !== undefined) {
@@ -606,7 +606,7 @@ export function getCachedInboxPage(provider: string, opts?: GetCachedInboxArgs):
     );
     params.push(`%${opts.from}%`, `%${opts.from}%`);
   }
-  if (opts?.account) {
+  if (opts?.account !== undefined) {
     conditions.push("account = ?");
     params.push(opts.account);
   }
@@ -646,6 +646,19 @@ export function getCachedMessage(provider: string, messageId: string): MessageFu
     .get(provider, messageId);
   if (!row) return null;
   return rowToFull(row);
+}
+
+export function getCachedMessagesByIdPrefix(
+  provider: string,
+  account: string,
+  prefix: string,
+): MessageFull[] {
+  return getDb()
+    .prepare(
+      "SELECT * FROM messages WHERE provider = ? AND account = ? AND substr(id, 1, length(?)) = ?",
+    )
+    .all(provider, account, prefix, prefix)
+    .map(rowToFull);
 }
 
 /**
@@ -724,7 +737,7 @@ export function searchCached(
     conditions.push("date >= ?");
     params.push(opts.since);
   }
-  if (opts?.account) {
+  if (opts?.account !== undefined) {
     conditions.push("account = ?");
     params.push(opts.account);
   }

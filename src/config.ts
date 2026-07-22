@@ -16,6 +16,7 @@ export interface OneMessageConfig {
   sms?: SmsProviderConfig;
   whatsapp?: WhatsAppProviderConfig;
   matrix?: MatrixProviderConfig;
+  beeper?: BeeperClientConfig;
   messenger?: MessengerProviderConfig;
   daemon?: DaemonConfig;
   cache?: CacheConfig;
@@ -140,7 +141,9 @@ export interface SignalProviderConfig {
 }
 
 export interface SmsProviderConfig {
-  device: string;
+  backend?: "beeper" | "kdeconnect";
+  accountId?: string;
+  device?: string;
   cli?: string; // default: kdeconnect-cli
 }
 
@@ -159,6 +162,13 @@ export interface MatrixProviderConfig {
 
 export interface MessengerProviderConfig {
   accountId: string;
+  /** @deprecated Use top-level beeper.accessToken. Retained for persisted config compatibility. */
+  accessToken?: string;
+  /** @deprecated Use top-level beeper.baseUrl. Retained for persisted config compatibility. */
+  baseUrl?: string;
+}
+
+export interface BeeperClientConfig {
   accessToken: string;
   baseUrl?: string;
 }

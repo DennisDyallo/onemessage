@@ -24,7 +24,7 @@ onemessage daemon status  # Check if background daemon is running
 - WhatsApp: @whiskeysockets/baileys (direct protocol, no external binary)
 - Email: nodemailer (SMTP) + imapflow (IMAP), designed for Proton Mail Bridge
 - Signal: shells out to `signal-cli` (external binary)
-- SMS: shells out to `kdeconnect-cli` for send and KDE Connect DBus (`dbus-send`) for inbox reads
+- SMS/RCS: Beeper Client API via an already-connected Google Messages account; KDE Connect is an explicit rollback backend
 - Telegram Bot: Bot API
 - Instagram: `instagram-cli`
 - Matrix: Matrix Client-Server API
@@ -39,9 +39,12 @@ Verb-first CLI (`onemessage <command> <provider> [options]`). Entry point is `sr
 
 Each provider implements `MessagingProvider` (defined in `src/types.ts`): `send`, `inbox`, `read`, and optionally `search`. Providers live in `src/providers/<name>.ts` and are barrel-imported via `src/providers/index.ts`.
 
-Two provider styles exist:
-- **Shell providers** (Signal, SMS): use `runCli`/`runCliAsync` from `src/providers/shared.ts` to invoke external CLIs/DBus tools, parse their JSON/text output
+Three provider styles exist:
+- **Shell providers** (Signal and the SMS KDE rollback): use `runCli`/`runCliAsync` from `src/providers/shared.ts` to invoke external CLIs/DBus tools, parse their JSON/text output
 - **Library providers** (Email, WhatsApp): use npm packages directly
+- **HTTP providers** (Messenger and default SMS/RCS): use shared Beeper Client API primitives from `src/providers/beeper-client.ts`
+
+The public `sms` provider is a backend router. Beeper is the default and scopes all rows/freshness/cursors to `sms.accountId`; `sms.backend: "kdeconnect"` explicitly selects the unregistered `src/providers/sms-kdeconnect.ts` rollback backend. Never infer KDE from `device` and never fail over automatically after a Beeper error or ambiguous send.
 
 ### Daemon adapter architecture
 
@@ -52,7 +55,7 @@ The **unified daemon** (`src/daemons/daemon.ts`) is a thin orchestrator that del
 | WhatsApp | `src/daemons/whatsapp.ts` | Real-time | Baileys WebSocket, implements `IpcCapableAdapter` for send/resolve-group/list-groups |
 | Signal | `src/daemons/signal.ts` | Real-time | signal-cli daemon subprocess |
 | Email | `src/daemons/email.ts` | Polling | IMAP via imapflow |
-| SMS | `src/daemons/sms.ts` | Polling | KDE Connect DBus |
+| SMS | `src/daemons/sms.ts` | Polling | Backend-aware: Beeper Google Messages by default, KDE Connect explicitly |
 | Telegram Bot | `src/daemons/telegram-bot.ts` | Polling | Bot API |
 | Instagram | `src/daemons/instagram.ts` | Polling | instagram-cli |
 | Matrix | `src/daemons/matrix.ts` | Polling | Matrix CS API /sync |
@@ -74,10 +77,11 @@ Baileys socket creation is shared between auth and daemon via `src/providers/wha
 - **Freshness gating**: `isFresh(provider, maxAgeMs)` checks `fetch_log` table — providers skip re-fetch if data is recent enough. Provider TTLs come from `getProviderFreshnessMs(provider)` / top-level `cache.providers.<provider>.freshnessMs`; `--fresh` bypasses this per command.
 - **Two upsert paths**: `upsertMessages` (envelope-only, from inbox listings) and `upsertFullMessages` (with body, from receive/read operations)
 - **Thread support**: SMS conversations use `thread_id` column; thread messages are excluded from inbox listings
+- **SMS backend isolation**: Beeper rows use `provider: "sms"`, `account: sms.accountId`, chat-scoped message IDs, and account-scoped freshness/cursors; legacy KDE rows remain accountless. Each backend hides the other backend's rows.
 
 ### Config
 
-Single JSON file at `~/.config/onemessage/config.json`. Schema in `src/config.ts`. Each provider has its own config interface. The daemon config (`daemon.providers.*`) controls per-provider polling intervals and enable/disable.
+Single JSON file at `~/.config/onemessage/config.json`. Schema in `src/config.ts`. Shared Beeper credentials live under top-level `beeper`; Messenger and SMS store only their provider-local account IDs. Persisted Messenger-local Beeper credentials remain a read-only compatibility fallback until explicit auth migrates them. The daemon config (`daemon.providers.*`) controls per-provider polling intervals and enable/disable.
 
 ## Design Philosophy
 

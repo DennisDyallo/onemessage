@@ -1,575 +1,505 @@
-import { getProviderFreshnessMs, loadConfig } from "../config.ts";
+import { readFileSync } from "node:fs";
+import { getProviderFreshnessMs, loadConfig, saveConfig } from "../config.ts";
 import { registerProvider } from "../registry.ts";
 import * as store from "../store.ts";
-import type { MessageFull, MessagingProvider } from "../types.ts";
+import type { Attachment, MessageFull, MessagingProvider } from "../types.ts";
+import {
+  BEEPER_DEFAULT_BASE_URL,
+  type BeeperAccount,
+  type BeeperAccountSettings,
+  type BeeperAttachment,
+  type BeeperChat,
+  type BeeperConnection,
+  type BeeperMessage,
+  beeperAccountId,
+  beeperMessageId,
+  getBeeperChat,
+  getBeeperMessage,
+  listBeeperAccounts,
+  normalizeBeeperBaseUrl,
+  parsePendingBeeperMessageId,
+  pendingBeeperMessageId,
+  resolveBeeperConnection,
+  searchBeeperMessages,
+  sendBeeperTextOnce,
+  startBeeperDirectChat,
+  unknownBeeperMessageId,
+} from "./beeper-client.ts";
 import {
   cacheSentMessage,
-  cliExists,
   inboxViaDaemon,
   normalizeRecipientForProvider,
   readFromCacheOrFail,
-  runCli,
+  resolveDefaultReply,
 } from "./shared.ts";
+import {
+  fetchKdeSmsInbox,
+  kdeConnectSmsBackend,
+  pruneOptimisticSmsSentDuplicates,
+  resolveKdeSmsSettings,
+  toSmsMessage,
+} from "./sms-kdeconnect.ts";
 
-// ---------------------------------------------------------------------------
-// Config
-// ---------------------------------------------------------------------------
+const WATERMARK_CURSOR = "messages.timestamp";
+const WATERMARK_OVERLAP_MS = 1_000;
 
-interface SmsSettings {
-  device: string;
+export type SmsBackend = "beeper" | "kdeconnect";
+
+export interface BeeperSmsSettings extends BeeperAccountSettings {
+  backend: "beeper";
 }
 
-export function resolveSettings(cliOverrides?: Record<string, unknown>): SmsSettings | null {
+export function resolveSmsBackend(cliOverrides?: Record<string, unknown>): SmsBackend {
+  const override = cliOverrides?.backend;
+  if (override === "beeper" || override === "kdeconnect") return override;
+  return loadConfig().sms?.backend ?? "beeper";
+}
+
+export function resolveSmsSettings(
+  cliOverrides?: Record<string, unknown>,
+): BeeperSmsSettings | null {
+  if (resolveSmsBackend(cliOverrides) !== "beeper") return null;
   const config = loadConfig();
-  const sms = config.sms;
-
-  const device = (cliOverrides?.device as string) ?? sms?.device;
-  if (!device) return null;
-
-  return { device };
+  const accountId = (cliOverrides?.accountId as string | undefined) ?? config.sms?.accountId;
+  const connection = resolveBeeperConnection(config.beeper, cliOverrides);
+  if (!accountId?.trim() || !connection) return null;
+  return { backend: "beeper", accountId: accountId.trim(), ...connection };
 }
 
-/** stderr noise filters for kdeconnect-cli */
-const KDE_STDERR_FILTERS = [
-  (line: string) => line.includes("QDBusError"),
-  (line: string) => line.includes("error activating"),
-];
-
-function runKdeConnect(args: string[]) {
-  return runCli("kdeconnect-cli", args, {
-    stderrFilters: KDE_STDERR_FILTERS,
-  });
+function chatParticipants(chat?: BeeperChat) {
+  return Array.isArray(chat?.participants) ? chat.participants : (chat?.participants?.items ?? []);
 }
 
-function normalizePhone(value: string): string {
-  return value.replace(/[^+\d]/g, "").replace(/^00/, "+");
-}
-
-function resolveDeviceId(device: string): string | null {
-  if (/^[a-f0-9]{32}$/i.test(device)) return device;
-
-  const result = runKdeConnect(["-a", "--id-name-only"]);
-  if (!result.ok || !result.stdout) return null;
-
-  for (const line of result.stdout.split("\n")) {
-    const match = line.match(/^([a-f0-9]{32})\s+(.+)$/i);
-    if (match?.[1] && match[2] === device) return match[1];
+function compareSortKeys(left: string | number, right: string | number): number {
+  const leftString = String(left);
+  const rightString = String(right);
+  if (/^\d+$/.test(leftString) && /^\d+$/.test(rightString)) {
+    const leftNumber = BigInt(leftString);
+    const rightNumber = BigInt(rightString);
+    return leftNumber === rightNumber ? 0 : leftNumber > rightNumber ? 1 : -1;
   }
-
-  return null;
+  return leftString === rightString ? 0 : leftString > rightString ? 1 : -1;
 }
 
-function extractDbusString(block: string): string | null {
-  const start = block.indexOf('string "');
-  if (start === -1) return null;
-
-  let value = "";
-  let escaped = false;
-  for (let i = start + 'string "'.length; i < block.length; i++) {
-    const char = block[i];
-    if (escaped) {
-      value += char;
-      escaped = false;
-      continue;
-    }
-    if (char === "\\") {
-      escaped = true;
-      continue;
-    }
-    if (char === '"') return value;
-    value += char;
-  }
-
-  return null;
+function isMessageUnread(message: BeeperMessage, chat?: BeeperChat): boolean {
+  if (message.isUnread !== undefined) return message.isUnread;
+  if (message.isSender) return false;
+  if (chat?.isMarkedUnread) return true;
+  if (!chat?.unreadCount) return false;
+  if (chat.lastReadMessageSortKey === undefined) return true;
+  return compareSortKeys(message.sortKey, chat.lastReadMessageSortKey) > 0;
 }
 
-function parseDbusConversationBlocks(stdout: string): string[] {
-  const blocks: string[] = [];
-  const lines = stdout.split("\n");
-  let current: string[] | null = null;
-
-  for (const line of lines) {
-    if (line.includes("variant") && line.includes("struct {")) {
-      current = [line];
-      continue;
-    }
-    if (!current) continue;
-    current.push(line);
-    if (line === "      }" || line === "         }") {
-      blocks.push(current.join("\n"));
-      current = null;
-    }
-  }
-
-  return blocks;
-}
-
-function requestSmsRefreshViaDbus(deviceId: string): void {
-  const result = runCli(
-    "dbus-send",
-    [
-      "--session",
-      "--dest=org.kde.kdeconnect",
-      "--type=method_call",
-      "--print-reply",
-      `/modules/kdeconnect/devices/${deviceId}`,
-      "org.kde.kdeconnect.device.conversations.requestAllConversationThreads",
-    ],
-    { stderrFilters: KDE_STDERR_FILTERS, timeoutMs: 15_000 },
-  );
-
-  if (!result.ok && result.stderr) {
-    process.stderr.write(`[sms] ${result.stderr}\n`);
-  }
-
-  // KDE Connect updates conversation cache asynchronously after the request.
-  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 3_000);
-}
-
-function parseSmsMessagesFromDbusText(stdout: string, opts?: { from?: string }): MessageFull[] {
-  const contactNames = store.getContactNamesByAddress("sms");
-  const config = loadConfig();
-  const ownAddress = normalizePhone(config.signal?.phone ?? "");
-  const fromFilter = opts?.from ? normalizePhone(opts.from) : null;
-  const messages: MessageFull[] = [];
-
-  for (const block of parseDbusConversationBlocks(stdout)) {
-    const body = extractDbusString(block);
-    const timestampMatches = [...block.matchAll(/int64 (\d+)/g)]
-      .map((match) => match[1])
-      .filter((value): value is string => value !== undefined);
-    const timestamp = timestampMatches[0];
-    const threadId = timestampMatches[1] ?? timestamp;
-    const afterTimestamp = timestamp
-      ? block.slice(block.indexOf(`int64 ${timestamp}`) + `int64 ${timestamp}`.length)
-      : "";
-    const statusValues = [...afterTimestamp.matchAll(/int32 (\d+)/g)]
-      .map((match) => match[1])
-      .filter((value): value is string => value !== undefined);
-    const messageBox = statusValues[0];
-    const readStatus = statusValues[1];
-    const arrayStart = block.indexOf("array [");
-    const arrayEnd = block.indexOf("int64", arrayStart);
-    const contactsText =
-      arrayStart === -1 || arrayEnd === -1 ? "" : block.slice(arrayStart, arrayEnd);
-    const contacts = [...contactsText.matchAll(/string "([^"]+)"/g)]
-      .map((match) => match[1])
-      .filter((value): value is string => value !== undefined);
-    const firstContact = contacts[0];
-
-    if (!body || !timestamp || !firstContact) continue;
-    if (fromFilter && !contacts.some((contact) => normalizePhone(contact) === fromFilter)) continue;
-
-    const contact =
-      contacts.find((candidate) => normalizePhone(candidate) !== ownAddress) ?? firstContact;
-    const direction = messageBox === "2" ? "out" : "in";
-
-    messages.push(
-      toSmsMessage({
-        id: `${threadId}:${timestamp}`,
-        contact,
-        body,
-        timestamp: new Date(Number(timestamp)).toISOString(),
-        direction,
-        read: readStatus === "1",
-        contactNames,
-      }),
-    );
-  }
-
-  return messages.sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime());
-}
-
-function fetchSmsConversationsViaDbus(opts?: { from?: string }): MessageFull[] {
-  const settings = resolveSettings();
-  if (!settings) return [];
-
-  const deviceId = resolveDeviceId(settings.device);
-  if (!deviceId) return [];
-
-  const result = runCli(
-    "dbus-send",
-    [
-      "--session",
-      "--dest=org.kde.kdeconnect",
-      "--type=method_call",
-      "--print-reply",
-      `/modules/kdeconnect/devices/${deviceId}`,
-      "org.kde.kdeconnect.device.conversations.activeConversations",
-    ],
-    { stderrFilters: KDE_STDERR_FILTERS, timeoutMs: 15_000 },
-  );
-
-  if (!result.ok || !result.stdout) {
-    if (result.stderr) process.stderr.write(`[sms] ${result.stderr}\n`);
-    return [];
-  }
-
-  return parseSmsMessagesFromDbusText(result.stdout, opts);
-}
-
-function canReadSmsViaDbus(): boolean {
-  return cliExists("dbus-send") && resolveSettings() !== null;
-}
-
-function fetchThreadHistoryViaDbus(threadId: number): MessageFull[] {
-  const settings = resolveSettings();
-  if (!settings || !cliExists("dbus-monitor")) return [];
-
-  const deviceId = resolveDeviceId(settings.device);
-  if (!deviceId) return [];
-
-  const result = runCli(
-    "/bin/sh",
-    [
-      "-c",
-      [
-        "tmp=$(mktemp)",
-        "dbus-monitor --session \"type='signal',interface='org.kde.kdeconnect.device.conversations'\" > \"$tmp\" 2>&1 & mon=$!",
-        "sleep 1",
-        `dbus-send --session --dest=org.kde.kdeconnect --type=method_call /modules/kdeconnect/devices/${deviceId} org.kde.kdeconnect.device.conversations.requestConversation int64:${threadId} int32:0 int32:100`,
-        "sleep 6",
-        "kill $mon 2>/dev/null",
-        'cat "$tmp"',
-        'rm -f "$tmp"',
-      ].join("; "),
-    ],
-    { stderrFilters: KDE_STDERR_FILTERS, timeoutMs: 15_000 },
-  );
-
-  if (!result.ok || !result.stdout) {
-    if (result.stderr) process.stderr.write(`[sms] ${result.stderr}\n`);
-    return [];
-  }
-
-  const messages = parseSmsMessagesFromDbusText(result.stdout).filter((message) => {
-    const [messageThreadId] = message.id.split(":");
-    return messageThreadId === String(threadId);
-  });
-
-  return messages.sort((a, b) => new Date(a.date).getTime() - new Date(b.date).getTime());
-}
-
-// ---------------------------------------------------------------------------
-// kdeconnect-read-sms wrapper (inbox)
-// ---------------------------------------------------------------------------
-
-interface SmsConversation {
-  contact: string;
-  preview: string;
-  timestamp: string;
-  direction: "in" | "out";
-  read: boolean;
-  thread_id: number;
-}
-
-interface SmsThreadMessage {
-  body: string;
-  timestamp: string;
-  direction: "in" | "out";
-  read: boolean;
-  sub_id: number;
-}
-
-interface SmsThreadHistory {
-  thread_id: number;
-  contact: string;
-  messages: SmsThreadMessage[];
-}
-
-/** Build a MessageFull for an SMS message given contact info and message data. */
-export function toSmsMessage(opts: {
-  id: string;
-  contact: string;
-  body: string;
-  timestamp: string;
-  direction: "in" | "out";
-  read: boolean;
-  contactNames?: Map<string, string>;
-}): MessageFull {
-  const { id, contact, body, timestamp, direction, read, contactNames } = opts;
-  const contactName = contactNames?.get(contact) ?? contact;
+function toAttachment(attachment: BeeperAttachment, index: number): Attachment {
+  const filename =
+    attachment.filename ??
+    attachment.fileName ??
+    attachment.name ??
+    attachment.title ??
+    `attachment-${index + 1}`;
+  const rawContentType = attachment.contentType ?? attachment.mimeType ?? attachment.type;
   return {
-    id,
-    provider: "sms",
-    from:
-      direction === "in" ? { name: contactName, address: contact } : { name: "me", address: "me" },
-    to:
-      direction === "in"
-        ? [{ name: "me", address: "me" }]
-        : [{ name: contactName, address: contact }],
-    preview: body.slice(0, 100),
-    body,
-    bodyFormat: "text",
-    attachments: [],
-    date: timestamp,
-    unread: !read,
-    hasAttachments: false,
-    direction,
+    filename,
+    contentType: rawContentType?.includes("/") ? rawContentType : "application/octet-stream",
+    size:
+      typeof attachment.fileSize === "number"
+        ? attachment.fileSize
+        : typeof attachment.size === "number"
+          ? attachment.size
+          : 0,
   };
 }
 
-export function pruneOptimisticSmsSentDuplicates(
-  canonicalOutgoing: MessageFull[],
-  windowMs = 10 * 60_000,
-): void {
-  if (canonicalOutgoing.length === 0) return;
-
-  const d = store.getDb();
-  const selectCandidate = d.prepare(`
-    SELECT id
-    FROM messages
-    WHERE provider = 'sms'
-      AND direction = 'out'
-      AND thread_id IS NULL
-      AND body = ?
-      AND json_extract(to_json, '$[0].address') = ?
-      AND COALESCE(json_extract(from_json, '$.address'), '') != 'me'
-      AND ABS(strftime('%s', date) - strftime('%s', ?)) <= ?
-    ORDER BY ABS(strftime('%s', date) - strftime('%s', ?)) ASC
-    LIMIT 1
-  `);
-  const deleteCandidate = d.prepare("DELETE FROM messages WHERE provider = 'sms' AND id = ?");
-  const windowSeconds = Math.ceil(windowMs / 1000);
-
-  const tx = d.transaction(() => {
-    for (const msg of canonicalOutgoing) {
-      const recipient = msg.to[0]?.address;
-      if (!recipient || !msg.body) continue;
-      const candidate = selectCandidate.get(
-        msg.body,
-        recipient,
-        msg.date,
-        windowSeconds,
-        msg.date,
-      ) as { id: string } | null;
-      if (candidate) deleteCandidate.run(candidate.id);
-    }
-  });
-  tx();
+function attachmentPreview(attachments: BeeperAttachment[]): string {
+  if (attachments.length !== 1) return `[${attachments.length} attachments]`;
+  const attachment = attachments[0] ?? {};
+  const type =
+    `${attachment.contentType ?? attachment.mimeType ?? attachment.type ?? ""}`.toLowerCase();
+  if (type.includes("image") || type.includes("photo")) return "[Photo]";
+  if (type.includes("video")) return "[Video]";
+  if (type.includes("audio") || type.includes("voice")) return "[Audio]";
+  const filename =
+    attachment.filename ?? attachment.fileName ?? attachment.name ?? attachment.title;
+  return filename ? `[File: ${filename}]` : "[Attachment]";
 }
 
-function fetchSmsConversations(opts?: {
-  unread?: boolean;
-  fresh?: boolean;
-  from?: string;
-}): MessageFull[] {
-  if (canReadSmsViaDbus()) {
-    const settings = resolveSettings();
-    const deviceId = settings ? resolveDeviceId(settings.device) : null;
-    if (deviceId) {
-      if (opts?.fresh) requestSmsRefreshViaDbus(deviceId);
-      const messages = fetchSmsConversationsViaDbus(opts);
-      return opts?.unread ? messages.filter((message) => message.unread) : messages;
-    }
-  }
-
-  if (!cliExists("kdeconnect-read-sms")) {
-    return [];
-  }
-
-  const args: string[] = ["--json"];
-  if (opts?.unread) args.push("--unread");
-  if (opts?.fresh) args.push("--refresh");
-  if (opts?.from) args.push("--thread", opts.from);
-
-  const result = runCli("kdeconnect-read-sms", args, {
-    stderrFilters: KDE_STDERR_FILTERS,
-    timeoutMs: 15_000,
-  });
-
-  if (!result.ok) {
-    if (result.stderr) process.stderr.write(`[sms] ${result.stderr}\n`);
-    return [];
-  }
-
-  if (!result.stdout || result.stdout === "[]") return [];
-
-  try {
-    const contactNames = store.getContactNamesByAddress("sms");
-    const convs: SmsConversation[] = JSON.parse(result.stdout);
-    return convs.map((c) =>
-      toSmsMessage({
-        id: String(c.thread_id),
-        contact: c.contact,
-        body: c.preview,
-        timestamp: c.timestamp,
-        direction: c.direction,
-        read: c.read,
-        contactNames,
-      }),
-    );
-  } catch {
-    process.stderr.write("[sms] Failed to parse kdeconnect-read-sms output\n");
-    return [];
-  }
+function typePreview(type?: string): string {
+  const labels: Record<string, string> = {
+    IMAGE: "[Image]",
+    VIDEO: "[Video]",
+    VOICE: "[Voice message]",
+    AUDIO: "[Audio]",
+    FILE: "[File]",
+    STICKER: "[Sticker]",
+    LOCATION: "[Location]",
+  };
+  return labels[type?.toUpperCase() ?? ""] ?? "[No content]";
 }
 
-/**
- * Fetch full conversation history for a thread via requestConversation DBus method.
- * Returns all messages in chronological order (oldest first).
- */
-function fetchThreadHistory(threadId: number): MessageFull[] {
-  const result = runCli("kdeconnect-read-sms", ["--json", "--conversation", String(threadId)], {
-    stderrFilters: KDE_STDERR_FILTERS,
-    timeoutMs: 20_000,
-  });
-
-  if (!result.ok) {
-    if (result.stderr) process.stderr.write(`[sms] ${result.stderr}\n`);
-    return [];
+export function beeperSmsMessageToFull(
+  message: BeeperMessage,
+  chat?: BeeperChat,
+): MessageFull | null {
+  if (
+    !message.id ||
+    !message.chatID ||
+    message.isDeleted ||
+    message.isHidden ||
+    message.type?.toLowerCase().includes("reaction")
+  ) {
+    return null;
   }
+  const date = new Date(message.timestamp);
+  if (Number.isNaN(date.getTime())) return null;
 
-  if (!result.stdout || result.stdout === "{}") return [];
-
-  try {
-    const history: SmsThreadHistory = JSON.parse(result.stdout);
-    if (!history.messages || history.messages.length === 0) return [];
-
-    const contactNames = store.getContactNamesByAddress("sms");
-    return history.messages.map((m) =>
-      toSmsMessage({
-        id: `${history.thread_id}:${m.sub_id}`,
-        contact: history.contact,
-        body: m.body,
-        timestamp: m.timestamp,
-        direction: m.direction,
-        read: m.read,
-        contactNames,
-      }),
-    );
-  } catch {
-    process.stderr.write("[sms] Failed to parse thread history output\n");
-    return [];
-  }
-}
-
-// ---------------------------------------------------------------------------
-// Thread rendering
-// ---------------------------------------------------------------------------
-
-/**
- * Combine an array of individual thread messages into a single MessageFull
- * with the conversation body rendered as a readable transcript.
- */
-function threadToFullMessage(messages: MessageFull[], threadId: string): MessageFull {
-  // Determine the contact from the first incoming message, or first message at all
-  const firstIncoming = messages.find((m) => m.direction === "in");
-  const contact = firstIncoming?.from ??
-    messages[0]?.to?.[0] ?? { name: "unknown", address: "unknown" };
-
-  const body = messages
-    .map((m) => {
-      const dir = m.direction === "in" ? "<" : ">";
-      const date = new Date(m.date).toLocaleString();
-      return `[${date}] ${dir} ${m.body}`;
-    })
-    .join("\n");
+  const rawAttachments = Array.isArray(message.attachments) ? message.attachments : [];
+  const attachments = rawAttachments.map(toAttachment);
+  const body = message.text ?? "";
+  const participants = chatParticipants(chat);
+  const participant = participants.find(
+    (item) => item.id === message.senderID || item.userID === message.senderID,
+  );
+  const senderAddress = participant?.phoneNumber || participant?.username || message.senderID;
+  const senderName =
+    message.senderName?.trim() ||
+    participant?.name ||
+    participant?.fullName ||
+    participant?.phoneNumber ||
+    message.senderID;
+  const participantNames = participants
+    .filter((item) => !item.isSelf)
+    .map((item) => item.name || item.fullName || item.phoneNumber || item.username)
+    .filter((value): value is string => Boolean(value));
+  const isGroup = chat?.type === "group";
+  const chatTitle =
+    chat?.title?.trim() ||
+    (isGroup && participantNames.length > 0 ? participantNames.join(", ") : undefined) ||
+    participantNames[0] ||
+    message.chatID;
+  const preview = (
+    body.trim()
+      ? body
+      : rawAttachments.length > 0
+        ? attachmentPreview(rawAttachments)
+        : typePreview(message.type)
+  ).slice(0, 100);
 
   return {
-    id: threadId,
+    id: beeperMessageId(message.chatID, message.id),
     provider: "sms",
-    from: contact,
-    to: [],
-    preview: `Thread with ${contact.name || contact.address} (${messages.length} messages)`,
+    account: message.accountID,
+    from: { name: senderName, address: senderAddress },
+    to: [{ name: chatTitle, address: message.chatID }],
+    preview,
     body,
     bodyFormat: "text",
-    attachments: [],
-    date: messages[messages.length - 1]?.date ?? new Date().toISOString(),
-    unread: messages.some((m) => m.unread),
-    hasAttachments: false,
-    direction: "in",
+    date: date.toISOString(),
+    unread: isMessageUnread(message, chat),
+    hasAttachments: attachments.length > 0,
+    attachments,
+    isGroup,
+    groupName: isGroup ? chatTitle : undefined,
+    direction: message.isSender ? "out" : "in",
   };
 }
 
-// ---------------------------------------------------------------------------
-// Fetch-and-cache (callable by daemon)
-// ---------------------------------------------------------------------------
-
-export function fetchSmsInbox(opts?: { unread?: boolean; fresh?: boolean; from?: string }): void {
-  const messages = fetchSmsConversations(opts);
-  if (messages.length > 0) {
-    const incoming = messages.filter((m) => m.direction === "in");
-    const outgoing = messages.filter((m) => m.direction === "out");
-    if (incoming.length > 0) store.upsertFullMessages(incoming);
-    if (outgoing.length > 0) {
-      store.upsertFullMessages(outgoing);
-      pruneOptimisticSmsSentDuplicates(outgoing);
-    }
-    console.error(`[sms] Stored ${incoming.length} in + ${outgoing.length} out messages`);
-  }
-  store.recordFetch("sms");
+function incrementalDateAfter(settings: BeeperSmsSettings): string | undefined {
+  const watermark = store.getCursor("sms", settings.accountId, WATERMARK_CURSOR);
+  if (!watermark) return undefined;
+  const timestamp = new Date(watermark).getTime();
+  return Number.isNaN(timestamp)
+    ? undefined
+    : new Date(timestamp - WATERMARK_OVERLAP_MS).toISOString();
 }
 
-// ---------------------------------------------------------------------------
-// Provider
-// ---------------------------------------------------------------------------
+export async function fetchBeeperSmsMessages(settings: BeeperSmsSettings): Promise<void> {
+  const isIncremental = store.getCursor("sms", settings.accountId, WATERMARK_CURSOR) !== null;
+  const { messages, chats } = await searchBeeperMessages("SMS", settings, {
+    dateAfter: incrementalDateAfter(settings),
+    paginate: isIncremental,
+  });
+  const fullMessages = messages
+    .map((message) => beeperSmsMessageToFull(message, chats.get(message.chatID)))
+    .filter((message): message is MessageFull => message !== null);
+  const removedMessageIds = messages
+    .filter((message) => message.isDeleted || message.isHidden)
+    .map((message) => beeperMessageId(message.chatID, message.id));
+  if (removedMessageIds.length > 0) store.deleteMessages("sms", removedMessageIds);
+  if (fullMessages.length > 0) store.upsertFullMessages(fullMessages);
+  await reconcilePendingBeeperSmsMessages(settings, chats);
+
+  let maxTimestamp = 0;
+  for (const message of messages) {
+    const timestamp = new Date(message.timestamp).getTime();
+    if (!Number.isNaN(timestamp)) maxTimestamp = Math.max(maxTimestamp, timestamp);
+  }
+  if (maxTimestamp > 0) {
+    store.setCursor(
+      "sms",
+      settings.accountId,
+      WATERMARK_CURSOR,
+      new Date(maxTimestamp).toISOString(),
+    );
+  }
+  store.recordFetch("sms", settings.accountId);
+}
+
+async function reconcilePendingBeeperSmsMessages(
+  settings: BeeperSmsSettings,
+  chats: Map<string, BeeperChat>,
+): Promise<void> {
+  const pendingRows = store.getCachedMessagesByIdPrefix("sms", settings.accountId, "pending:");
+  for (const pending of pendingRows) {
+    const identity = parsePendingBeeperMessageId(pending.id);
+    if (!identity) continue;
+    try {
+      const resolved = await getBeeperMessage("SMS", settings, identity.chatId, identity.messageId);
+      if (
+        resolved.accountID !== settings.accountId ||
+        resolved.chatID !== identity.chatId ||
+        !resolved.id
+      ) {
+        continue;
+      }
+      if (resolved.isDeleted || resolved.isHidden) {
+        store.deleteMessages("sms", [pending.id]);
+        continue;
+      }
+      let chat = chats.get(identity.chatId);
+      if (!chat) {
+        chat = await getBeeperChat("SMS", settings, identity.chatId);
+      }
+      if (chat.accountID !== settings.accountId) continue;
+      const canonical = beeperSmsMessageToFull(resolved, chat);
+      if (!canonical) continue;
+      store.upsertFullMessages([canonical]);
+      store.deleteMessages("sms", [pending.id]);
+    } catch {
+      // Pending resolution is best-effort; retain the marked row until a later poll.
+    }
+  }
+}
+
+export function isGoogleMessagesAccount(account: BeeperAccount): boolean {
+  const network = account.network?.toLowerCase().replace(/[\s_-]/g, "") ?? "";
+  const bridge = account.bridge?.type?.toLowerCase().replace(/[\s_-]/g, "") ?? "";
+  return (
+    network.includes("gmessages") ||
+    network.includes("googlemessages") ||
+    bridge.includes("gmessages") ||
+    bridge.includes("googlemessages")
+  );
+}
+
+async function askSecret(prompt: string): Promise<string> {
+  const readline = await import("node:readline");
+  const { Writable } = await import("node:stream");
+  const muted = new Writable({ write: (_chunk, _encoding, callback) => callback() });
+  const rl = readline.createInterface({ input: process.stdin, output: muted, terminal: true });
+  process.stdout.write(prompt);
+  return new Promise((resolve) =>
+    rl.question("", (answer) => {
+      rl.close();
+      process.stdout.write("\n");
+      resolve(answer.trim());
+    }),
+  );
+}
+
+async function promptBeeperConnection(): Promise<BeeperConnection> {
+  const readline = await import("node:readline");
+  const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
+  const inputBaseUrl = await new Promise<string>((resolve) =>
+    rl.question(`Beeper Client API URL (${BEEPER_DEFAULT_BASE_URL}): `, resolve),
+  );
+  rl.close();
+  const baseUrl = normalizeBeeperBaseUrl(inputBaseUrl.trim() || BEEPER_DEFAULT_BASE_URL);
+  if (!baseUrl) throw new Error("Beeper Client API URL must use HTTPS or loopback HTTP");
+  const accessToken = await askSecret("Beeper Client API access token: ");
+  if (!accessToken) throw new Error("Beeper Client API access token is required");
+  return { baseUrl, accessToken };
+}
+
+async function selectGoogleMessagesAccount(accounts: BeeperAccount[]): Promise<BeeperAccount> {
+  const matches = accounts.filter(isGoogleMessagesAccount).filter(beeperAccountId);
+  if (matches.length === 0) {
+    throw new Error("No already-connected Google Messages account found in Beeper Desktop");
+  }
+  if (matches.length === 1 && matches[0]) return matches[0];
+
+  const readline = await import("node:readline");
+  const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
+  console.log("Google Messages accounts:");
+  matches.forEach((account, index) => {
+    const id = beeperAccountId(account) ?? "unknown";
+    const label =
+      account.name ?? account.user?.fullName ?? account.user?.name ?? account.user?.username ?? id;
+    console.log(`  ${index + 1}. ${label}`);
+  });
+  const answer = await new Promise<string>((resolve) => rl.question("Select account: ", resolve));
+  rl.close();
+  const selected = matches[Number.parseInt(answer, 10) - 1];
+  if (!selected) throw new Error("Invalid account selection");
+  return selected;
+}
+
+async function configureSms(): Promise<void> {
+  const config = loadConfig();
+  const existing = resolveBeeperConnection(config.beeper, undefined, config.messenger);
+  const connection = existing ?? (await promptBeeperConnection());
+  const accounts = await listBeeperAccounts("SMS", connection);
+  const selected = await selectGoogleMessagesAccount(accounts);
+  const accountId = beeperAccountId(selected);
+  if (!accountId) throw new Error("Selected Google Messages account has no account ID");
+  config.beeper = connection;
+  config.sms = { ...config.sms, backend: "beeper", accountId };
+  saveConfig(config);
+  console.log("SMS/RCS connection configured for Beeper Desktop.");
+}
+
+async function sendViaBeeper(
+  recipientId: string,
+  body: string,
+  opts?: Parameters<MessagingProvider["send"]>[2],
+) {
+  const settings = resolveSmsSettings(opts?.providerFlags);
+  if (!settings) {
+    return {
+      ok: false as const,
+      provider: "sms",
+      recipientId,
+      error: "SMS/RCS Beeper Client API connection not configured. Run: onemessage auth sms",
+    };
+  }
+  if ((opts?.attachments?.length ?? 0) > 0) {
+    return {
+      ok: false as const,
+      provider: "sms",
+      recipientId,
+      error: "SMS/RCS attachment sending is not supported by the Beeper backend.",
+    };
+  }
+
+  let finalBody = body;
+  if (opts?.file) {
+    try {
+      finalBody = readFileSync(opts.file, "utf-8");
+    } catch (error) {
+      return {
+        ok: false as const,
+        provider: "sms",
+        recipientId,
+        error: `Cannot read "${opts.file}": ${error instanceof Error ? error.message : String(error)}`,
+      };
+    }
+  }
+
+  const normalized = normalizeRecipientForProvider("sms", recipientId);
+  if (!normalized.ok) {
+    return { ok: false as const, provider: "sms", recipientId, error: normalized.error };
+  }
+  const target = normalized.recipientId;
+  try {
+    const chat = /^\+\d+$/.test(target)
+      ? await startBeeperDirectChat("SMS", settings, target)
+      : await getBeeperChat("SMS", settings, target);
+    if (chat.accountID !== settings.accountId) {
+      throw new Error("SMS target chat does not belong to the configured Google Messages account");
+    }
+    const chatId = chat.id;
+    if (!chatId) {
+      throw new Error("SMS target did not resolve to a global Beeper chat ID");
+    }
+    const sent = await sendBeeperTextOnce("SMS", settings, chatId, finalBody);
+    const messageId =
+      sent.state === "resolved"
+        ? beeperMessageId(sent.chatId, sent.messageId)
+        : sent.state === "pending"
+          ? pendingBeeperMessageId(sent.chatId, sent.messageId)
+          : unknownBeeperMessageId(sent.chatId, sent.messageId);
+    cacheSentMessage({
+      provider: "sms",
+      messageId,
+      account: settings.accountId,
+      fromAddress: settings.accountId,
+      recipientId: sent.chatId,
+      recipientName: chat.title?.trim() || target,
+      body: finalBody,
+    });
+    return { ok: true as const, provider: "sms", recipientId: target, messageId };
+  } catch (error) {
+    return {
+      ok: false as const,
+      provider: "sms",
+      recipientId: target,
+      error: error instanceof Error ? error.message : String(error),
+    };
+  }
+}
 
 export const smsProvider: MessagingProvider = {
   name: "sms",
-  displayName: "SMS (KDE Connect)",
+  displayName: "SMS/RCS",
 
   isConfigured() {
-    return cliExists("kdeconnect-cli") && resolveSettings() !== null;
+    return resolveSmsBackend() === "kdeconnect"
+      ? kdeConnectSmsBackend.isConfigured()
+      : resolveSmsSettings() !== null;
   },
 
   async send(recipientId, body, opts) {
-    const normalized = normalizeRecipientForProvider("sms", recipientId);
-    if (!normalized.ok) {
-      return { ok: false, provider: "sms", recipientId, error: normalized.error };
+    return resolveSmsBackend(opts?.providerFlags) === "kdeconnect"
+      ? kdeConnectSmsBackend.send(recipientId, body, opts)
+      : sendViaBeeper(recipientId, body, opts);
+  },
+
+  async reply(messageId, body, opts) {
+    if (resolveSmsBackend(opts?.providerFlags) === "kdeconnect") {
+      const original = await kdeConnectSmsBackend.read(messageId, opts);
+      if (!original) {
+        return { ok: false, provider: "sms", recipientId: "", error: "SMS message not found." };
+      }
+      try {
+        return kdeConnectSmsBackend.send(resolveDefaultReply(original).recipientId, body, opts);
+      } catch (error) {
+        return {
+          ok: false,
+          provider: "sms",
+          recipientId: "",
+          error: error instanceof Error ? error.message : String(error),
+        };
+      }
     }
-    const sendRecipientId = normalized.recipientId;
-    const settings = resolveSettings(opts?.providerFlags);
-    if (!settings) {
+    const settings = resolveSmsSettings(opts?.providerFlags);
+    const original = readFromCacheOrFail("sms", messageId);
+    if (!settings || !original || original.account !== settings.accountId) {
       return {
         ok: false,
         provider: "sms",
-        recipientId: sendRecipientId,
-        error: "SMS not configured. Run: onemessage auth sms",
+        recipientId: "",
+        error: `SMS message "${messageId}" not found for the configured Google Messages account.`,
       };
     }
-
-    const args = ["--name", settings.device, "--send-sms", body, "--destination", sendRecipientId];
-
-    if (opts?.attachments) {
-      for (const attachment of opts.attachments) {
-        args.push("--attachment", attachment);
-      }
+    const chatId = original.to[0]?.address;
+    if (!chatId) {
+      return { ok: false, provider: "sms", recipientId: "", error: "Cannot reply: no chat ID." };
     }
-
-    const result = runKdeConnect(args);
-
-    if (result.ok) {
-      cacheSentMessage({
-        provider: "sms",
-        fromAddress: settings.device,
-        recipientId: sendRecipientId,
-        body,
-        hasAttachments: (opts?.attachments?.length ?? 0) > 0,
-      });
-      return { ok: true, provider: "sms", recipientId: sendRecipientId };
-    } else {
-      const error =
-        result.stderr || result.stdout || `kdeconnect-cli exited with code ${result.exitCode}`;
-      return { ok: false, provider: "sms", recipientId: sendRecipientId, error };
-    }
+    return sendViaBeeper(chatId, body, opts);
   },
 
   async inbox(opts) {
-    const hasReader = cliExists("kdeconnect-read-sms") || cliExists("dbus-send");
-
-    if (!hasReader) {
-      // Fall back to cache only
-      return store.getCachedInbox("sms", {
-        limit: opts?.limit,
-        unread: opts?.unread,
-        sinceCachedAt: opts?.sinceCachedAt,
-      });
+    if (resolveSmsBackend(opts?.providerFlags) === "kdeconnect") {
+      return kdeConnectSmsBackend.inbox(opts);
     }
-
+    const settings = resolveSmsSettings(opts?.providerFlags);
+    if (!settings) {
+      console.error("SMS/RCS not configured. Run: onemessage auth sms");
+      return [];
+    }
     return inboxViaDaemon({
       provider: "sms",
       freshnessMs: getProviderFreshnessMs("sms"),
+      account: settings.accountId,
       fresh: opts?.fresh,
       cacheArgs: {
         limit: opts?.limit,
@@ -577,50 +507,48 @@ export const smsProvider: MessagingProvider = {
         since: opts?.since,
         sinceCachedAt: opts?.sinceCachedAt,
         from: opts?.from,
+        account: settings.accountId,
       },
-      fallbackFetch: () => fetchSmsInbox(opts),
     });
   },
 
+  resolveCacheAccount(providerFlags) {
+    return resolveSmsBackend(providerFlags) === "beeper"
+      ? resolveSmsSettings(providerFlags)?.accountId
+      : "";
+  },
+
   async read(messageId, opts) {
-    // If messageId contains ":", it's a specific message within a thread (threadId:subId)
-    // If it's a plain number, it's a thread_id — fetch full thread history
-    if (!messageId.includes(":")) {
-      const threadId = parseInt(messageId, 10);
-      if (!Number.isNaN(threadId)) {
-        // Check cache first (unless fresh requested)
-        if (!opts?.fresh) {
-          const cached = store.getThreadMessages("sms", messageId);
-          if (cached.length > 0) {
-            // Return the full thread as a single "message" with concatenated body
-            return threadToFullMessage(cached, messageId);
-          }
-        }
-
-        // Fetch from phone
-        const dbusMessages = fetchThreadHistoryViaDbus(threadId);
-        const messages =
-          dbusMessages.length > 0 || !cliExists("kdeconnect-read-sms")
-            ? dbusMessages
-            : fetchThreadHistory(threadId);
-        if (messages.length > 0) {
-          const incoming = messages.filter((m) => m.direction === "in");
-          const outgoing = messages.filter((m) => m.direction === "out");
-          if (incoming.length > 0) store.upsertFullMessages(incoming, messageId);
-          if (outgoing.length > 0) {
-            store.upsertFullMessages(outgoing, messageId);
-            pruneOptimisticSmsSentDuplicates(outgoing);
-          }
-          console.error(
-            `[sms] Stored ${incoming.length} in + ${outgoing.length} out messages (thread ${threadId})`,
-          );
-          return threadToFullMessage(messages, messageId);
-        }
-      }
+    if (resolveSmsBackend(opts?.providerFlags) === "kdeconnect") {
+      return kdeConnectSmsBackend.read(messageId, opts);
     }
+    const settings = resolveSmsSettings(opts?.providerFlags);
+    const message = readFromCacheOrFail("sms", messageId);
+    return settings && message?.account === settings.accountId ? message : null;
+  },
 
-    return readFromCacheOrFail("sms", messageId);
+  async search(query, opts) {
+    if (resolveSmsBackend(opts?.providerFlags) === "kdeconnect") {
+      return store.searchCached(query, "sms", {
+        limit: opts?.limit,
+        since: opts?.since,
+        account: "",
+      });
+    }
+    const settings = resolveSmsSettings(opts?.providerFlags);
+    if (!settings) return [];
+    return store.searchCached(query, "sms", {
+      limit: opts?.limit,
+      since: opts?.since,
+      account: settings.accountId,
+    });
+  },
+
+  async authenticate() {
+    await configureSms();
   },
 };
+
+export { fetchKdeSmsInbox, pruneOptimisticSmsSentDuplicates, resolveKdeSmsSettings, toSmsMessage };
 
 registerProvider(smsProvider);

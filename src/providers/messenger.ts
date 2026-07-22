@@ -1,165 +1,46 @@
 import { readFileSync } from "node:fs";
-import { isIP } from "node:net";
 import { getProviderFreshnessMs, loadConfig, saveConfig } from "../config.ts";
 import { registerProvider } from "../registry.ts";
 import * as store from "../store.ts";
 import type { Attachment, MessageFull, MessagingProvider } from "../types.ts";
+import {
+  BEEPER_DEFAULT_BASE_URL,
+  type BeeperAccount,
+  type BeeperAccountSettings,
+  type BeeperAttachment,
+  type BeeperChat,
+  type BeeperConnection,
+  type BeeperMessage,
+  beeperAccountId,
+  beeperMessageId,
+  getBeeperChat,
+  listBeeperAccounts,
+  normalizeBeeperBaseUrl,
+  resolveBeeperConnection,
+  searchBeeperMessages,
+  sendBeeperTextOnce,
+} from "./beeper-client.ts";
 import { cacheSentMessage, inboxViaDaemon, readFromCacheOrFail } from "./shared.ts";
 
-export const MESSENGER_DEFAULT_BASE_URL = "http://127.0.0.1:23373";
+export type { BeeperChat, BeeperMessage } from "./beeper-client.ts";
+
+export const MESSENGER_DEFAULT_BASE_URL = BEEPER_DEFAULT_BASE_URL;
 const WATERMARK_CURSOR = "messages.timestamp";
 const WATERMARK_OVERLAP_MS = 1_000;
 
-export interface MessengerSettings {
-  accountId: string;
-  accessToken: string;
-  baseUrl: string;
-}
-
-function normalizeBaseUrl(value: string): string | null {
-  try {
-    const url = new URL(value);
-    const isIpv4Loopback = isIP(url.hostname) === 4 && url.hostname.split(".")[0] === "127";
-    const isLoopback =
-      url.hostname === "localhost" ||
-      url.hostname === "::1" ||
-      url.hostname === "[::1]" ||
-      isIpv4Loopback;
-    if (url.protocol !== "https:" && !(url.protocol === "http:" && isLoopback)) return null;
-    return value.replace(/\/+$/, "");
-  } catch {
-    return null;
-  }
-}
-
-export interface BeeperAttachment {
-  filename?: string;
-  fileName?: string;
-  name?: string;
-  title?: string;
-  contentType?: string;
-  mimeType?: string;
-  type?: string;
-  fileSize?: number;
-  size?: number | { width?: number; height?: number };
-}
-
-export interface BeeperMessage {
-  id: string;
-  chatID: string;
-  accountID: string;
-  senderID: string;
-  senderName?: string;
-  timestamp: string | number;
-  sortKey: string;
-  type?: string;
-  text?: string;
-  isSender?: boolean;
-  isUnread?: boolean;
-  isDeleted?: boolean;
-  isHidden?: boolean;
-  attachments?: BeeperAttachment[];
-}
-
-export interface BeeperParticipant {
-  id?: string;
-  userID?: string;
-  name?: string;
-  fullName?: string;
-}
-
-export interface BeeperChat {
-  id: string;
-  accountID: string;
-  title?: string;
-  type?: "single" | "group";
-  unreadCount?: number;
-  isMarkedUnread?: boolean;
-  lastReadMessageSortKey?: string | number;
-  participants?:
-    | BeeperParticipant[]
-    | { items?: BeeperParticipant[]; hasMore?: boolean; total?: number };
-}
-
-interface MessageSearchResponse {
-  items?: BeeperMessage[];
-  chats?: Record<string, BeeperChat>;
-  hasMore?: boolean;
-  oldestCursor?: string;
-  newestCursor?: string;
-}
-
-interface BeeperAccount {
-  id?: string;
-  accountID?: string;
-  network?: string;
-  bridge?: { type?: string };
-  name?: string;
-  user?: { name?: string; fullName?: string; username?: string };
-}
+export interface MessengerSettings extends BeeperAccountSettings {}
 
 export function resolveMessengerSettings(
   cliOverrides?: Record<string, unknown>,
 ): MessengerSettings | null {
-  const config = loadConfig().messenger;
-  const accountId = (cliOverrides?.accountId as string | undefined) ?? config?.accountId;
-  const accessToken = (cliOverrides?.accessToken as string | undefined) ?? config?.accessToken;
-  const configuredBaseUrl = (cliOverrides?.baseUrl as string | undefined) ?? config?.baseUrl;
-  const baseUrl = normalizeBaseUrl(configuredBaseUrl || MESSENGER_DEFAULT_BASE_URL);
-  if (!accountId?.trim() || !accessToken?.trim() || !baseUrl) return null;
-  return { accountId: accountId.trim(), accessToken: accessToken.trim(), baseUrl };
+  const config = loadConfig();
+  const accountId = (cliOverrides?.accountId as string | undefined) ?? config.messenger?.accountId;
+  const connection = resolveBeeperConnection(config.beeper, cliOverrides, config.messenger);
+  if (!accountId?.trim() || !connection) return null;
+  return { accountId: accountId.trim(), ...connection };
 }
 
-function redact(value: string, token: string): string {
-  return token ? value.split(token).join("[redacted]") : value;
-}
-
-async function messengerApi<T>(
-  method: string,
-  path: string,
-  settings: MessengerSettings,
-  body?: unknown,
-): Promise<T> {
-  const url = new URL(path, `${settings.baseUrl}/`);
-  const headers: Record<string, string> = {
-    Authorization: `Bearer ${settings.accessToken}`,
-  };
-  const init: RequestInit = { method, headers };
-  if (body !== undefined) {
-    headers["Content-Type"] = "application/json";
-    init.body = JSON.stringify(body);
-  }
-
-  let response: Response;
-  try {
-    response = await fetch(url, init);
-  } catch (error) {
-    const detail = error instanceof Error ? error.message : String(error);
-    throw new Error(
-      `Messenger ${method} ${url.pathname}${url.search}: ${redact(detail, settings.accessToken)}`,
-    );
-  }
-
-  const responseBody = await response.text().catch(() => "");
-  const safeBody = redact(responseBody, settings.accessToken);
-  if (!response.ok) {
-    throw new Error(
-      `Messenger ${method} ${url.pathname}${url.search}: ${response.status} ${safeBody}`.trim(),
-    );
-  }
-
-  try {
-    return JSON.parse(responseBody) as T;
-  } catch {
-    throw new Error(
-      `Messenger ${method} ${url.pathname}${url.search}: ${response.status} invalid JSON ${safeBody}`.trim(),
-    );
-  }
-}
-
-export function messengerMessageId(chatId: string, messageId: string): string {
-  return `chat:${encodeURIComponent(chatId)}:message:${encodeURIComponent(messageId)}`;
-}
+export const messengerMessageId = beeperMessageId;
 
 function attachmentLabel(attachment: BeeperAttachment): string {
   const type =
@@ -214,14 +95,15 @@ function messageTypePreview(type?: string): string | null {
   }
 }
 
-function compareSortKeys(left: string, right: string | number): number {
+function compareSortKeys(left: string | number, right: string | number): number {
+  const leftString = String(left);
   const rightString = String(right);
-  if (/^\d+$/.test(left) && /^\d+$/.test(rightString)) {
-    const leftNumber = BigInt(left);
+  if (/^\d+$/.test(leftString) && /^\d+$/.test(rightString)) {
+    const leftNumber = BigInt(leftString);
     const rightNumber = BigInt(rightString);
     return leftNumber === rightNumber ? 0 : leftNumber > rightNumber ? 1 : -1;
   }
-  return left === rightString ? 0 : left > rightString ? 1 : -1;
+  return leftString === rightString ? 0 : leftString > rightString ? 1 : -1;
 }
 
 function isMessageUnread(message: BeeperMessage, chat?: BeeperChat): boolean {
@@ -296,55 +178,23 @@ export function beeperMessageToFull(message: BeeperMessage, chat?: BeeperChat): 
   };
 }
 
-function searchPath(settings: MessengerSettings, cursor?: string): string {
-  const params = new URLSearchParams({
-    accountIDs: settings.accountId,
-    limit: "20",
-    excludeLowPriority: "false",
-  });
+function incrementalDateAfter(settings: MessengerSettings): string | undefined {
   const watermark = store.getCursor("messenger", settings.accountId, WATERMARK_CURSOR);
   if (watermark) {
     const timestamp = new Date(watermark).getTime();
     if (!Number.isNaN(timestamp)) {
-      params.set("dateAfter", new Date(timestamp - WATERMARK_OVERLAP_MS).toISOString());
+      return new Date(timestamp - WATERMARK_OVERLAP_MS).toISOString();
     }
   }
-  if (cursor) {
-    params.set("cursor", cursor);
-    params.set("direction", "before");
-  }
-  return `/v1/messages/search?${params}`;
+  return undefined;
 }
 
 export async function fetchMessengerMessages(settings: MessengerSettings): Promise<void> {
   const isIncremental = store.getCursor("messenger", settings.accountId, WATERMARK_CURSOR) !== null;
-  const messages: BeeperMessage[] = [];
-  const chats = new Map<string, BeeperChat>();
-  let cursor: string | undefined;
-  const seenCursors = new Set<string>();
-
-  do {
-    const data = await messengerApi<MessageSearchResponse>(
-      "GET",
-      searchPath(settings, cursor),
-      settings,
-    );
-    for (const [chatId, chat] of Object.entries(data.chats ?? {})) {
-      if (chat.accountID === settings.accountId) chats.set(chatId, chat);
-    }
-    for (const message of data.items ?? []) {
-      if (message.accountID === settings.accountId) messages.push(message);
-    }
-
-    if (!isIncremental || !data.hasMore) break;
-    const nextCursor = data.oldestCursor;
-    if (!nextCursor) throw new Error("Messenger pagination response omitted oldestCursor");
-    if (seenCursors.has(nextCursor)) {
-      throw new Error(`Messenger pagination repeated cursor ${nextCursor}`);
-    }
-    seenCursors.add(nextCursor);
-    cursor = nextCursor;
-  } while (cursor);
+  const { messages, chats } = await searchBeeperMessages("Messenger", settings, {
+    dateAfter: incrementalDateAfter(settings),
+    paginate: isIncremental,
+  });
 
   const fullMessages = messages
     .map((message) => beeperMessageToFull(message, chats.get(message.chatID)))
@@ -401,18 +251,15 @@ async function configureMessengerConnection(): Promise<void> {
     await ask(`Beeper Client API URL (${MESSENGER_DEFAULT_BASE_URL}): `)
   ).trim();
   rl.close();
-  const baseUrl = normalizeBaseUrl(inputBaseUrl || MESSENGER_DEFAULT_BASE_URL);
+  const baseUrl = normalizeBeeperBaseUrl(inputBaseUrl || MESSENGER_DEFAULT_BASE_URL);
   if (!baseUrl) {
     throw new Error("Beeper Client API URL must use HTTPS or loopback HTTP");
   }
   const accessToken = await askSecret("Beeper Client API access token: ");
   if (!accessToken) throw new Error("Beeper Client API access token is required");
 
-  const temporarySettings: MessengerSettings = { baseUrl, accessToken, accountId: "discovery" };
-  const response = await messengerApi<
-    BeeperAccount[] | { items?: BeeperAccount[]; accounts?: BeeperAccount[] }
-  >("GET", "/v1/accounts", temporarySettings);
-  const accounts = Array.isArray(response) ? response : (response.items ?? response.accounts ?? []);
+  const connection: BeeperConnection = { baseUrl, accessToken };
+  const accounts = await listBeeperAccounts("Messenger", connection);
   const matches = accounts
     .filter(isFacebookAccount)
     .filter((account) => account.id || account.accountID);
@@ -443,10 +290,11 @@ async function configureMessengerConnection(): Promise<void> {
     selected = matches[index];
   }
 
-  const accountId = selected?.id ?? selected?.accountID;
+  const accountId = selected ? beeperAccountId(selected) : undefined;
   if (!accountId) throw new Error("Selected Messenger account has no account ID");
   const config = loadConfig();
-  config.messenger = { accountId, accessToken, baseUrl };
+  config.beeper = { accessToken, baseUrl };
+  config.messenger = { accountId };
   saveConfig(config);
   console.log("Messenger connection configured for Beeper Desktop.");
 }
@@ -486,39 +334,18 @@ export const messengerProvider: MessagingProvider = {
     }
 
     try {
-      const chat = await messengerApi<BeeperChat>(
-        "GET",
-        `/v1/chats/${encodeURIComponent(recipientId)}`,
-        settings,
-      );
+      const chat = await getBeeperChat("Messenger", settings, recipientId);
       if (chat.accountID !== settings.accountId) {
         throw new Error("Messenger target chat does not belong to the configured Facebook account");
       }
-      const path = `/v1/chats/${encodeURIComponent(recipientId)}/messages`;
-      const result = await messengerApi<{ chatID: string; pendingMessageID: string }>(
-        "POST",
-        path,
-        settings,
-        { text: finalBody },
-      );
-      let rawMessageId = result.pendingMessageID;
-      try {
-        const resolved = await messengerApi<BeeperMessage>(
-          "GET",
-          `/v1/chats/${encodeURIComponent(result.chatID)}/messages/${encodeURIComponent(result.pendingMessageID)}`,
-          settings,
-        );
-        if (resolved.id) rawMessageId = resolved.id;
-      } catch {
-        // POST succeeded. Keep the pending ID rather than retrying an ambiguous send.
-      }
-      const messageId = messengerMessageId(result.chatID, rawMessageId);
+      const result = await sendBeeperTextOnce("Messenger", settings, recipientId, finalBody);
+      const messageId = messengerMessageId(result.chatId, result.messageId);
       cacheSentMessage({
         provider: "messenger",
         messageId,
         account: settings.accountId,
         fromAddress: settings.accountId,
-        recipientId: result.chatID,
+        recipientId: result.chatId,
         recipientName: chat.title?.trim() || "",
         body: finalBody,
       });
